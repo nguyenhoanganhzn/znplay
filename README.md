@@ -52,10 +52,10 @@ Trước khi cho CTV sử dụng số dư thật, cần chuyển sang cơ sở d
 hoặc gắn persistent disk trên dịch vụ trả phí rồi đặt `DATA_DIR` vào thư mục trên disk.
 Chỉ chạy một instance khi dùng database JSON.
 
-Bản hiện tại tự khóa đặt đơn và nạp/hoàn ví trên Render nếu chưa xác nhận
-`DATA_DIR` nằm trên một ổ khác với filesystem tạm của mã nguồn. Gắn persistent
-disk tại `/var/data`, đặt `DATA_DIR=/var/data/znplay`, rồi kiểm tra trạng thái tại
-**Giám sát & đối soát CTV**. Free vẫn cho tạo CTV ví 0đ để thử công cụ tra cứu.
+Nạp ví, đặt đơn và hoàn ví đều hoạt động trên Render Free, không yêu cầu persistent
+disk. Admin cấp số dư nội bộ cho CTV trên ZnPlay; khi CTV đặt đơn, ZnPlay trừ ví CTV
+theo giá bán và gửi đơn sang HoanNguyen, nơi tài khoản nguồn thanh toán chi phí thực tế.
+Nạp ví CTV không tự chuyển tiền hay nạp vào tài khoản HoanNguyen.
 Sao lưu dữ liệu riêng trước khi đổi thư mục lưu trữ hoặc triển khai lại.
 
 ## Quyền và đối soát CTV

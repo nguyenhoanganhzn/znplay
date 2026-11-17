@@ -278,19 +278,6 @@ function financialGuard(req, res, next) {
   next();
 }
 
-function hasDurableLedger() {
-  if (process.env.RENDER !== 'true') return true;
-  if (!process.env.DATA_DIR) return false;
-  try { return fs.statSync(DATA_DIR).dev !== fs.statSync(__dirname).dev; }
-  catch { return false; }
-}
-
-function requireDurableLedger(req, res, next) {
-  if (!hasDurableLedger()) return res.status(503).json({ success: false, code: 'DURABLE_STORAGE_REQUIRED',
-    message: 'Đã khóa đặt đơn/nạp ví trên lưu trữ tạm của Render để tránh mất số dư. Admin cần gắn persistent disk và đặt DATA_DIR vào disk trước khi dùng tiền thật.' });
-  next();
-}
-
 function validFruitInput(qty, mutations) {
   return Number.isSafeInteger(qty) && qty >= 1 && qty <= 1500 && Array.isArray(mutations) &&
     mutations.length <= 19 && new Set(mutations).size === mutations.length &&
@@ -1477,7 +1464,7 @@ app.get('/api/customer/saved/:id', requireAuth, requireAdmin, async (req, res) =
 // ============================================================================
 // PLACE ORDER ENDPOINT (STRICT WALLET CHECK + SYSTEM ACTIVE CHECK)
 // ============================================================================
-app.post('/api/orders/place', requireAuth, financialGuard, requireDurableLedger, limitInteractive, async (req, res) => {
+app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, async (req, res) => {
   let intent = null;
   let sourceDispatched = false;
   try {
@@ -2212,7 +2199,7 @@ app.use('/api/admin', requireAdmin);
 app.use('/api/admin', (req, res, next) => req.method === 'GET' ? next() : financialGuard(req, res, next));
 
 app.get('/api/admin/monitor', (req, res) => {
-  res.json({ success: true, storageHealthy, financialReady: hasDurableLedger(),
+  res.json({ success: true, storageHealthy,
     ctvs: db.users.filter(u => u.role === 'ctv').map(sanitizeUser),
     intents: db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),
     cancellations: db.localOrders.filter(o => o.cancelRequested || o.refundPending).slice(0, 200),
@@ -2277,7 +2264,7 @@ app.post('/api/admin/intents/:id/reconcile', (req, res) => {
   res.json({ success: true, message: 'Đã lưu kết quả đối soát.' });
 });
 
-app.post('/api/admin/orders/:id/refund', requireDurableLedger, (req, res) => {
+app.post('/api/admin/orders/:id/refund', (req, res) => {
   const order = db.localOrders.find(o => o.id === req.params.id);
   const { amount, sourceRefund, note, confirmed, idempotency_key } = req.body || {};
   if (!order || order.status !== 'cancelled' || order.placedBy?.role !== 'ctv') return res.status(409).json({ success: false, message: 'Chỉ hoàn ví cho đơn CTV đã hủy tại nguồn.' });
@@ -2532,7 +2519,6 @@ app.post('/api/admin/ctv', requireAdmin, (req, res) => {
   }
 
   const initBalance = balance === undefined ? 0 : balance;
-  if (initBalance > 0 && !hasDurableLedger()) return res.status(503).json({ success: false, message: 'Lưu trữ tạm: chỉ tạo CTV ví 0đ để thử tra cứu. Gắn persistent disk trước khi nạp số dư.' });
   if (!validMoney(initBalance)) return res.status(400).json({ success: false, message: 'Số dư khởi tạo phải là số nguyên không âm và hữu hạn.' });
   const newCtv = {
     id: `usr_ctv_${crypto.randomUUID()}`,
@@ -2605,7 +2591,7 @@ app.put('/api/admin/ctv/:id', requireAdmin, (req, res) => {
 });
 
 // Top-up / Deduct CTV Balance
-app.post('/api/admin/ctv/:id/balance', requireAdmin, requireDurableLedger, (req, res) => {
+app.post('/api/admin/ctv/:id/balance', requireAdmin, (req, res) => {
   const ctv = db.users.find((u) => u.id === req.params.id && u.role === 'ctv');
   if (!ctv) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV.' });

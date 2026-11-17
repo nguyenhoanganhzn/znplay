@@ -506,17 +506,21 @@ test('deferred identity tool has no active input or backend operation', async t 
   assert.equal(result.status, 404);
 });
 
-test('Render ephemeral storage blocks billable orders and wallet credits while permitting zero-balance lookup tests', async t => {
+test('Render Free permits CTV credit, positive initial balances and purchases without a persistent disk', async t => {
   let creates = 0;
-  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true }; }), { env: { RENDER: 'true' } });
+  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true, data: { id: 501, total_price: 10000 } }; }), { env: { RENDER: 'true' } });
   const { token, payload } = await prepareBuyer(server);
-  assert.equal((await server.request('/api/orders/place', 'POST', token, payload)).body.code, 'DURABLE_STORAGE_REQUIRED');
   const admin = await server.login('owner', 'owner-test-password');
-  assert.equal((await server.request('/api/admin/ctv/seller/balance', 'POST', admin.body.token, { amount: 1000, idempotency_key: crypto.randomUUID() })).status, 503);
-  const created = await server.request('/api/admin/ctv', 'POST', admin.body.token, { name: 'Free test CTV', username: 'trial', password: 'private-test-ctv-password', balance: 0 });
+  const credit = { amount: 1000, idempotency_key: crypto.randomUUID() };
+  assert.equal((await server.request('/api/admin/ctv/seller/balance', 'POST', admin.body.token, credit)).status, 200);
+  assert.equal((await server.request('/api/admin/ctv/seller/balance', 'POST', admin.body.token, credit)).status, 409);
+  const created = await server.request('/api/admin/ctv', 'POST', admin.body.token, { name: 'Free test CTV', username: 'trial', password: 'private-test-ctv-password', balance: 5000 });
   assert.equal(created.status, 200);
-  assert.equal((await server.request('/api/admin/monitor', 'GET', admin.body.token)).body.financialReady, false);
-  assert.equal(creates, 0);
+  assert.equal(created.body.ctv.balance, 5000);
+  assert.equal((await server.request('/api/orders/place', 'POST', token, payload)).status, 200);
+  assert.equal(server.db.users.find(user => user.id === 'seller').balance, 36000);
+  assert.equal((await server.request('/api/admin/monitor', 'GET', admin.body.token)).body.storageHealthy, true);
+  assert.equal(creates, 1);
 });
 
 test('monitor records sensitive operations without passwords or tokens, and sessions expire', async t => {

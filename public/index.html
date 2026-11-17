@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZnPlay — Hệ Thống Chạy Đơn Play Together</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+
+  <!-- ========================================================================
+       LOGIN GATE SCREEN (SHOWN WHEN NOT LOGGED IN)
+       ======================================================================== -->
+  <div class="auth-gate-screen" id="authGateScreen" style="display:flex;">
+    <form class="auth-gate-card" id="gateLoginForm">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div class="brand-glyph">Zn</div>
+        <div>
+          <div class="brand-title" style="font-size:22px;">ZNPLAY</div>
+          <div style="font-size:12px;color:var(--color-fog-veil);">Hệ thống quản lý & chạy đơn Play Together</div>
+        </div>
+      </div>
+
+      <div style="height:1px;background:var(--color-glass-edge);"></div>
+
+      <div>
+        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;" for="gateLoginId">
+          Email hoặc Tên đăng nhập
+        </label>
+        <input type="text" id="gateLoginId" class="input-box" placeholder="Nhập username hoặc email..."
+          autocomplete="username" />
+      </div>
+
+      <div>
+        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;" for="gateLoginPw">
+          Mật khẩu
+        </label>
+        <input type="password" id="gateLoginPw" class="input-box" placeholder="••••••••"
+          autocomplete="current-password" />
+      </div>
+
+      <div id="gateLoginError" style="color:var(--color-ember-glow);font-size:12px;display:none;"></div>
+
+      <button type="submit" class="btn-violet" id="btnGateSubmitLogin" style="width:100%;padding:11px;">
+        Đăng nhập hệ thống →
+      </button>
+
+    </form>
+  </div>
+
+  <!-- ========================================================================
+       MAIN APPLICATION SHELL (LEFT SIDEBAR + MAIN CONTENT)
+       ======================================================================== -->
+  <div class="app-shell" id="appShell" style="display:none;">
+
+    <!-- Mobile Sidebar Backdrop -->
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <!-- LEFT SIDEBAR NAVIGATION (EXACT STRUCTURE FROM SCREENSHOTS) -->
+    <aside class="app-sidebar" id="appSidebar">
+      <div class="sidebar-brand">
+        <a href="#" class="brand-logo-wrap" id="brandHomeLink">
+          <div class="brand-glyph">Zn</div>
+          <span class="brand-title">ZNPLAY</span>
+        </a>
+        <span class="badge-tag violet" id="sidebarRoleBadge">CTV</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <!-- Bảng điều khiển -->
+        <button type="button" class="sidebar-item" data-view="dashboard">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">🏠</span>
+            <span>Bảng điều khiển</span>
+          </span>
+          <span class="badge-tag red" id="sidebarActiveOrdersCount">0</span>
+        </button>
+
+        <!-- CHẠY ĐƠN -->
+        <div class="sidebar-section-label">CHẠY ĐƠN</div>
+
+        <button type="button" class="sidebar-item" data-view="farm_gift">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">🏪</span>
+            <span>Quà nông trại</span>
+          </span>
+          <span class="sidebar-status-dot is-off" id="dot_farm_gift" title="Trạng thái hoạt động"></span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="mail_gift">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">✉️</span>
+            <span>Quà thư</span>
+          </span>
+          <span class="sidebar-status-dot is-off" id="dot_mail_gift" title="Trạng thái hoạt động"></span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="guestbook">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">📰</span>
+            <span>Bài viết</span>
+          </span>
+          <span class="sidebar-status-dot is-off" id="dot_guestbook" title="Trạng thái hoạt động"></span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="buff_tim">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">🤍</span>
+            <span>Buff Tim</span>
+          </span>
+          <span class="sidebar-status-dot" id="dot_buff_tim" title="Trạng thái hoạt động"></span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="buff_sao">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">☆</span>
+            <span>Buff Sao</span>
+          </span>
+          <span class="sidebar-status-dot" id="dot_buff_sao" title="Trạng thái hoạt động"></span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="weather_buff">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">☁️</span>
+            <span>Buff Thời Tiết</span>
+          </span>
+          <span class="sidebar-status-dot is-off" id="dot_weather_buff" title="Trạng thái hoạt động"></span>
+        </button>
+
+        <button type="button" class="sidebar-item is-active" data-view="fruit_coin">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">🪙</span>
+            <span>Trái cây</span>
+          </span>
+          <span class="sidebar-status-dot" id="dot_fruit_coin" title="Trạng thái hoạt động"></span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="weekly_settlements">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">💲</span>
+            <span>Đối soát tuần</span>
+          </span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="order_history">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">📄</span>
+            <span>Lịch sử đơn hàng</span>
+          </span>
+        </button>
+
+        <!-- KHÁCH HÀNG -->
+        <div class="sidebar-section-label">KHÁCH HÀNG</div>
+
+        <button type="button" class="sidebar-item" data-view="user_search">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">👤</span>
+            <span>Tìm khách hàng</span>
+          </span>
+        </button>
+
+        <button type="button" class="sidebar-item" data-view="customers">
+          <span class="sidebar-item-left">
+            <span class="sidebar-icon">📁</span>
+            <span>Tra cứu khách hàng</span>
+          </span>
+        </button>
+
+        <!-- QUẢN TRỊ ADMIN (ONLY VISIBLE FOR ADMIN — COMPLETELY HIDDEN FOR CTV) -->
+        <div id="sidebarAdminSection" style="display:none;flex-direction:column;gap:4px;">
+          <div class="sidebar-section-label" style="color:#a78bfa;">QUẢN TRỊ ZNPLAY</div>
+
+          <button type="button" class="sidebar-item" data-view="admin_pricing">
+            <span class="sidebar-item-left">
+              <span class="sidebar-icon">🏷️</span>
+              <span>Tùy chỉnh Giá Sản phẩm</span>
+            </span>
+          </button>
+
+          <button type="button" class="sidebar-item" data-view="admin_ctv">
+            <span class="sidebar-item-left">
+              <span class="sidebar-icon">👥</span>
+              <span>Quản lý Tài khoản CTV</span>
+            </span>
+          </button>
+
+          <button type="button" class="sidebar-item" data-view="admin_system">
+            <span class="sidebar-item-left">
+              <span class="sidebar-icon">⚙️</span>
+              <span>Cấu hình Nguồn API</span>
+            </span>
+          </button>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- MAIN CONTENT AREA -->
+    <div class="app-main">
+      <!-- Top Flash Sale Marquee Banner -->
+      <div class="sale-marquee-bar" id="saleMarqueeBar">
+        <div class="sale-marquee-track" id="saleMarqueeTrack">
+          ✦ Đang đồng bộ các gói ưu đãi Flash Sale trực tuyến...
+        </div>
+      </div>
+
+      <!-- Top Navbar -->
+      <header class="top-navbar">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar">☰</button>
+          <div style="font-weight:600;color:var(--color-pure-white);font-size:15px;" id="topNavbarViewTitle">
+            Đơn Trái cây & Xu nông trại
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <!-- Wallet / Weekly Limit Pill (Matches Screenshot 1 Top-Right) -->
+          <div class="wallet-pill-box" id="topWalletPill">
+            <span id="topWalletText">Số dư ví: 0đ</span>
+          </div>
+
+          <!-- User Profile & Logout -->
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="badge-tag violet" id="topUserNameBadge">—</span>
+            <button type="button" class="btn-frost" id="btnTopLogout" style="font-size:12px;padding:6px 10px;">
+              Đăng xuất
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Dynamic Page Content Container -->
+      <main class="page-body" id="mainViewContainer">
+        <!-- Rendered dynamically by app.js based on active sidebar item -->
+      </main>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       UNIVERSAL MODAL DIALOG (+ THÊM ĐƠN HÀNG, KHO TRÁI CÂY, BẢNG GIÁ, NẠP VÍ)
+       ======================================================================== -->
+  <div class="modal-overlay" id="appModalOverlay" style="display:none;">
+    <div class="modal-box" id="appModalBox">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <h3 style="font-family:var(--font-display);font-size:18px;font-weight:600;color:#fff;" id="appModalTitle">
+          Thêm đơn hàng
+        </h3>
+        <button type="button" class="btn-frost" id="btnCloseAppModal" style="padding:5px 10px;font-size:12px;">
+          ✕ Đóng
+        </button>
+      </div>
+      <div style="height:1px;background:var(--color-glass-edge);"></div>
+      <div id="appModalBody" style="display:flex;flex-direction:column;gap:16px;"></div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+
+</html>

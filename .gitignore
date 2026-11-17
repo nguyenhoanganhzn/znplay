@@ -1,0 +1,15 @@
+node_modules/
+data/
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+*.bak
+*.zip
+coverage/
+.DS_Store
+Thumbs.db
+.local-tools/
+release/
+.vscode/settings.json

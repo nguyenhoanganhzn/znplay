@@ -10,6 +10,7 @@ const express = require('express');
 const root = path.resolve(__dirname, '..');
 const serverSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const clientSource = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
+const toolsSource = fs.readFileSync(path.join(root, 'public/tools.js'), 'utf8');
 
 // Run the actual routes with an in-memory database and mocked upstream service.
 // Tests never change data/db.json or contact the order provider.
@@ -26,11 +27,13 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     },
     localOrders: [], transactions: [],
   };
+  if (options.seed) options.seed(data);
+  let writeFailure = false;
   const fakeFs = {
     existsSync: filePath => !(options.fresh && filePath.endsWith('db.json')),
     mkdirSync() {},
     readFileSync: () => options.corrupt ? '{broken json' : JSON.stringify(data),
-    writeFileSync() {}, renameSync() {}, unlinkSync() {},
+    writeFileSync() { if (writeFailure) throw new Error('Disk full'); }, renameSync() {}, unlinkSync() {},
   };
   const context = vm.createContext({
     express: () => {
@@ -40,7 +43,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     },
     fs: fakeFs, path, crypto,
     fileURLToPath: () => path.join(root, 'server.js'),
-    process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, Buffer, AbortSignal,
+    process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
     fetch: upstreamFetch,
   });
   context.express.json = express.json;
@@ -61,7 +64,10 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     return { status: response.status, headers: response.headers, body: await response.json() };
   };
   const login = async (identifier, password) => request('/api/auth/login', 'POST', '', { identifier, password });
-  return { request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; } };
+  return { request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; },
+    setWriteFailure: value => { writeFailure = value; },
+    mockSearch: handler => { context.searchInGameByWebSocket = handler; },
+  };
 }
 
 test('new deployment requires a private admin password and never creates demo CTV accounts', async t => {
@@ -193,11 +199,12 @@ function createClient(fetchImpl = async () => { throw new Error('Unexpected requ
   };
   const storage = new Map(token ? [['znplay_token', token]] : []);
   const context = vm.createContext({
-    localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
+    localStorage: { getItem: () => null, removeItem() {} },
+    sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     document: { getElementById: element, querySelectorAll: () => [] },
     fetch: fetchImpl, console: { ...console, error() {} }, setTimeout,
   });
-  vm.runInContext(clientSource.replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', context);
+  vm.runInContext(toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', context);
   return { context, state: context.testState, element, storage };
 }
 
@@ -257,4 +264,365 @@ test('public files contain no embedded credentials or quick-login controls', () 
   assert.doesNotMatch(clientSource + html, /btnQuickSwitchRole|btnGateQuickAdmin|btnGateQuickCtv/);
   assert.doesNotMatch(clientSource, /loginWithCredentials\(\s*['"]/);
   assert.match(html, /id="appShell" style="display:none;"/);
+});
+
+function financeSource(onCreate = async () => ({ success: true, data: { id: 501, total_price: 10000, total_cnt: 100 } })) {
+  return async (url, options = {}) => {
+    const path = new URL(url).pathname;
+    let data = { success: true, data: [] };
+    if (path === '/api/auth/login') data = { token: 'test-source-token', user: { id: 10 } };
+    else if (path === '/api/customers/resolve-by-role-id') data.data = { id: 101, nickname: 'Test customer', suid: 'test-suid', role_id: 'TEST-1234' };
+    else if (path === '/api/settings') data.data = { is_send_task: true, is_send_bufftimorder: true, is_send_fruitorder: true, is_send_buffsaoorder: true };
+    else if (path === '/api/buff-tim-price-packages') data.data = [{ id: 7, is_active: true, quantity: 100, total_price: 10000 }];
+    else if (path === '/api/fruit-coin-price-packages') data.data = [{ id: 8, is_active: true, coin_quantity: 1000, total_price: 10000 }];
+    else if (path === '/api/fruit-items') data.data = [{ id: 1, is_active: true, base_price: 130, item: { name: 'Test fruit' }, mutation_prices: [{ mutation_key: 1, unit_price: 1000 }] }];
+    else if (path === '/api/order-pricing/preview-fruit') data.data = { total_price: 1300 };
+    else if (path === '/api/buff-tim-orders' && options.method === 'POST') data = await onCreate(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => data };
+  };
+}
+
+async function prepareBuyer(server) {
+  const seller = await server.login('seller', 'seller-test-password');
+  assert.equal(seller.status, 200);
+  const token = seller.body.token;
+  const selected = await server.request('/api/customer/resolve-role-id', 'POST', token, { role_id: 'TEST-1234' });
+  assert.equal(selected.status, 200);
+  return { token, payload: { category: 'buff_tim', customer_id: 101, game_profile_id: null,
+    price_package_id: 7, expected_price: 15000, idempotency_key: crypto.randomUUID() } };
+}
+
+test('simultaneous purchases reserve funds before source calls and cannot overdraw the wallet', async t => {
+  let creates = 0;
+  const server = await startTestServer(t, financeSource(async () => {
+    creates += 1;
+    const id = creates;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    return { success: true, data: { id, total_price: 10000 } };
+  }));
+  const { token, payload } = await prepareBuyer(server);
+  const responses = await Promise.all(Array.from({ length: 4 }, () => server.request('/api/orders/place', 'POST', token, { ...payload, idempotency_key: crypto.randomUUID() })));
+  assert.equal(responses.filter(r => r.body.success).length, 3);
+  assert.equal(creates, 3);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 5000);
+  assert.equal(server.db.transactions.filter(tx => tx.type === 'order_debit').length, 3);
+  assert.equal(server.db.localOrders.length, 3);
+  for (const response of responses.filter(r => r.body.success)) {
+    assert.equal(response.body.order.costPrice, undefined);
+    assert.equal(response.body.order.markupAmount, undefined);
+    assert.equal(response.body.order.apiOrderPath, undefined);
+  }
+});
+
+test('replaying a purchase returns the same order without another debit or source request', async t => {
+  let creates = 0;
+  const server = await startTestServer(t, financeSource(async () => {
+    creates += 1;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return { success: true, data: { id: 501, total_price: 10000 } };
+  }));
+  const { token, payload } = await prepareBuyer(server);
+  await Promise.all([server.request('/api/orders/place', 'POST', token, payload), server.request('/api/orders/place', 'POST', token, payload)]);
+  const replay = await server.request('/api/orders/place', 'POST', token, payload);
+  assert.equal(replay.body.success, true);
+  assert.equal(creates, 1);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 35000);
+  const changed = await server.request('/api/orders/place', 'POST', token, { ...payload, price_package_id: 99 });
+  assert.equal(changed.status, 409);
+  assert.equal(creates, 1);
+});
+
+test('wrong price, insufficient funds, bad customer and invalid fruit inputs never reach billable API', async t => {
+  let creates = 0;
+  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true }; }));
+  const { token, payload } = await prepareBuyer(server);
+  for (const patch of [
+    { customer_id: 999 }, { game_profile_id: 999 }, { expected_price: 1 },
+    { category: 'constructor' }, { category: 'fruit_by_fruit', fruit_item_id: 1, total_cnt: -2, mutation_list: [] },
+    { category: 'fruit_by_fruit', fruit_item_id: 1, total_cnt: 1501, mutation_list: [] },
+    { category: 'fruit_by_fruit', fruit_item_id: 1, total_cnt: 10, mutation_list: [1, 1] },
+    { category: 'fruit_by_fruit', fruit_item_id: 1, total_cnt: 10, mutation_list: [999] },
+  ]) {
+    const response = await server.request('/api/orders/place', 'POST', token, { ...payload, ...patch, idempotency_key: crypto.randomUUID() });
+    assert.equal(response.body.success, false);
+  }
+  server.db.users.find(u => u.id === 'seller').balance = 14000;
+  assert.equal((await server.request('/api/orders/place', 'POST', token, payload)).body.code, 'INSUFFICIENT_BALANCE');
+  assert.equal(creates, 0);
+  assert.equal(server.db.orderIntents.length, 0);
+});
+
+test('unknown source outcome holds funds and blocks retries until admin reconciliation', async t => {
+  let creates = 0;
+  const server = await startTestServer(t, financeSource(async () => {
+    creates += 1;
+    throw Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } });
+  }));
+  const { token, payload } = await prepareBuyer(server);
+  const response = await server.request('/api/orders/place', 'POST', token, payload);
+  assert.equal(response.body.code, 'ORDER_REVIEW_REQUIRED');
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 35000);
+  assert.equal(server.db.orderIntents[0].status, 'uncertain');
+  await server.request('/api/orders/place', 'POST', token, { ...payload, idempotency_key: crypto.randomUUID() });
+  assert.equal(creates, 1);
+  const admin = await server.login('owner', 'owner-test-password');
+  const path = `/api/admin/intents/${server.db.orderIntents[0].id}/reconcile`;
+  const body = { resolution: 'not_created', confirmed: true, note: 'Checked source: no order was created.' };
+  assert.equal((await server.request(path, 'POST', token, body)).status, 403);
+  assert.equal((await server.request(path, 'POST', admin.body.token, body)).status, 200);
+  assert.equal((await server.request(path, 'POST', admin.body.token, body)).status, 409);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 50000);
+  assert.equal(server.db.transactions.filter(tx => tx.type === 'order_release').length, 1);
+});
+
+test('definitive source rejection and duplicate confirmation release exactly the reserved amount', async t => {
+  for (const duplicate of [false, true]) {
+    const upstream = financeSource(async () => duplicate
+      ? { needs_confirmation: true, code: 'duplicate_customer', data: { existing_orders: [{ private_cost: 999 }], customer: { private_data: true } } }
+      : { success: false, message: 'Source rejected the order' });
+    const server = await startTestServer(t, upstream);
+    const { token, payload } = await prepareBuyer(server);
+    const response = await server.request('/api/orders/place', 'POST', token, payload);
+    assert.equal(response.body.success, false);
+    assert.equal(response.body.existing_orders, undefined);
+    assert.equal(response.body.customer, undefined);
+    assert.equal(server.db.users.find(u => u.id === 'seller').balance, 50000);
+    assert.equal(server.db.transactions.filter(tx => tx.type === 'order_release').length, 1);
+  }
+});
+
+test('disk failure prevents source dispatch and disables health and subsequent money operations', async t => {
+  let creates = 0;
+  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true }; }));
+  const { token, payload } = await prepareBuyer(server);
+  server.setWriteFailure(true);
+  const response = await server.request('/api/orders/place', 'POST', token, payload);
+  assert.equal(response.status, 503);
+  assert.equal((await server.request('/api/health')).status, 503);
+  assert.equal((await server.request('/api/orders/place', 'POST', token, payload)).status, 503);
+  assert.equal(creates, 0);
+});
+
+test('order IDs are scoped by category; CTV cancellation never deletes source order or auto-refunds', async t => {
+  let deletes = 0;
+  const source = financeSource();
+  const server = await startTestServer(t, async (url, options) => {
+    if (options.method === 'DELETE') deletes += 1;
+    return source(url, options);
+  }, { seed: data => {
+    data.localOrders.push({ id: 'my-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, status: 'pending', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
+      { id: 'foreign-order', category: 'buff_sao', remoteOrderId: 42, status: 'pending', placedBy: { id: 'other', role: 'ctv' }, customer: {} });
+  } });
+  const seller = await server.login('seller', 'seller-test-password');
+  assert.equal((await server.request('/api/orders/buff_sao/42', 'DELETE', seller.body.token)).status, 403);
+  assert.equal((await server.request('/api/orders/buff_sao/42/toggle-active', 'PUT', seller.body.token)).status, 403);
+  assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', seller.body.token)).status, 200);
+  assert.equal(deletes, 0);
+  assert.equal(server.db.localOrders[0].cancelRequested, true);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 50000);
+  const admin = await server.login('owner', 'owner-test-password');
+  assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', admin.body.token)).status, 200);
+  assert.equal(deletes, 1);
+  assert.equal(server.db.localOrders.length, 2);
+  assert.equal(server.db.localOrders[0].status, 'cancelled');
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 50000);
+});
+
+test('manual partial refund uses cumulative source credit and cannot over-refund or repeat', async t => {
+  const server = await startTestServer(t, financeSource(), { seed: data => {
+    data.localOrders.push({ id: 'refund-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, status: 'cancelled', placedBy: { id: 'seller', role: 'ctv' } });
+  } });
+  const admin = await server.login('owner', 'owner-test-password');
+  const payload = { confirmed: true, note: 'Verified cumulative source refund of 4000.', sourceRefund: 4000, amount: 7000, idempotency_key: crypto.randomUUID() };
+  const path = '/api/admin/orders/refund-order/refund';
+  assert.equal((await server.request(path, 'POST', admin.body.token, payload)).status, 400);
+  payload.amount = 6000;
+  assert.equal((await server.request(path, 'POST', admin.body.token, payload)).status, 200);
+  assert.equal((await server.request(path, 'POST', admin.body.token, payload)).status, 409);
+  assert.equal((await server.request(path, 'POST', admin.body.token, { ...payload, idempotency_key: crypto.randomUUID() })).status, 400);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 56000);
+});
+
+test('wallet adjustments are bounded, idempotent and protected by admin authorization', async t => {
+  const server = await startTestServer(t);
+  const admin = await server.login('owner', 'owner-test-password');
+  const payload = { amount: 1000, note: 'Test topup', idempotency_key: crypto.randomUUID() };
+  const path = '/api/admin/ctv/seller/balance';
+  assert.equal((await server.request(path, 'POST', admin.body.token, payload)).status, 200);
+  assert.equal((await server.request(path, 'POST', admin.body.token, payload)).status, 409);
+  for (const amount of [-100000, 1.5, 1e15, '1000', null]) {
+    assert.equal((await server.request(path, 'POST', admin.body.token, { ...payload, amount, idempotency_key: crypto.randomUUID() })).status, 400);
+  }
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 51000);
+});
+
+test('price tables reject nonfinite and polluted keys, and never sell a package below source cost', async t => {
+  const server = await startTestServer(t, financeSource());
+  const admin = await server.login('owner', 'owner-test-password');
+  for (const body of [{ defaultMarkup: -1 }, { defaultMarkup: 'NaN' }, { fruitUnitPrices: [] }, { categoryMarkups: { constructor: 100 } }, { fruitMutationPrices: { '1:99': 100 } }]) {
+    assert.equal((await server.request('/api/admin/settings', 'PUT', admin.body.token, body)).status, 400);
+  }
+  assert.equal((await server.request('/api/admin/settings', 'PUT', admin.body.token, { packagePriceOverrides: { 'buff_tim:7': 1 } })).status, 200);
+  const seller = await server.login('seller', 'seller-test-password');
+  const catalog = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(catalog.body.catalog.buff_tim[0].total_price, 10000);
+  assert.equal(catalog.body.catalog.buff_tim[0]._admin, undefined);
+});
+
+test('locking or resetting a CTV password revokes sessions, including after the account is unlocked', async t => {
+  const server = await startTestServer(t);
+  const seller = await server.login('seller', 'seller-test-password');
+  const admin = await server.login('owner', 'owner-test-password');
+  const path = '/api/admin/ctv/seller';
+  await server.request(path, 'PUT', admin.body.token, { isLocked: true });
+  await server.request(path, 'PUT', admin.body.token, { isLocked: false });
+  assert.equal((await server.request('/api/auth/me', 'GET', seller.body.token)).status, 401);
+  const fresh = await server.login('seller', 'seller-test-password');
+  await server.request(path, 'PUT', admin.body.token, { password: 'new-ctv-test-password' });
+  assert.equal((await server.request('/api/auth/me', 'GET', fresh.body.token)).status, 401);
+  assert.equal((await server.login('seller', 'seller-test-password')).status, 401);
+  assert.equal((await server.login('seller', 'new-ctv-test-password')).status, 200);
+});
+
+test('CTV cannot enumerate saved source customers, read stock internals, monitor logs or other orders', async t => {
+  const server = await startTestServer(t, financeSource(), { seed: data => {
+    data.localOrders.push({ id: 'foreign', category: 'buff_tim', remoteOrderId: 10, placedBy: { id: 'someone-else' }, customer: {}, sellPrice: 99999 });
+  } });
+  const seller = await server.login('seller', 'seller-test-password');
+  for (const path of ['/api/customer/saved', '/api/customer/saved/101', '/api/catalog/fruit-stock/1', '/api/admin/monitor']) {
+    assert.equal((await server.request(path, 'GET', seller.body.token)).status, 403);
+  }
+  assert.equal((await server.request('/api/orders', 'GET', seller.body.token)).body.orders.length, 0);
+  assert.equal((await server.request('/api/settlements', 'GET', seller.body.token)).body.orders.length, 0);
+});
+
+test('deferred identity tool has no active input or backend operation', async t => {
+  const { context } = createClient();
+  const rendered = vm.runInContext('renderIdentityToolsHtml()', context);
+  assert.match(rendered, /Chưa mở/);
+  assert.doesNotMatch(rendered, /<form|<input/);
+  const server = await startTestServer(t);
+  const result = await server.request('/api/tools/identity', 'POST', '', { mode: 'name', query: 'unused' });
+  assert.equal(result.status, 404);
+});
+
+test('Render ephemeral storage blocks billable orders and wallet credits while permitting zero-balance lookup tests', async t => {
+  let creates = 0;
+  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true }; }), { env: { RENDER: 'true' } });
+  const { token, payload } = await prepareBuyer(server);
+  assert.equal((await server.request('/api/orders/place', 'POST', token, payload)).body.code, 'DURABLE_STORAGE_REQUIRED');
+  const admin = await server.login('owner', 'owner-test-password');
+  assert.equal((await server.request('/api/admin/ctv/seller/balance', 'POST', admin.body.token, { amount: 1000, idempotency_key: crypto.randomUUID() })).status, 503);
+  const created = await server.request('/api/admin/ctv', 'POST', admin.body.token, { name: 'Free test CTV', username: 'trial', password: 'private-test-ctv-password', balance: 0 });
+  assert.equal(created.status, 200);
+  assert.equal((await server.request('/api/admin/monitor', 'GET', admin.body.token)).body.financialReady, false);
+  assert.equal(creates, 0);
+});
+
+test('monitor records sensitive operations without passwords or tokens, and sessions expire', async t => {
+  const server = await startTestServer(t);
+  const admin = await server.login('owner', 'owner-test-password');
+  const seller = await server.login('seller', 'seller-test-password');
+  await server.request('/api/admin/overview', 'GET', seller.body.token);
+  await server.request('/api/admin/ctv/seller', 'PUT', admin.body.token, { password: 'private-replacement-password' });
+  const monitor = await server.request('/api/admin/monitor', 'GET', admin.body.token);
+  assert.ok(monitor.body.events.length >= 3);
+  assert.ok(monitor.body.events.some(event => event.details.passwordReset === true));
+  assert.doesNotMatch(JSON.stringify(monitor.body.events), /private-replacement-password|owner-test-password|test-upstream-token/);
+  server.db.sessions[admin.body.token].createdAt = Date.now() - 13 * 60 * 60 * 1000;
+  assert.equal((await server.request('/api/auth/me', 'GET', admin.body.token)).status, 401);
+});
+
+test('new tools sidebar, source script policy and monitoring HTML reject injected markup', async t => {
+  const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
+  assert.match(html, /CÔNG CỤ/);
+  assert.match(html, /data-view="identity_tools"/);
+  assert.doesNotMatch(html, /data-view="customers"/);
+  const { context, state } = createClient();
+  state.adminMonitor = { storageHealthy: true, financialReady: true, ctvs: [{ name: '<img src=x onerror=alert(1)>', username: '<script>', balance: 0 }], events: [] };
+  const rendered = vm.runInContext('renderAdminMonitorHtml()', context);
+  assert.doesNotMatch(rendered, /<img|<script/);
+  assert.match(rendered, /&lt;img/);
+  const server = await startTestServer(t);
+  const response = await server.request('/api/health');
+  assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
+});
+
+test('same request arriving while catalog is slow is accepted only once', async t => {
+  let creates = 0;
+  const base = financeSource(async () => {
+    creates += 1;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return { success: true, data: { id: 501, total_price: 10000 } };
+  });
+  const server = await startTestServer(t, async (url, options) => {
+    if (options.method === 'GET') await new Promise(resolve => setTimeout(resolve, 25));
+    return base(url, options);
+  });
+  const { token, payload } = await prepareBuyer(server);
+  await Promise.all([server.request('/api/orders/place', 'POST', token, payload), server.request('/api/orders/place', 'POST', token, payload)]);
+  assert.equal(creates, 1);
+  assert.equal(server.db.orderIntents.length, 1);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 35000);
+});
+
+test('a restart preserves an in-flight hold as uncertain; admin can link a confirmed source order without resending', async t => {
+  let creates = 0;
+  const intent = { id: 'interrupted-intent', requestKey: crypto.randomUUID(), payloadHash: 'test', userId: 'seller', userName: 'Seller',
+    status: 'processing', category: 'buff_tim', customerId: 101, customer: { customerId: 101, nickname: 'Test' }, summary: 'Test Tim', heldAmount: 15000, sellPrice: 15000, expectedCost: 10000, createdAt: new Date().toISOString() };
+  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true }; }), { seed: data => {
+    data.users.find(u => u.id === 'seller').balance = 35000;
+    data.orderIntents = [intent];
+    data.transactions.push({ id: intent.id, userId: 'seller', type: 'order_hold', amount: -15000 });
+  } });
+  assert.equal(server.db.orderIntents[0].status, 'uncertain');
+  const admin = await server.login('owner', 'owner-test-password');
+  const result = await server.request('/api/admin/intents/interrupted-intent/reconcile', 'POST', admin.body.token,
+    { resolution: 'created', confirmed: true, remoteOrderId: 777, actualCost: 10000, note: 'Source order 777 was verified before linking.' });
+  assert.equal(result.status, 200);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 35000);
+  assert.equal(server.db.localOrders[0].remoteOrderId, 777);
+  assert.equal(server.db.transactions[0].type, 'order_debit');
+  assert.equal(creates, 0);
+});
+
+test('unexpected source cost creates a review alert and blocks further purchases until explicit admin acknowledgment', async t => {
+  let creates = 0;
+  const server = await startTestServer(t, financeSource(async () => {
+    creates += 1; return { success: true, data: { id: 500 + creates, total_price: 11000 } };
+  }));
+  const { token, payload } = await prepareBuyer(server);
+  const placed = await server.request('/api/orders/place', 'POST', token, payload);
+  assert.equal(placed.body.order.requiresReview, true);
+  assert.equal(placed.body.order.costPrice, undefined);
+  assert.equal(server.db.localOrders[0].costPrice, 11000);
+  const blocked = await server.request('/api/orders/place', 'POST', token, { ...payload, idempotency_key: crypto.randomUUID() });
+  assert.equal(blocked.body.code, 'ORDER_REVIEW_REQUIRED');
+  assert.equal(creates, 1);
+  const admin = await server.login('owner', 'owner-test-password');
+  const id = server.db.orderIntents[0].id;
+  const acknowledged = await server.request(`/api/admin/intents/${id}/acknowledge`, 'POST', admin.body.token,
+    { confirmed: true, note: 'Verified changed source cost, no extra CTV debit.' });
+  assert.equal(acknowledged.status, 200);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 35000);
+});
+
+test('foreign category with the same numeric ID cannot overwrite local customer or completion status', async t => {
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options) => {
+    if (new URL(url).pathname === '/api/buff-sao-orders') return { ok: true, status: 200, json: async () => ({ data: { data: [{ id: 42, status: 'completed', completed_cnt: 999, customer: { nickname: 'Foreign customer' } }] } }) };
+    return base(url, options);
+  }, { seed: data => data.localOrders.push({ id: 'owned-tim', category: 'buff_tim', remoteOrderId: 42, status: 'pending', completedCnt: 0, placedBy: { id: 'seller' }, customer: { nickname: 'Own customer' }, sellPrice: 15000 }) });
+  const seller = await server.login('seller', 'seller-test-password');
+  const response = await server.request('/api/orders', 'GET', seller.body.token);
+  assert.equal(response.body.orders[0].customer.nickname, 'Own customer');
+  assert.equal(response.body.orders[0].status, 'pending');
+  assert.equal(response.body.orders[0].completedCnt, 0);
+});
+
+test('settlements expose only CTV-visible order fields, excluding source refund and internal costs', async t => {
+  const server = await startTestServer(t, financeSource(), { seed: data => data.localOrders.push({ id: 'mine', placedBy: { id: 'seller' }, customer: {}, sellPrice: 15000, costPrice: 10000, markupAmount: 5000, sourceRefunded: 4000, apiOrderPath: '/private/source', intentId: 'internal' }) });
+  const seller = await server.login('seller', 'seller-test-password');
+  const response = await server.request('/api/settlements', 'GET', seller.body.token);
+  for (const field of ['costPrice', 'markupAmount', 'sourceRefunded', 'apiOrderPath', 'intentId']) assert.equal(response.body.orders[0][field], undefined);
 });

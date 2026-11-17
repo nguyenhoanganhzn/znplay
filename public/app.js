@@ -2,8 +2,10 @@
 // ZNPLAY — SELLER & CTV SYSTEM (AUTHKIT FROSTED GLASS + SIDEBAR MENU)
 // ============================================================================
 
+import { createToolViews } from './tools.js';
+
 const state = {
-  token: localStorage.getItem('znplay_token') || '',
+  token: sessionStorage.getItem('znplay_token') || '',
   user: null,
   catalogData: null,
 
@@ -18,6 +20,7 @@ const state = {
   // Orders & Admin Data
   orders: [],
   adminOverview: null,
+  adminMonitor: null,
   adminPricingTab: 'fruits', // 'fruits' | 'packages' | 'categories'
   adminFruitSearch: '',
 
@@ -45,6 +48,10 @@ const state = {
     mail_message: 'Cảm ơn quý khách',
   },
 };
+localStorage.removeItem('znplay_token');
+
+const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
+  createToolViews({ state, apiFetch, escapeHtml, showToast, formatVnd, formatDateVi, renderCurrentView, loadOrders });
 
 const VIEW_TITLES = {
   dashboard: 'Bảng điều khiển tổng quan',
@@ -57,8 +64,9 @@ const VIEW_TITLES = {
   fruit_coin: 'Đơn Trái cây & Xu nông trại',
   weekly_settlements: 'Đối soát tuần & Lịch sử số dư',
   order_history: 'Lịch sử đơn hàng',
-  user_search: 'Tìm khách hàng trong Game',
-  customers: 'Tra cứu khách hàng đã lưu',
+  user_search: 'Công cụ: Tìm khách hàng để đặt đơn',
+  identity_tools: 'Công cụ: Trích xuất tên nhân vật / Role ID',
+  admin_monitor: 'Quản trị: Giám sát hoạt động & đối soát CTV',
   admin_pricing: 'Quản trị: Tùy chỉnh Giá từng Sản phẩm & Danh mục',
   admin_ctv: 'Quản trị: Quản lý Tài khoản CTV đặt đơn',
   admin_system: 'Quản trị: Cấu hình kết nối Nguồn API',
@@ -155,7 +163,7 @@ async function apiFetch(url, method = 'GET', body = null) {
     updateShellAuthUI();
   }
   if (!res.ok && !data.needs_confirmation) {
-    throw new Error(data.message || `Lỗi kết nối (${res.status})`);
+    throw Object.assign(new Error(data.message || `Lỗi kết nối (${res.status})`), { code: data.code, status: res.status });
   }
   return data;
 }
@@ -169,10 +177,12 @@ function clearAuthState() {
   state.catalogData = null;
   state.orders = [];
   state.adminOverview = null;
+  state.adminMonitor = null;
   state.currentView = 'fruit_coin';
   state.modalOrder.customer = null;
   state.modalOrder.fruit_preview_admin = null;
   localStorage.removeItem('znplay_token');
+  sessionStorage.removeItem('znplay_token');
   const container = document.getElementById('mainViewContainer');
   if (container) container.innerHTML = '';
   const modal = document.getElementById('appModalOverlay');
@@ -207,7 +217,7 @@ async function loginWithCredentials(identifier, password) {
     clearAuthState();
     state.token = r.token;
     state.user = r.user;
-    localStorage.setItem('znplay_token', r.token);
+    sessionStorage.setItem('znplay_token', r.token);
     const passwordInput = document.getElementById('gateLoginPw');
     if (passwordInput) passwordInput.value = '';
     showToast(`Chào mừng ${r.user.name}!`);
@@ -400,6 +410,7 @@ function switchView(viewKey) {
   document.getElementById('sidebarBackdrop')?.classList.remove('is-open');
 
   renderCurrentView();
+  if (viewKey === 'admin_monitor') loadAdminMonitor();
 }
 
 function renderCurrentView() {
@@ -420,7 +431,7 @@ function renderCurrentView() {
         <div>
           <div style="font-weight:600;color:#fca5a5;font-size:14px;">⚠️ Tài khoản CTV của bạn chưa có số dư (0đ)</div>
           <div style="font-size:12px;color:var(--color-moon-mist);margin-top:2px;">
-            Theo quy định hệ thống, tài khoản CTV cần có số dư trong ví mới có thể tìm khách và tạo đơn hàng. Vui lòng liên hệ Admin để nạp ví!
+            Bạn vẫn có thể dùng công cụ tra cứu. Để đặt đơn, cần có đủ số dư và hệ thống lưu trữ ví an toàn. Liên hệ Admin khi cần nạp ví.
           </div>
         </div>
         <span class="badge-tag red">Cần nạp ví để thao tác</span>
@@ -443,9 +454,12 @@ function renderCurrentView() {
   } else if (view === 'user_search') {
     container.innerHTML = zeroBannerHtml + renderUserSearchPageHtml();
     bindUserSearchPageEvents();
-  } else if (view === 'customers') {
-    container.innerHTML = zeroBannerHtml + `<div class="glass-panel">Đang tải danh sách khách hàng...</div>`;
-    renderSavedCustomersPage(container, zeroBannerHtml);
+  } else if (view === 'identity_tools') {
+    container.innerHTML = zeroBannerHtml + renderIdentityToolsHtml();
+    bindIdentityToolsEvents();
+  } else if (view === 'admin_monitor' && state.user.role === 'admin') {
+    container.innerHTML = renderAdminMonitorHtml();
+    bindAdminMonitorEvents();
   } else if (view === 'admin_pricing' && state.user.role === 'admin') {
     container.innerHTML = renderAdminPricingPageHtml();
     bindAdminPricingEvents();
@@ -513,7 +527,7 @@ function renderOrderCategoryPageHtml(catKey) {
   const filteredOrders = catOrders.filter((o) => {
     if (state.orderActiveFilter === '1' && !o.isActive) return false;
     if (state.orderActiveFilter === '0' && o.isActive) return false;
-    if (state.orderProgressFilter === 'running' && o.status === 'completed') return false;
+    if (state.orderProgressFilter === 'running' && ['completed', 'cancelled'].includes(o.status)) return false;
     if (state.orderProgressFilter === 'completed' && o.status !== 'completed') return false;
     if (state.orderSearch.trim()) {
       const q = state.orderSearch.trim().toLowerCase();
@@ -623,7 +637,7 @@ function renderOrderCategoryPageHtml(catKey) {
     <div class="glass-panel">
       <div class="panel-title-row">
         <span class="panel-title-text">Quản lý đơn hàng</span>
-        <button type="button" class="btn-violet" id="btnOpenAddOrderModal">
+        <button type="button" class="btn-violet" id="btnOpenAddOrderModal" ${catKey === 'weather_buff' ? 'disabled title="Hiện chỉ hỗ trợ xem lịch sử thời tiết"' : ''}>
           + Thêm Đơn Hàng
         </button>
       </div>
@@ -702,7 +716,7 @@ function renderOrderTableRowHtml(o) {
       : 0;
 
   const statusBadge =
-    o.status === 'completed'
+    o.status === 'cancelled' ? `<span class="badge-tag red">Đã hủy</span>` : o.status === 'completed'
       ? `<span class="badge-tag green">Hoàn thành</span>`
       : `<span class="badge-tag violet">${escapeHtml(o.status || 'assigned')}</span>`;
 
@@ -737,8 +751,8 @@ function renderOrderTableRowHtml(o) {
       <td>${statusBadge}</td>
       <td>
         ${
-          o.remoteOrderId && o.status !== 'completed'
-            ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" data-toggle-order="${o.remoteOrderId}" data-order-cat="${o.category}" title="Bật/Tắt đơn"></button>`
+          o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview
+            ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="Bật/Tắt đơn"></button>`
             : '—'
         }
       </td>
@@ -750,8 +764,8 @@ function renderOrderTableRowHtml(o) {
       </td>
       <td>
         ${
-          o.remoteOrderId
-            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-delete-order="${o.remoteOrderId}" data-order-cat="${o.category}">Xóa</button>`
+          o.remoteOrderId && o.status !== 'cancelled' && (!o.cancelRequested || isAdmin)
+            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">${isAdmin ? 'Hủy tại nguồn' : 'Yêu cầu hủy'}</button>`
             : '—'
         }
       </td>
@@ -822,7 +836,7 @@ function bindOrderRowActionButtons() {
     btn.addEventListener('click', async () => {
       const remId = btn.dataset.deleteOrder;
       const cat = btn.dataset.orderCat;
-      if (!confirm(`Bạn có chắc chắn muốn xóa đơn hàng #${remId}?`)) return;
+      if (!confirm(state.user.role === 'admin' ? `Hủy đơn #${remId} tại nguồn? Tiền ví sẽ chỉ được hoàn sau khi đối soát.` : `Gửi yêu cầu hủy đơn #${remId} cho admin? Nguồn có thể vẫn chạy đến khi admin xử lý; chưa tự động hoàn tiền.`)) return;
       btn.disabled = true;
       try {
         const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
@@ -843,6 +857,7 @@ function bindOrderRowActionButtons() {
 // 2. MODAL: + THÊM ĐƠN HÀNG (CREATE ORDER DIALOG)
 // ============================================================================
 function openCreateOrderModal(catKey) {
+  if (catKey === 'weather_buff') { showToast('Buff thời tiết hiện chỉ hỗ trợ xem lịch sử; chưa mở tạo đơn để tránh tính phí sai.'); return; }
   // Check CTV wallet balance first!
   if (state.user.role !== 'admin' && Number(state.user.balance || 0) <= 0) {
     showToast('Số dư ví CTV của bạn là 0đ. Vui lòng nạp tiền vào ví trước khi tạo đơn!');
@@ -853,6 +868,9 @@ function openCreateOrderModal(catKey) {
   if (!r) return;
 
   state.modalOrder.category = catKey === 'fruit_coin' ? 'fruit_coin' : catKey;
+  state.modalOrder.requestKey = null;
+  state.modalOrder.requestSignature = null;
+  state.modalOrder.quotedPrice = 0;
   state.modalOrder.fruitOrderType = 'by_coin';
 
   const cat = r.catalog || {};
@@ -1130,9 +1148,9 @@ function renderCreateOrderModalBody() {
           <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'roleid' ? 'is-active' : ''}" data-mcust-tab="roleid" style="padding:4px 10px;font-size:11px;">
             Theo Role ID
           </button>
-          <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'saved' ? 'is-active' : ''}" data-mcust-tab="saved" style="padding:4px 10px;font-size:11px;">
+          ${state.user.role === 'admin' ? `<button type="button" class="btn-frost ${state.modalOrder.customerTab === 'saved' ? 'is-active' : ''}" data-mcust-tab="saved" style="padding:4px 10px;font-size:11px;">
             Khách đã lưu
-          </button>
+          </button>` : ''}
         </div>
       </div>
 
@@ -1316,6 +1334,9 @@ function bindCreateOrderModalEvents() {
 let modalPreviewTimer = null;
 function triggerModalFruitPreview() {
   if (modalPreviewTimer) clearTimeout(modalPreviewTimer);
+  state.modalOrder.fruit_preview_price = 0;
+  state.modalOrder.quotedPrice = 0;
+  const signature = JSON.stringify([state.modalOrder.fruit_item_id, state.modalOrder.fruit_total_cnt, state.modalOrder.fruit_variant_mode, state.modalOrder.fruit_mutation_list]);
   const priceEl = document.getElementById('modalTotalPriceText');
   if (priceEl) priceEl.textContent = 'Đang tính...';
 
@@ -1327,7 +1348,8 @@ function triggerModalFruitPreview() {
         mutation_list:
           state.modalOrder.fruit_variant_mode === 'specify' ? state.modalOrder.fruit_mutation_list : [],
       });
-      if (r.success && r.data) {
+      const currentSignature = JSON.stringify([state.modalOrder.fruit_item_id, state.modalOrder.fruit_total_cnt, state.modalOrder.fruit_variant_mode, state.modalOrder.fruit_mutation_list]);
+      if (r.success && r.data && signature === currentSignature) {
         state.modalOrder.fruit_preview_price = r.data.total_price;
         state.modalOrder.fruit_preview_admin = r.data._admin || null;
         updateCreateOrderModalPrice();
@@ -1364,6 +1386,7 @@ function updateCreateOrderModalPrice() {
   }
 
   priceEl.textContent = formatVnd(price);
+  state.modalOrder.quotedPrice = Number(price);
 }
 
 async function runModalCustomerSearch() {
@@ -1484,6 +1507,10 @@ async function submitModalOrder(confirmDuplicate = false) {
     showToast('Vui lòng tìm và chọn khách hàng trước khi lưu đơn!');
     return;
   }
+  if (!Number.isSafeInteger(m.quotedPrice) || m.quotedPrice <= 0) {
+    showToast('Vui lòng đợi giá hợp lệ trước khi đặt đơn.');
+    return;
+  }
 
   const payload = {
     category: m.category,
@@ -1491,6 +1518,7 @@ async function submitModalOrder(confirmDuplicate = false) {
     game_profile_id: m.customer.gameProfileId,
     customer_snapshot: m.customer,
     confirm_duplicate_customer: confirmDuplicate,
+    expected_price: m.quotedPrice,
   };
 
   if (m.category === 'fruit_coin') {
@@ -1515,6 +1543,12 @@ async function submitModalOrder(confirmDuplicate = false) {
   }
 
   const btn = document.getElementById('btnModalSaveOrder');
+  const signature = JSON.stringify(payload);
+  if (m.requestSignature !== signature) {
+    m.requestSignature = signature;
+    m.requestKey = crypto.randomUUID();
+  }
+  payload.idempotency_key = m.requestKey;
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'Đang xử lý...';
@@ -1548,7 +1582,16 @@ async function submitModalOrder(confirmDuplicate = false) {
     }
   } catch (err) {
     showToast(err.message);
-    if (btn) {
+    if (err.code === 'PRICE_CHANGED') {
+      await loadCatalog(true);
+      if (m.category === 'fruit_by_fruit') triggerModalFruitPreview();
+      else renderCreateOrderModalBody();
+    }
+    if (err.code === 'ORDER_REVIEW_REQUIRED') {
+      const current = await apiFetch('/api/auth/me').catch(() => null);
+      if (current?.user) { state.user = current.user; updateShellAuthUI(); }
+      if (btn) { btn.disabled = true; btn.textContent = 'Chờ admin đối soát'; }
+    } else if (btn) {
       btn.disabled = false;
       btn.textContent = 'Lưu & Chạy Đơn Hàng →';
     }
@@ -1949,9 +1992,10 @@ function renderUserSearchPageHtml() {
   return `
     <div class="glass-panel">
       <div class="panel-title-row">
-        <span class="panel-title-text">👤 Tìm kiếm Nhân vật trực tiếp trong Game Play Together</span>
+        <span class="panel-title-text">1. Tìm khách hàng để đặt đơn</span>
       </div>
       <div style="display:flex;gap:10px;max-width:600px;">
+        <select id="pageUserSearchMode" class="input-box" style="max-width:150px;"><option value="name">Tên nhân vật</option><option value="id">Role ID</option></select>
         <input type="text" id="pageUserSearchInput" class="input-box" placeholder="Nhập tên nhân vật trong game (VD: Kitty, Yvelzz)..." />
         <button type="button" class="btn-violet" id="btnPageUserSearch">🔍 Tìm trong Game</button>
       </div>
@@ -1973,6 +2017,15 @@ function bindUserSearchPageEvents() {
     status.textContent = '⏳ Đang kết nối máy chủ Play Together để tìm nhân vật...';
     results.innerHTML = '';
     try {
+      if (document.getElementById('pageUserSearchMode')?.value === 'id') {
+        const response = await apiFetch('/api/customer/resolve-role-id', 'POST', { role_id: q });
+        if (response.customer) {
+          state.modalOrder.customer = response.customer;
+          openCreateOrderModal('fruit_coin');
+          status.textContent = 'Đã chọn nhân vật theo Role ID.';
+        }
+        return;
+      }
       const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
       const list = r.profiles || [];
       status.textContent = `Tìm thấy ${list.length} nhân vật:`;
@@ -2526,7 +2579,7 @@ function renderAdminCtvPageHtml() {
         </div>
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:4px;">Mật khẩu (*)</label>
-          <input type="text" id="newCtvPassword" class="input-box" placeholder="VD: 123456" />
+          <input type="password" id="newCtvPassword" class="input-box" autocomplete="new-password" minlength="12" maxlength="128" placeholder="Mật khẩu riêng, tối thiểu 12 ký tự" />
         </div>
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:4px;">SĐT / Zalo</label>
@@ -2588,8 +2641,9 @@ function renderAdminCtvPageHtml() {
                       ${u.isLocked ? 'Mở khóa' : 'Khóa'}
                     </button>
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-del-ctv="${u.id}">
-                      Xóa
+                      Ngừng tài khoản
                     </button>
+                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-reset-ctv="${u.id}">Đổi mật khẩu</button>
                   </div>
                 </td>
               </tr>
@@ -2603,7 +2657,32 @@ function renderAdminCtvPageHtml() {
   `;
 }
 
+function openResetCtvPasswordModal(ctvId) {
+  const overlay = document.getElementById('appModalOverlay');
+  const body = document.getElementById('appModalBody');
+  document.getElementById('appModalBox').className = 'modal-box';
+  document.getElementById('appModalTitle').textContent = 'Đổi mật khẩu CTV';
+  body.innerHTML = `<form id="resetCtvForm" class="tool-form tool-form-column"><p class="tool-note">Sau khi đổi mật khẩu, tất cả phiên của CTV sẽ bị thu hồi.</p><label>Mật khẩu mới<input type="password" class="input-box" name="password" autocomplete="new-password" minlength="12" maxlength="128" required /></label><label>Nhập lại mật khẩu<input type="password" class="input-box" name="confirmation" autocomplete="new-password" minlength="12" maxlength="128" required /></label><button type="submit" class="btn-violet">Đổi mật khẩu</button></form>`;
+  overlay.style.display = 'flex';
+  body.querySelector('#resetCtvForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit.disabled) return;
+    if (form.elements.password.value !== form.elements.confirmation.value) { showToast('Mật khẩu nhập lại chưa khớp.'); return; }
+    submit.disabled = true;
+    try {
+      const result = await apiFetch(`/api/admin/ctv/${encodeURIComponent(ctvId)}`, 'PUT', { password: form.elements.password.value });
+      overlay.style.display = 'none'; body.innerHTML = ''; showToast(result.message);
+    } catch (error) { showToast(error.message); }
+    finally { submit.disabled = false; }
+  });
+}
+
 function bindAdminCtvEvents() {
+  document.querySelectorAll('[data-reset-ctv]').forEach(button => button.addEventListener('click', async () => {
+    openResetCtvPasswordModal(button.dataset.resetCtv);
+  }));
   document.getElementById('btnCreateCtvSubmit')?.addEventListener('click', async () => {
     const name = document.getElementById('newCtvName')?.value || '';
     const username = document.getElementById('newCtvUsername')?.value || '';
@@ -2644,7 +2723,7 @@ function bindAdminCtvEvents() {
 
   document.querySelectorAll('[data-del-ctv]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Bạn có chắc chắn muốn xóa tài khoản CTV này?')) return;
+      if (!confirm('Ngừng tài khoản CTV này? Các phiên sẽ bị thu hồi; số dư và lịch sử vẫn được giữ để đối soát.')) return;
       try {
         const r = await apiFetch(`/api/admin/ctv/${btn.dataset.delCtv}`, 'DELETE');
         showToast(r.message);
@@ -2658,6 +2737,7 @@ function bindAdminCtvEvents() {
 }
 
 function openTopupCtvModal(ctvId, ctvName) {
+  const adjustmentKey = crypto.randomUUID();
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
   const title = document.getElementById('appModalTitle');
@@ -2675,7 +2755,7 @@ function openTopupCtvModal(ctvId, ctvName) {
       <button type="button" class="btn-frost" data-q-amt="50000">+50.000đ</button>
       <button type="button" class="btn-frost" data-q-amt="100000">+100.000đ</button>
       <button type="button" class="btn-frost" data-q-amt="500000">+500.000đ</button>
-      <button type="button" class="btn-frost" data-q-amt="-500000">Trừ về 0đ (-500k)</button>
+      <button type="button" class="btn-frost" data-q-amt="-50000">Trừ 50.000đ</button>
     </div>
     <div>
       <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Ghi chú:</label>
@@ -2696,7 +2776,7 @@ function openTopupCtvModal(ctvId, ctvName) {
     const amount = Number(body.querySelector('#modalTopupAmt')?.value || 0);
     const note = body.querySelector('#modalTopupNote')?.value || '';
     try {
-      const r = await apiFetch(`/api/admin/ctv/${ctvId}/balance`, 'POST', { amount, note });
+      const r = await apiFetch(`/api/admin/ctv/${ctvId}/balance`, 'POST', { amount, note, idempotency_key: adjustmentKey });
       showToast(r.message);
       overlay.style.display = 'none';
       await loadAdminOverview();
@@ -2821,6 +2901,14 @@ function bindAdminSystemEvents() {
 // GLOBAL EVENTS & BOOTSTRAP
 // ============================================================================
 function bindGlobalEvents() {
+  setInterval(async () => {
+    if (!state.user || document.hidden) return;
+    try {
+      const result = await apiFetch('/api/auth/me');
+      if (result.user) { state.user = result.user; updateShellAuthUI(); }
+      if (state.currentView === 'admin_monitor' && state.user?.role === 'admin') await loadAdminMonitor();
+    } catch {}
+  }, 30000);
   // Sidebar menu navigation
   document.querySelectorAll('.sidebar-item[data-view]').forEach((btn) => {
     btn.addEventListener('click', () => {

@@ -827,3 +827,15 @@ select.input-box {
     padding: 16px 12px;
   }
 }
+
+.tool-note { color: var(--color-moon-mist); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.tool-warning { color: #fbbf24; background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.3); padding: 12px; border-radius: 10px; font-size: 13px; line-height: 1.65; }
+.tool-form { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.tool-form label { display: flex; flex: 1 1 220px; flex-direction: column; gap: 7px; font-size: 13px; }
+.tool-form-column { flex-direction: column; align-items: stretch; }
+.tool-form-column label { flex: initial; }
+.tool-form .tool-check { flex-direction: row; align-items: center; line-height: 1.6; }
+.tool-form textarea { min-height: 80px; resize: vertical; }
+.tool-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
+.tool-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.tool-id { font-family: var(--font-mono); overflow-wrap: anywhere; }

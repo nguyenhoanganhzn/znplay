@@ -52,6 +52,29 @@ Trước khi cho CTV sử dụng số dư thật, cần chuyển sang cơ sở d
 hoặc gắn persistent disk trên dịch vụ trả phí rồi đặt `DATA_DIR` vào thư mục trên disk.
 Chỉ chạy một instance khi dùng database JSON.
 
+Bản hiện tại tự khóa đặt đơn và nạp/hoàn ví trên Render nếu chưa xác nhận
+`DATA_DIR` nằm trên một ổ khác với filesystem tạm của mã nguồn. Gắn persistent
+disk tại `/var/data`, đặt `DATA_DIR=/var/data/znplay`, rồi kiểm tra trạng thái tại
+**Giám sát & đối soát CTV**. Free vẫn cho tạo CTV ví 0đ để thử công cụ tra cứu.
+Sao lưu dữ liệu riêng trước khi đổi thư mục lưu trữ hoặc triển khai lại.
+
+## Quyền và đối soát CTV
+
+- CTV chỉ xem và thao tác đơn của mình; quyền được kiểm tra theo cả danh mục và mã đơn.
+- Mỗi yêu cầu tạo đơn có mã chống trùng. Tiền được giữ và lưu trước khi gửi nguồn.
+- Khi không xác định được nguồn đã tạo đơn hay chưa, giữ nguyên khoản giữ tiền,
+  khóa đặt tiếp và đưa vào danh sách admin đối soát. Không tự gửi lại yêu cầu.
+- CTV gửi yêu cầu hủy; admin duyệt hủy tại nguồn. Lịch sử không bị xóa.
+- Không tự hoàn toàn bộ tiền khi hủy. Admin nhập tổng tiền nguồn đã hoàn và xác nhận;
+  tiền hoàn CTV bị giới hạn theo phần đã đối soát, có chống hoàn trùng.
+- Admin xem hoạt động, yêu cầu chờ xử lý và hoạt động gần nhất của CTV.
+  Lưu tối đa 5.000 sự kiện gần nhất, hiển thị 200; nhật ký không ghi mật khẩu/token.
+- Phiên đăng nhập hết hạn sau 12 giờ; khóa hoặc đổi mật khẩu CTV sẽ thu hồi phiên.
+  Token trình duyệt được giữ trong sessionStorage của từng tab.
+- Nhóm **Công cụ** có tìm khách hàng để đặt đơn bằng tên hoặc Role ID.
+  Mục trích xuất tên/ID Game để phiên bản sau, chưa mở API hay thao tác thực tế.
+- Buff thời tiết hiện chỉ xem lịch sử, chưa mở tạo đơn mới.
+
 Ứng dụng kết nối nguồn thật: tạo đơn trong lúc thử vẫn có thể phát sinh chi phí
 ở tài khoản nguồn. Các bài kiểm tra tự động dùng dữ liệu giả, không tạo đơn thật.
 

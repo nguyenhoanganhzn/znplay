@@ -2,8 +2,6 @@
    ZNPLAY — AUTHKIT FROSTED GLASS MIDNIGHT THEME + SELLER SIDEBAR LAYOUT
    ========================================================================== */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap');
-
 :root {
   /* AuthKit Color Tokens */
   --color-midnight-canvas: #05060f;
@@ -94,9 +92,11 @@ body::before {
   align-items: center;
   justify-content: center;
   padding: 20px;
+  overflow-y: auto;
 }
 
 .auth-gate-card {
+  margin: auto;
   width: 100%;
   max-width: 430px;
   background: rgba(8, 10, 23, 0.96);
@@ -797,6 +797,25 @@ select.input-box {
   inset: 0;
   z-index: 190;
   background: rgba(0, 0, 0, 0.6);
+}
+
+.customer-search-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 600px;
+}
+.customer-search-fields input { flex: 1 1 170px; min-width: 0; }
+.customer-search-fields select { flex: 1 1 125px; }
+.customer-search-fields button { flex-shrink: 0; }
+
+@media (max-width: 600px) {
+  .top-navbar { flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
+  .top-navbar > div { max-width: 100%; }
+  .mobile-menu-btn { flex: 0 0 42px; min-height: 42px; }
+  #topUserNameBadge { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .glass-panel { padding: 16px; }
+  .input-box { font-size: 16px; max-width: 100%; }
 }
 
 @media (max-width: 1024px) {

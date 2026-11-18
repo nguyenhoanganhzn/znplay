@@ -1,4 +1,4 @@
-export function createToolViews({ state, apiFetch, escapeHtml: esc, showToast, formatVnd: money, formatDateVi: date, renderCurrentView, loadOrders }) {
+export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml: esc, showToast, formatVnd: money, formatDateVi: date, renderCurrentView, loadOrders }) {
   const panel = (title, content) => `<section class="glass-panel"><div class="panel-title-row"><span class="panel-title-text">${title}</span></div>${content}</section>`;
   const button = (label, attribute, id) => `<button type="button" class="btn-frost" ${attribute}="${esc(id)}">${label}</button>`;
 
@@ -85,7 +85,7 @@ export function createToolViews({ state, apiFetch, escapeHtml: esc, showToast, f
     }));
     document.querySelectorAll('[data-refund-order]').forEach(control => control.addEventListener('click', () => {
       const order = state.adminMonitor.cancellations.find(item => item.id === control.dataset.refundOrder);
-      const key = crypto.randomUUID();
+      const key = createRequestKey();
       openReviewModal(`Hoàn ví đơn #${order.remoteOrderId}`, `<p class="tool-note">Nhập tổng tiền nguồn đã hoàn cho đơn, bao gồm các lần trước. Hoàn CTV bị giới hạn theo tỷ lệ tiền nguồn đã hoàn; không thể hoàn trùng hoặc vượt giá trị đơn.</p><label>Tổng tiền nguồn đã hoàn (VNĐ, lũy kế)<input class="input-box" name="sourceRefund" type="number" min="${order.sourceRefunded || 0}" max="${order.costPrice}" value="${order.sourceRefunded || 0}" step="1" required /></label><label>Hoàn thêm vào ví CTV (VNĐ)<input class="input-box" name="amount" type="number" min="1" max="${Math.max(0, order.sellPrice - (order.refundedAmount || 0))}" step="1" required /></label>`, form => apiFetch(`/api/admin/orders/${encodeURIComponent(order.id)}/refund`, 'POST', { ...readReview(form), sourceRefund: Number(form.elements.sourceRefund.value), amount: Number(form.elements.amount.value), idempotency_key: key }));
     }));
   }

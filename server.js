@@ -1,4 +1,5 @@
 import express from 'express';
+import { openPostgres } from './postgres-store.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -31,12 +32,26 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '256kb' }));
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.on('finish', () => {
+  const send = res.json.bind(res);
+  const unavailable = () => {
+    res.status(503);
+    return send({ success: false, message: 'Kho dữ liệu tạm thời chưa sẵn sàng.' });
+  };
+  res.json = body => {
     const actor = req.user || req.auditUser;
-    if (!actor || !['POST', 'PUT', 'DELETE'].includes(req.method)) return;
-    try { audit({ user: actor }, `${req.method} ${req.path}`, { status: res.statusCode, ...(req.auditDetails || {}) }); }
-    catch { console.error('Audit persistence failed; financial operations disabled.'); }
-  });
+    const recordActivity = actor && ['POST', 'PUT', 'DELETE'].includes(req.method);
+    const committed = recordActivity
+      ? audit({ user: actor }, `${req.method} ${req.path}`, { status: res.statusCode, ...req.auditDetails })
+      : postgres?.flush();
+    if (!committed) return send(body);
+    committed.then(() => send(body), unavailable);
+    return res;
+  };
+  if (postgres) {
+    if (!storageHealthy) return unavailable();
+    postgres.ready().then(ready => ready && storageHealthy ? next() : unavailable(), unavailable);
+    return;
+  }
   next();
 });
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -90,8 +105,14 @@ function checkLoginRateLimit(ip) {
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 let storageHealthy = true;
+let postgres;
+const storageError = () => Object.assign(new Error('Không lưu được dữ liệu. Tạm dừng thao tác để bảo vệ số dư.'), { status: 503 });
 
-if (!fs.existsSync(DATA_DIR)) {
+function asyncRoute(handler) {
+  return (req, res, next) => handler(req, res, next).catch(next);
+}
+
+if (!process.env.DATABASE_URL && !fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 }
 
@@ -174,90 +195,103 @@ function applyUpstreamEnvironment(data) {
   return changed;
 }
 
-function saveDb(data) {
+async function saveDb(data) {
+  if (!storageHealthy) throw storageError();
   try {
+    if (postgres) return await postgres.save(data);
     const json = JSON.stringify(data, null, 2);
     const tmpPath = `${DB_PATH}.tmp`;
     fs.writeFileSync(tmpPath, json, { encoding: 'utf8', mode: 0o600, flush: true });
     fs.renameSync(tmpPath, DB_PATH);
   } catch (err) {
     storageHealthy = false;
-    throw Object.assign(new Error('Không lưu được dữ liệu. Đã tạm khóa thao tác tài chính để bảo vệ số dư; liên hệ admin.'), { status: 503 });
+    throw storageError();
   }
 }
 
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err?.message || err);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled rejection:', reason);
-});
-
-function loadDb() {
-  try {
-    if (fs.existsSync(DB_PATH)) {
-      const raw = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-      const merged = {
-        ...DEFAULT_DB,
-        ...raw,
-        settings: {
-          ...DEFAULT_DB.settings,
-          ...(raw.settings || {}),
-          categoryMarkups: {
-            ...DEFAULT_DB.settings.categoryMarkups,
-            ...(raw.settings?.categoryMarkups || {}),
-          },
-          packagePriceOverrides: {
-            ...DEFAULT_DB.settings.packagePriceOverrides,
-            ...(raw.settings?.packagePriceOverrides || {}),
-          },
-          fruitUnitPrices: {
-            ...DEFAULT_DB.settings.fruitUnitPrices,
-            ...(raw.settings?.fruitUnitPrices || {}),
-          },
-          fruitMutationPrices: {
-            ...DEFAULT_DB.settings.fruitMutationPrices,
-            ...(raw.settings?.fruitMutationPrices || {}),
-          },
-          hoanNguyen: {
-            ...DEFAULT_DB.settings.hoanNguyen,
-            ...(raw.settings?.hoanNguyen || {}),
-          },
-        },
-      };
-      if (!Array.isArray(merged.users) || !merged.users.some(user => user.role === 'admin')) {
-        throw new Error('Database has no administrator');
-      }
-      // Preserve local accounts; never reset their passwords from deployment variables.
-      let migrated = applyUpstreamEnvironment(merged);
-      for (const u of merged.users || []) {
-        if (u.password && !String(u.password).startsWith('scrypt$')) {
-          u.password = hashPassword(u.password);
-          migrated = true;
-        }
-      }
-      if (migrated) saveDb(merged);
-      return merged;
+function normalizeDb(raw) {
+  const merged = {
+    ...DEFAULT_DB,
+    ...raw,
+    settings: {
+      ...DEFAULT_DB.settings,
+      ...(raw.settings || {}),
+      categoryMarkups: {
+        ...DEFAULT_DB.settings.categoryMarkups,
+        ...(raw.settings?.categoryMarkups || {}),
+      },
+      packagePriceOverrides: {
+        ...DEFAULT_DB.settings.packagePriceOverrides,
+        ...(raw.settings?.packagePriceOverrides || {}),
+      },
+      fruitUnitPrices: {
+        ...DEFAULT_DB.settings.fruitUnitPrices,
+        ...(raw.settings?.fruitUnitPrices || {}),
+      },
+      fruitMutationPrices: {
+        ...DEFAULT_DB.settings.fruitMutationPrices,
+        ...(raw.settings?.fruitMutationPrices || {}),
+      },
+      hoanNguyen: {
+        ...DEFAULT_DB.settings.hoanNguyen,
+        ...(raw.settings?.hoanNguyen || {}),
+      },
+    },
+  };
+  if (!Array.isArray(merged.users) || !merged.users.some(user => user.role === 'admin')) {
+    throw new Error('Database has no administrator');
+  }
+  // Preserve local accounts; never reset their passwords from deployment variables.
+  let migrated = applyUpstreamEnvironment(merged);
+  for (const u of merged.users || []) {
+    if (u.password && !String(u.password).startsWith('scrypt$')) {
+      u.password = hashPassword(u.password);
+      migrated = true;
     }
-  } catch (err) {
+  }
+  return { data: merged, migrated };
+}
+
+function readSeed(requireFile = false) {
+  if (!fs.existsSync(DB_PATH)) {
+    if (requireFile) throw new Error('Cần bản sao db.json hiện hành để nhập PostgreSQL. Xem README.');
+    return { data: createInitialDb(), migrated: true };
+  }
+  try {
+    return normalizeDb(JSON.parse(fs.readFileSync(DB_PATH, 'utf8')));
+  } catch {
     throw new Error('Không thể đọc cơ sở dữ liệu hiện có. Dừng máy chủ để tránh ghi đè dữ liệu; hãy kiểm tra hoặc khôi phục bản sao lưu.');
   }
-  const initial = createInitialDb();
-  saveDb(initial);
-  return initial;
 }
 
-let db = loadDb();
+const importOnly = process.argv?.includes('--import-json');
+if (importOnly && !process.env.DATABASE_URL) throw new Error('Cần DATABASE_URL để nhập PostgreSQL.');
+let db;
+if (process.env.DATABASE_URL) {
+  // A freshly deployed Render instance may have lost its legacy JSON file.
+  const requireFile = importOnly || (process.env.RENDER === 'true' && process.env.ZNPLAY_NEW_DATABASE !== 'true');
+  postgres = await openPostgres(process.env.DATABASE_URL, () => readSeed(requireFile).data, { importOnly });
+  if (importOnly) {
+    console.log('Đã nhập dữ liệu ZnPlay vào PostgreSQL.');
+    process.exit(0);
+  }
+  const loaded = normalizeDb(postgres.state);
+  db = loaded.data;
+  if (loaded.migrated) await saveDb(db);
+} else {
+  const loaded = readSeed();
+  db = loaded.data;
+  if (loaded.migrated) await saveDb(db);
+}
 
-function audit(req, action, details = {}) {
+async function audit(req, action, details = {}) {
   db.auditLog.unshift({
     id: crypto.randomUUID(), actorId: req.user.id, actorName: req.user.name,
     actorRole: req.user.role, action: String(action).slice(0, 160), details,
     createdAt: new Date().toISOString(),
   });
   db.auditLog = db.auditLog.slice(0, 5000);
-  saveDb(db);
+  await saveDb(db);
 }
 
 function validMoney(value, allowZero = true) {
@@ -327,13 +361,12 @@ function releaseIntent(intent, reason) {
   }
 }
 
-for (const intent of db.orderIntents) {
-  if (intent.status === 'processing') {
-    intent.status = 'uncertain';
-    intent.message = 'Máy chủ khởi động lại khi đang gửi đơn. Cần admin đối soát nguồn trước khi xử lý tiếp.';
-    saveDb(db);
-  }
+const interrupted = db.orderIntents.filter(intent => intent.status === 'processing');
+for (const intent of interrupted) {
+  intent.status = 'uncertain';
+  intent.message = 'Máy chủ khởi động lại khi đang gửi đơn. Cần admin đối soát nguồn trước khi xử lý tiếp.';
 }
+if (interrupted.length) await saveDb(db);
 
 // ============================================================================
 // MUTATIONS TABLE & CATEGORY METADATA
@@ -603,7 +636,7 @@ async function loginToHoanNguyen(force = false) {
       db.settings.hoanNguyen.token = data.token;
       db.settings.hoanNguyen.user = data.user || null;
       db.settings.hoanNguyen.lastLoginAt = new Date().toISOString();
-      saveDb(db);
+      await saveDb(db);
       upstreamSuccess();
       return data.token;
     } catch (error) {
@@ -634,7 +667,7 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true) {
 
   const res = await fetchHoanNguyen(`${hn.baseUrl}${apiPath}`, options);
   if (res.status === 401 && retry) {
-    await loginToHoanNguyen(true);
+    if (db.settings.hoanNguyen.token === token) await loginToHoanNguyen(true);
     return hnApiCall(apiPath, method, body, false);
   }
 
@@ -842,10 +875,14 @@ app.get('/assets/playtogether/*', (req, res) => {
 // AUTH ENDPOINTS
 // ============================================================================
 app.get('/api/health', (req, res) => {
-  res.status(storageHealthy ? 200 : 503).json({ success: storageHealthy });
+  res.status(storageHealthy ? 200 : 503).json({
+    success: storageHealthy,
+    storage: postgres ? 'postgresql' : 'json',
+    upstream: { connected: upstreamStatus.connected, checkedAt: upstreamStatus.lastCheckedAt },
+  });
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', asyncRoute(async (req, res) => {
   req.auditUser = { id: 'anonymous', name: 'Đăng nhập chưa xác thực', role: 'unauthenticated' };
   const ip = req.ip || req.socket?.remoteAddress || 'unknown';
   if (!checkLoginRateLimit(ip)) {
@@ -889,7 +926,7 @@ app.post('/api/auth/login', (req, res) => {
   db.sessions[token] = { userId: user.id, createdAt: Date.now(), authVersion: AUTH_VERSION };
   user.lastSeenAt = new Date().toISOString();
   req.user = user;
-  saveDb(db);
+  await saveDb(db);
 
   res.json({
     success: true,
@@ -897,7 +934,7 @@ app.post('/api/auth/login', (req, res) => {
     token,
     user: sanitizeUser(user),
   });
-});
+}));
 
 app.get('/api/auth/me', (req, res) => {
   const user = getAuthUser(req);
@@ -908,16 +945,16 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ success: true, user: sanitizeUser(user) });
 });
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   req.user = getAuthUser(req);
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
   if (token && db.sessions[token]) {
     delete db.sessions[token];
-    saveDb(db);
+    await saveDb(db);
   }
   res.json({ success: true });
-});
+}));
 
 // ============================================================================
 // REALTIME CATALOG, SYSTEM STATUS & PROCESSING RATE SYNC
@@ -1012,7 +1049,7 @@ async function buildRawCatalogFromHoanNguyen(force = false) {
     syncedAt: new Date().toISOString(),
   };
 
-  catalogCache = { timestamp: now, raw };
+  catalogCache = { timestamp: Date.now(), raw };
   return raw;
 }
 
@@ -1464,7 +1501,7 @@ app.get('/api/customer/saved/:id', requireAuth, requireAdmin, async (req, res) =
 // ============================================================================
 // PLACE ORDER ENDPOINT (STRICT WALLET CHECK + SYSTEM ACTIVE CHECK)
 // ============================================================================
-app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, async (req, res) => {
+app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
   let intent = null;
   let sourceDispatched = false;
   try {
@@ -1739,7 +1776,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     }
     db.orderIntents.unshift(intent);
     req.auditDetails = { intentId: intent.id, category, customerId: intent.customerId, sellPrice, heldAmount: intent.heldAmount };
-    saveDb(db);
+    await saveDb(db);
     sourceDispatched = true;
     const hnResult = await hnApiCall(apiPath, 'POST', hnPayload);
 
@@ -1754,7 +1791,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
           hnResult.message ||
           'Khách hàng này đang có đơn hàng đang chạy. Bạn có chắc chắn muốn tạo thêm đơn mới?',
       };
-      saveDb(db);
+      await saveDb(db);
       return res.json(intent.response);
     }
 
@@ -1812,6 +1849,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     };
 
     db.localOrders.unshift(localOrder);
+    orderCache = {};
     const debit = db.transactions.find(t => t.id === intent.id);
     if (debit) { debit.type = 'order_debit'; debit.note = `Tạo đơn ${localOrder.categoryName}: ${localOrder.summary}`; }
     intent.status = 'completed';
@@ -1825,14 +1863,14 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       order: publicOrder(localOrder, isAdmin),
       userBalance: user.balance,
     };
-    saveDb(db);
+    await saveDb(db);
     res.json(intent.response);
   } catch (err) {
     const definitiveRejection = err.status >= 400 && err.status < 500 || (err.status === 200 && err.data?.success === false);
     if (intent && sourceDispatched && !definitiveRejection) {
       intent.status = 'uncertain';
       intent.message = 'Chưa xác định nguồn đã tạo đơn hay chưa; khoản tiền vẫn được giữ để admin đối soát. Không đặt lại đơn này.';
-      try { saveDb(db); } catch {}
+      try { await saveDb(db); } catch {}
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: intent.message });
     }
     if (intent && storageHealthy) {
@@ -1840,7 +1878,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       intent.status = 'rejected';
       intent.responseStatus = 400;
       intent.response = { success: false, message: 'Nguồn đã từ chối đơn. Khoản giữ tiền đã được trả lại.' };
-      saveDb(db);
+      await saveDb(db);
       return res.status(400).json(intent.response);
     }
     res.status(err.status === 503 ? 503 : 400).json({
@@ -1848,21 +1886,39 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       message: publicError(req, err, 'Lỗi khi tạo đơn hàng.'),
     });
   }
-});
+}));
 
 // ============================================================================
 // ORDERS LIST & LIVE TELEMETRY SYNC (STRICT ISOLATION FOR CTV!)
 // ============================================================================
-const orderSnapshot = { data: null, until: 0, promise: null };
-async function cachedOrders(loader) {
-  if (orderSnapshot.data && orderSnapshot.until > Date.now()) return orderSnapshot.data;
-  if (orderSnapshot.promise) return orderSnapshot.promise;
-  orderSnapshot.promise = loader();
-  try {
-    orderSnapshot.data = await orderSnapshot.promise;
-    orderSnapshot.until = Date.now() + 10000;
-    return orderSnapshot.data;
-  } finally { orderSnapshot.promise = null; }
+const orderPaths = [
+  '/api/fruit-coin-orders?page=1&per_page=25&status_group=active&include_summary=1',
+  '/api/fruit-coin-orders?page=1&per_page=15&status_group=completed',
+  '/api/buff-tim-orders?page=1&per_page=25&status_group=active&include_summary=1',
+  '/api/buff-tim-orders?page=1&per_page=15&status_group=completed',
+  '/api/buff-sao-orders?page=1&per_page=25&status_group=active&include_summary=1',
+  '/api/buff-sao-orders?page=1&per_page=15&status_group=completed',
+  '/api/guestbook-orders?page=1&per_page=25',
+  '/api/farm-gift-orders?page=1&per_page=25',
+  '/api/mail-gift-orders?page=1&per_page=25',
+  '/api/weather-buff-orders?page=1&per_page=25&status_group=active',
+];
+
+let orderCache = {};
+async function loadRemoteOrders() {
+  const cache = orderCache;
+  if (cache.until > Date.now()) return cache.result;
+  if (cache.pending) return cache.pending;
+  cache.pending = (async () => {
+    const responses = await Promise.allSettled(orderPaths.map(path => hnApiCall(path)));
+    const partial = responses.some(r => r.status === 'rejected');
+    const pages = responses.map((r, i) => r.status === 'fulfilled' ? r.value : cache.result?.pages[i]);
+    cache.result = { pages, partial };
+    cache.until = Date.now() + (partial ? 2000 : 10000);
+    return cache.result;
+  })();
+  try { return await cache.pending; }
+  finally { cache.pending = null; }
 }
 
 app.get('/api/orders', requireAuth, async (req, res) => {
@@ -1870,6 +1926,11 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const user = req.user;
     const isAdmin = user.role === 'admin';
     const categoryFilter = req.query.category || 'all';
+
+    if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
+      return res.json({ success: true, orders: [], partial: false });
+    }
+    const remote = await loadRemoteOrders();
 
     // Fetch live active & completed orders from HoanNguyen across all endpoints
     const [
@@ -1883,18 +1944,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       farmGiftRes,
       mailGiftRes,
       weatherRes,
-    ] = await cachedOrders(() => Promise.all([
-      hnApiCall('/api/fruit-coin-orders?page=1&per_page=25&status_group=active&include_summary=1').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/fruit-coin-orders?page=1&per_page=15&status_group=completed').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/buff-tim-orders?page=1&per_page=25&status_group=active&include_summary=1').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/buff-tim-orders?page=1&per_page=15&status_group=completed').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/buff-sao-orders?page=1&per_page=25&status_group=active&include_summary=1').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/buff-sao-orders?page=1&per_page=15&status_group=completed').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/guestbook-orders?page=1&per_page=25').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/farm-gift-orders?page=1&per_page=25').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/mail-gift-orders?page=1&per_page=25').catch(() => ({ data: { data: [] } })),
-      hnApiCall('/api/weather-buff-orders?page=1&per_page=25&status_group=active').catch(() => ({ data: { data: [] } })),
-    ]));
+    ] = remote.pages;
 
     const remoteMap = new Map();
     const collectRemote = (arr, catKey) => {
@@ -2050,6 +2100,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     res.json({
       success: true,
       orders: results,
+      partial: remote.partial,
     });
   } catch (err) {
     res.status(500).json({
@@ -2080,7 +2131,7 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
     }
     if (lo?.status === 'cancelled' || lo?.requiresReview) return res.status(409).json({ success: false, message: 'Đơn đã hủy hoặc đang chờ đối soát; không thể bật/tắt.' });
     const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}/toggle-active`, 'PUT');
-    orderSnapshot.until = 0;
+    orderCache = {};
     res.json({
       success: true,
       message: 'Đã cập nhật trạng thái bật/tắt đơn hàng.',
@@ -2095,7 +2146,7 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
 });
 
 // Delete Unstarted / Completed Order (Strict ownership check for CTV + Auto Refund)
-app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limitInteractive, async (req, res) => {
+app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
@@ -2118,14 +2169,14 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
       if (lo.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã được hủy.' });
       lo.cancelRequested = true;
       lo.cancelRequestedAt = lo.cancelRequestedAt || new Date().toISOString();
-      saveDb(db);
+      await saveDb(db);
       return res.json({ success: true, message: 'Đã gửi yêu cầu hủy tới admin. Đơn tại nguồn vẫn có thể đang chạy; tiền chưa tự động hoàn.' });
     }
     if (lo?.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã hủy; lịch sử được giữ lại.' });
     const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}`, 'DELETE', {
       deletion_note: req.body?.deletion_note || 'Xóa đơn từ ZnPlay',
     });
-    orderSnapshot.until = 0;
+    orderCache = {};
 
     if (lo) {
       lo.status = 'cancelled';
@@ -2133,7 +2184,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
       lo.cancelRequested = false;
       lo.cancelledAt = new Date().toISOString();
       lo.refundPending = lo.placedBy?.role === 'ctv';
-      saveDb(db);
+      await saveDb(db);
     }
 
     res.json({
@@ -2146,7 +2197,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
       message: publicError(req, err, 'Không thể xóa đơn hàng (chỉ xóa được đơn chưa chạy hoặc đã hoàn thành).'),
     });
   }
-});
+}));
 
 // ============================================================================
 // WEEKLY SETTLEMENTS & TRANSACTION LEDGER
@@ -2207,7 +2258,7 @@ app.get('/api/admin/monitor', (req, res) => {
   });
 });
 
-app.post('/api/admin/intents/:id/acknowledge', (req, res) => {
+app.post('/api/admin/intents/:id/acknowledge', asyncRoute(async (req, res) => {
   const intent = db.orderIntents.find(i => i.id === req.params.id);
   const { note, confirmed } = req.body || {};
   if (!intent?.requiresReview || confirmed !== true || typeof note !== 'string' || note.trim().length < 10 || note.length > 500) {
@@ -2220,11 +2271,11 @@ app.post('/api/admin/intents/:id/acknowledge', (req, res) => {
   const order = db.localOrders.find(o => o.intentId === intent.id);
   if (order) order.requiresReview = false;
   req.auditDetails = { intentId: intent.id, note: intent.reviewNote };
-  saveDb(db);
+  await saveDb(db);
   res.json({ success: true, message: 'Đã ghi nhận chi phí nguồn. Không tự điều chỉnh thêm tiền ví CTV.' });
-});
+}));
 
-app.post('/api/admin/intents/:id/reconcile', (req, res) => {
+app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
   const intent = db.orderIntents.find(i => i.id === req.params.id);
   const { resolution, note, remoteOrderId, actualCost, confirmed } = req.body || {};
   if (!intent || intent.status !== 'uncertain') return res.status(409).json({ success: false, message: 'Yêu cầu không còn chờ đối soát.' });
@@ -2260,11 +2311,11 @@ app.post('/api/admin/intents/:id/reconcile', (req, res) => {
   intent.reviewedAt = new Date().toISOString();
   intent.reviewNote = note.trim();
   req.auditDetails = { intentId: intent.id, resolution, note: intent.reviewNote };
-  saveDb(db);
+  await saveDb(db);
   res.json({ success: true, message: 'Đã lưu kết quả đối soát.' });
-});
+}));
 
-app.post('/api/admin/orders/:id/refund', (req, res) => {
+app.post('/api/admin/orders/:id/refund', asyncRoute(async (req, res) => {
   const order = db.localOrders.find(o => o.id === req.params.id);
   const { amount, sourceRefund, note, confirmed, idempotency_key } = req.body || {};
   if (!order || order.status !== 'cancelled' || order.placedBy?.role !== 'ctv') return res.status(409).json({ success: false, message: 'Chỉ hoàn ví cho đơn CTV đã hủy tại nguồn.' });
@@ -2289,11 +2340,11 @@ app.post('/api/admin/orders/:id/refund', (req, res) => {
   db.transactions.unshift({ id: crypto.randomUUID(), refundKey: idempotency_key, userId: owner.id, userName: owner.name,
     type: 'order_refund', amount, balanceAfter: owner.balance, note: `Hoàn đơn #${order.remoteOrderId}: ${note.trim()}`, createdAt: new Date().toISOString() });
   req.auditDetails = { orderId: order.id, userId: owner.id, amount, sourceRefund, note: note.trim() };
-  saveDb(db);
+  await saveDb(db);
   res.json({ success: true, message: 'Đã hoàn ví theo kết quả đối soát; đã ghi nhật ký.' });
-});
+}));
 
-app.put('/api/admin/password', (req, res) => {
+app.put('/api/admin/password', asyncRoute(async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
   if (typeof currentPassword !== 'string' || !verifyPassword(currentPassword, req.user.password)) {
     return res.status(400).json({ success: false, message: 'Mật khẩu hiện tại không chính xác.' });
@@ -2309,9 +2360,9 @@ app.put('/api/admin/password', (req, res) => {
     const userId = typeof session === 'string' ? session : session.userId;
     if (userId === req.user.id) delete db.sessions[token];
   }
-  saveDb(db);
+  await saveDb(db);
   res.json({ success: true, message: 'Đã đổi mật khẩu. Vui lòng đăng nhập lại bằng mật khẩu mới.' });
-});
+}));
 
 app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   try {
@@ -2369,7 +2420,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   });
 });
 
-app.put('/api/admin/settings', requireAdmin, async (req, res) => {
+app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
   try {
     const {
       defaultMarkup,
@@ -2451,11 +2502,13 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
       needRelogin = true;
     }
 
-    saveDb(db);
     if (needRelogin) {
       db.settings.hoanNguyen.token = '';
+      orderCache = {};
       catalogCache = { timestamp: 0, raw: null };
-      saveDb(db);
+    }
+    await saveDb(db);
+    if (needRelogin) {
       await loginToHoanNguyen(true);
       await fetchRawCatalogFromHoanNguyen(true);
     }
@@ -2470,7 +2523,7 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
       message: publicError(req, err, 'Lỗi khi lưu cấu hình.'),
     });
   }
-});
+}));
 
 app.post('/api/admin/hoannguyen/reconnect', requireAdmin, async (req, res) => {
   try {
@@ -2495,7 +2548,7 @@ app.post('/api/admin/hoannguyen/reconnect', requireAdmin, async (req, res) => {
 });
 
 // Create CTV Account
-app.post('/api/admin/ctv', requireAdmin, (req, res) => {
+app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
   const { name, username, email, password, phone, balance } = req.body || {};
   const cleanUsername = String(username || '').trim().toLowerCase();
   const cleanEmail = String(email || `${cleanUsername}@znplay.vn`).trim().toLowerCase();
@@ -2546,17 +2599,17 @@ app.post('/api/admin/ctv', requireAdmin, (req, res) => {
       createdAt: new Date().toISOString(),
     });
   }
-  saveDb(db);
+  await saveDb(db);
 
   res.json({
     success: true,
     message: `Đã tạo tài khoản CTV "${newCtv.name}" (${newCtv.username}) thành công!`,
     ctv: sanitizeUser(newCtv),
   });
-});
+}));
 
 // Update CTV Account
-app.put('/api/admin/ctv/:id', requireAdmin, (req, res) => {
+app.put('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
   const ctv = db.users.find((u) => u.id === req.params.id && u.role === 'ctv');
   if (!ctv) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV.' });
@@ -2582,16 +2635,16 @@ app.put('/api/admin/ctv/:id', requireAdmin, (req, res) => {
   }
   req.auditDetails = { userId: ctv.id, passwordReset: password !== undefined, isLocked: ctv.isLocked };
 
-  saveDb(db);
+  await saveDb(db);
   res.json({
     success: true,
     message: `Đã cập nhật tài khoản CTV "${ctv.name}".`,
     ctv: sanitizeUser(ctv),
   });
-});
+}));
 
 // Top-up / Deduct CTV Balance
-app.post('/api/admin/ctv/:id/balance', requireAdmin, (req, res) => {
+app.post('/api/admin/ctv/:id/balance', requireAdmin, asyncRoute(async (req, res) => {
   const ctv = db.users.find((u) => u.id === req.params.id && u.role === 'ctv');
   if (!ctv) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV.' });
@@ -2619,7 +2672,7 @@ app.post('/api/admin/ctv/:id/balance', requireAdmin, (req, res) => {
     createdAt: new Date().toISOString(),
   });
   req.auditDetails = { userId: ctv.id, amount, balanceAfter: ctv.balance, note };
-  saveDb(db);
+  await saveDb(db);
 
   res.json({
     success: true,
@@ -2628,10 +2681,10 @@ app.post('/api/admin/ctv/:id/balance', requireAdmin, (req, res) => {
     }. Số dư mới: ${ctv.balance.toLocaleString('vi-VN')}đ`,
     ctv: sanitizeUser(ctv),
   });
-});
+}));
 
 // Delete CTV Account
-app.delete('/api/admin/ctv/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
   const idx = db.users.findIndex((u) => u.id === req.params.id && u.role === 'ctv');
   if (idx < 0) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV.' });
@@ -2640,12 +2693,12 @@ app.delete('/api/admin/ctv/:id', requireAdmin, (req, res) => {
   removed.isLocked = true;
   removed.archivedAt = new Date().toISOString();
   for (const [token, session] of Object.entries(db.sessions)) if (session.userId === removed.id) delete db.sessions[token];
-  saveDb(db);
+  await saveDb(db);
   res.json({
     success: true,
     message: `Đã khóa và lưu trữ tài khoản CTV "${removed.name}"; giữ nguyên số dư, đơn hàng và lịch sử đối soát.`,
   });
-});
+}));
 
 // SPA Fallback
 app.use('/api', (req, res) => res.status(404).json({ success: false, message: 'API không tồn tại.' }));
@@ -2661,10 +2714,7 @@ app.listen(PORT, HOST, async () => {
   console.log(`ZnPlay Server running at http://localhost:${PORT}`);
   try {
     await hnApiCall('/api/settings?keys=is_send_task');
-    console.log(
-      'Connected to HoanNguyen API as:',
-      db.settings.hoanNguyen.user?.name || db.settings.hoanNguyen.email
-    );
+    console.log('HoanNguyen API verified via HTTPS.');
   } catch (err) {
     console.warn('Initial HoanNguyen login warning:', err.message);
   }

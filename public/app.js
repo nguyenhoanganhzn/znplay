@@ -8,6 +8,8 @@ const state = {
   token: sessionStorage.getItem('znplay_token') || '',
   user: null,
   catalogData: null,
+  catalogWarning: '',
+  ordersWarning: '',
 
   // Active Sidebar View
   currentView: 'fruit_coin', // default to 'fruit_coin' (Trái cây) or 'dashboard'
@@ -51,7 +53,11 @@ const state = {
 localStorage.removeItem('znplay_token');
 
 const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
-  createToolViews({ state, apiFetch, escapeHtml, showToast, formatVnd, formatDateVi, renderCurrentView, loadOrders });
+  createToolViews({ state, apiFetch, createRequestKey, escapeHtml, showToast, formatVnd, formatDateVi, renderCurrentView, loadOrders });
+
+function createRequestKey() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+}
 
 const VIEW_TITLES = {
   dashboard: 'Bảng điều khiển tổng quan',
@@ -154,7 +160,7 @@ async function apiFetch(url, method = 'GET', body = null) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(url, opts);
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json().catch(() => null);
   if (requestToken && state.token !== requestToken) {
     throw new Error('Phiên đăng nhập đã thay đổi. Vui lòng thử lại.');
   }
@@ -162,6 +168,7 @@ async function apiFetch(url, method = 'GET', body = null) {
     clearAuthState();
     updateShellAuthUI();
   }
+  if (!data || typeof data !== 'object') throw new Error('Máy chủ chưa trả về dữ liệu. Vui lòng thử lại.');
   if (!res.ok && !data.needs_confirmation) {
     throw Object.assign(new Error(data.message || `Lỗi kết nối (${res.status})`), { code: data.code, status: res.status });
   }
@@ -175,6 +182,8 @@ function clearAuthState() {
   state.token = '';
   state.user = null;
   state.catalogData = null;
+  state.catalogWarning = '';
+  state.ordersWarning = '';
   state.orders = [];
   state.adminOverview = null;
   state.adminMonitor = null;
@@ -203,8 +212,15 @@ async function initAuth() {
         updateShellAuthUI();
         return;
       }
-    } catch {
+    } catch (err) {
       if (state.token !== requestToken) return;
+      if (err.status !== 401) {
+        const message = document.getElementById('gateLoginError');
+        message.textContent = 'Chưa kiểm tra được phiên đăng nhập. Tải lại trang khi kết nối ổn định.';
+        message.style.display = 'block';
+        updateShellAuthUI();
+        return;
+      }
     }
   }
   clearAuthState();
@@ -222,11 +238,8 @@ async function loginWithCredentials(identifier, password) {
     if (passwordInput) passwordInput.value = '';
     showToast(`Chào mừng ${r.user.name}!`);
     updateShellAuthUI();
-    await Promise.all([
-      loadCatalog(false),
-      loadOrders(),
-      r.user.role === 'admin' ? loadAdminOverview() : Promise.resolve(),
-    ]);
+    document.getElementById('mainViewContainer').textContent = 'Đang tải bảng giá và đơn hàng…';
+    await Promise.all([loadCatalog(false), loadOrders()]);
     renderCurrentView();
   }
 }
@@ -300,6 +313,7 @@ async function loadCatalog(forceRefresh = false) {
     const r = await apiFetch(`/api/catalog${forceRefresh ? '?refresh=1' : ''}`);
     if (!r.success || state.token !== requestToken) return;
     state.catalogData = r;
+    state.catalogWarning = '';
 
     // Update Sidebar Status Dots (Exact match with HoanNguyen!)
     const st = r.systemStatus || {};
@@ -320,7 +334,7 @@ async function loadCatalog(forceRefresh = false) {
     updateSaleMarquee();
     updateShellAuthUI();
   } catch (err) {
-    console.error('Error loading catalog:', err);
+    if (state.token === requestToken) state.catalogWarning = 'Chưa đồng bộ được bảng giá nguồn. Bấm Làm mới dữ liệu để thử lại.';
   }
 }
 
@@ -367,12 +381,13 @@ async function loadOrders() {
     const r = await apiFetch('/api/orders?category=all');
     if (r.success && state.token === requestToken) {
       state.orders = r.orders || [];
+      state.ordersWarning = r.partial ? 'Một phần danh sách đơn chưa đồng bộ được với nguồn.' : '';
       const activeCount = state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
       const badge = document.getElementById('sidebarActiveOrdersCount');
       if (badge) badge.textContent = String(activeCount);
     }
   } catch (err) {
-    console.error('Error loading orders:', err);
+    if (state.token === requestToken) state.ordersWarning = 'Chưa cập nhật được danh sách đơn.';
   }
 }
 
@@ -409,6 +424,16 @@ function switchView(viewKey) {
   document.getElementById('appSidebar')?.classList.remove('is-open');
   document.getElementById('sidebarBackdrop')?.classList.remove('is-open');
 
+  if (['admin_ctv', 'admin_system', 'admin_pricing'].includes(viewKey) && !state.adminOverview) {
+    const container = document.getElementById('mainViewContainer');
+    container.textContent = 'Đang tải dữ liệu quản trị…';
+    loadAdminOverview().then(() => {
+      if (state.currentView !== viewKey || state.user?.role !== 'admin') return;
+      if (state.adminOverview) renderCurrentView();
+      else container.textContent = 'Chưa tải được dữ liệu quản trị. Chọn lại mục này để thử lại.';
+    });
+    return;
+  }
   renderCurrentView();
   if (viewKey === 'admin_monitor') loadAdminMonitor();
 }
@@ -558,13 +583,14 @@ function renderOrderCategoryPageHtml(catKey) {
   }
 
   return `
+    ${[state.catalogWarning, state.ordersWarning].filter(Boolean).map(msg => `<p role="status" class="tool-warning">${escapeHtml(msg)}</p>`).join('')}
     <!-- TOP STATS PANEL CARD (MATCHING SCREENSHOT 1) -->
     <div class="glass-panel">
       <div class="panel-title-row">
         <div class="panel-title-left">
           <span class="panel-title-text">${escapeHtml(VIEW_TITLES[catKey])}</span>
           <span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}">
-            ● ${isWorking ? 'Đang hoạt động' : 'Không hoạt động'}
+            ● ${state.catalogWarning ? 'Chưa đồng bộ' : isWorking ? 'Đang hoạt động' : 'Không hoạt động'}
           </span>
         </div>
         <button type="button" class="btn-frost" id="btnRefreshCatPage" style="font-size:12px;">
@@ -1546,7 +1572,7 @@ async function submitModalOrder(confirmDuplicate = false) {
   const signature = JSON.stringify(payload);
   if (m.requestSignature !== signature) {
     m.requestSignature = signature;
-    m.requestKey = crypto.randomUUID();
+    m.requestKey = createRequestKey();
   }
   payload.idempotency_key = m.requestKey;
   if (btn) {
@@ -1826,13 +1852,14 @@ function bindDashboardEvents() {
 async function renderWeeklySettlementsView(container, zeroBannerHtml) {
   try {
     const r = await apiFetch('/api/settlements');
+    if (state.currentView !== 'weekly_settlements') return;
     const isAdmin = state.user.role === 'admin';
     const trxList = r.transactions || [];
 
     let summaryHtml = '';
     if (isAdmin) {
-      const wl = r.hnSettlement?.weekly_limit || { limit: 5000000, spent: 0, remaining: 5000000 };
-      summaryHtml = `
+      const wl = r.hnSettlement?.weekly_limit;
+      summaryHtml = !wl ? '<p class="tool-warning">Chưa có dữ liệu hạn mức tuần từ nguồn.</p>' : `
         <div class="stats-three-grid">
           <div class="stat-subcard">
             <div style="font-size:12px;color:var(--color-moon-mist);">Hạn mức tuần nguồn</div>
@@ -1920,12 +1947,14 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
       </div>
     `;
   } catch (err) {
+    if (state.currentView !== 'weekly_settlements' || !state.user) return;
     container.innerHTML = `<div class="glass-panel">Lỗi tải đối soát: ${escapeHtml(err.message)}</div>`;
   }
 }
 
 function renderOrderHistoryHtml() {
   return `
+    ${state.ordersWarning ? `<p class="tool-warning" role="status">${escapeHtml(state.ordersWarning)}</p>` : ''}
     <div class="glass-panel">
       <div class="panel-title-row">
         <span class="panel-title-text">📄 Toàn bộ Lịch sử đơn hàng (${state.orders.length} đơn)</span>
@@ -1994,13 +2023,13 @@ function renderUserSearchPageHtml() {
       <div class="panel-title-row">
         <span class="panel-title-text">1. Tìm khách hàng để đặt đơn</span>
       </div>
-      <div style="display:flex;gap:10px;max-width:600px;">
+      <div class="customer-search-fields">
         <select id="pageUserSearchMode" class="input-box" style="max-width:150px;"><option value="name">Tên nhân vật</option><option value="id">Role ID</option></select>
         <input type="text" id="pageUserSearchInput" class="input-box" placeholder="Nhập tên nhân vật trong game (VD: Kitty, Yvelzz)..." />
         <button type="button" class="btn-violet" id="btnPageUserSearch">🔍 Tìm trong Game</button>
       </div>
       <div id="pageUserSearchStatus" style="margin-top:12px;font-size:13px;color:var(--color-fog-veil);"></div>
-      <div id="pageUserSearchResults" style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;"></div>
+      <div id="pageUserSearchResults" style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px;"></div>
     </div>
   `;
 }
@@ -2737,7 +2766,7 @@ function bindAdminCtvEvents() {
 }
 
 function openTopupCtvModal(ctvId, ctvName) {
-  const adjustmentKey = crypto.randomUUID();
+  const adjustmentKey = createRequestKey();
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
   const title = document.getElementById('appModalTitle');
@@ -2966,11 +2995,7 @@ async function bootstrap() {
   bindGlobalEvents();
   await initAuth();
   if (state.user) {
-    await Promise.all([
-      loadCatalog(false),
-      loadOrders(),
-      state.user.role === 'admin' ? loadAdminOverview() : Promise.resolve(),
-    ]);
+    await Promise.all([loadCatalog(false), loadOrders()]);
     renderCurrentView();
   }
 }

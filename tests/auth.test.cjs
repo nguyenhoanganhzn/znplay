@@ -48,9 +48,9 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
   });
   context.express.json = express.json;
   context.express.static = express.static;
-  vm.runInContext(serverSource.replace(/^import .*;\r?\n/gm, '')
+  await vm.runInContext('(async () => {\n' + serverSource.replace(/^import .*;\r?\n/gm, '')
     .replace('import.meta.url', '"file:///test/server.js"')
-    + '\nglobalThis.testApp = app; globalThis.testDb = db;', context);
+    + '\nglobalThis.testApp = app; globalThis.testDb = db;\n})()', context);
   const server = http.createServer(context.testApp);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
@@ -222,6 +222,30 @@ test('first visit and invalid session show login without automatic admin login',
   await expired.context.initAuth();
   assert.deepEqual(urls, ['/api/auth/me']);
   assert.equal(expired.storage.has('znplay_token'), false);
+});
+
+test('a temporary connection failure keeps the session for the next page load', async () => {
+  const client = createClient(async () => { throw new Error('offline'); }, 'existing-session');
+  await client.context.initAuth();
+  assert.equal(client.storage.get('znplay_token'), 'existing-session');
+  assert.equal(client.state.user, null);
+  assert.equal(client.element('appShell').style.display, 'none');
+});
+
+test('empty CTV history skips source calls and concurrent admin reads share a partial result', async t => {
+  let requests = 0;
+  const server = await startTestServer(t, async url => {
+    requests++;
+    if (url.includes('guestbook-orders')) throw new Error('Temporarily offline');
+    return { status: 200, ok: true, json: async () => ({ data: { data: [] } }) };
+  });
+  const seller = (await server.login('seller', 'seller-test-password')).body.token;
+  assert.equal((await server.request('/api/orders', 'GET', seller)).body.partial, false);
+  assert.equal(requests, 0);
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+  const reads = await Promise.all([1, 2].map(() => server.request('/api/orders', 'GET', admin)));
+  assert.ok(reads.every(r => r.status === 200 && r.body.partial === true));
+  assert.equal(requests, 10);
 });
 
 test('CTV navigation cannot render admin pages or preserve prior admin data', () => {

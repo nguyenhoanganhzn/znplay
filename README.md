@@ -11,6 +11,11 @@ Yêu cầu Node.js từ 22.16 trở lên. Phiên bản được kiểm tra: 24.1
 3. Chạy `npm start`, mở http://localhost:3000.
 4. Chạy `npm test` để kiểm tra.
 
+Trên Windows, chạy `.\scripts\install-local.ps1` trong PowerShell để khởi động
+localhost bằng Task Scheduler. Tác vụ **ZnPlay Localhost** chạy dưới tài khoản
+hiện tại, tự chạy khi đăng nhập và kiểm tra mỗi phút để khởi động lại nếu tác vụ đã dừng.
+Máy cần bật và thức để nhận kết nối.
+
 Lần chạy đầu với cơ sở dữ liệu mới cần `ADMIN_PASSWORD` dài 12–128 ký tự.
 Tên đăng nhập mặc định là `admin`, có thể đặt qua `ADMIN_USERNAME`.
 Không tạo tài khoản CTV mẫu. Admin tạo CTV trong giao diện quản trị.
@@ -29,13 +34,39 @@ hiện có bằng chức năng trong giao diện admin.
 | `HOANNGUYEN_EMAIL` | Email đăng nhập nguồn chính |
 | `HOANNGUYEN_PASSWORD` | Mật khẩu đăng nhập nguồn chính |
 | `DATA_DIR` | Thư mục lưu dữ liệu, mặc định `data` cạnh `server.js` |
+| `DATABASE_URL` | Chuỗi kết nối PostgreSQL riêng tư. Khi có giá trị, ứng dụng đọc và ghi vào PostgreSQL |
 | `PORT` | Cổng HTTP, mặc định `3000`; Render tự cung cấp |
 | `HOST` | Địa chỉ lắng nghe, mặc định `0.0.0.0` |
 
 Biến tài khoản nguồn, khi có giá trị, được ưu tiên hơn cấu hình đã lưu trong database.
 Nếu thay tài khoản nguồn qua Environment trên Render, cần triển khai lại dịch vụ.
 
-## Đưa lên Render để thử
+## Chuyển dữ liệu hiện có sang Neon
+
+1. Trước khi redeploy Render hoặc thay biến môi trường, ngừng các thao tác làm
+   thay đổi dữ liệu và lấy bản sao riêng của `data/db.json` đang phục vụ.
+   Đối chiếu tài khoản CTV, số dư, giao dịch và đơn đang chờ với bản sao.
+   Dữ liệu localhost có thể khác dữ liệu hosting.
+2. Tạo database trên Neon. Lấy chuỗi kết nối PostgreSQL có TLS từ **Connect**.
+   Trên máy nhập dữ liệu, đặt `DATABASE_URL` trong `.env`; đặt `DATA_DIR` trỏ
+   đến thư mục chứa bản sao chính thức. Giữ file này ngoài Git.
+3. Chạy `npm ci` và `npm run db:import`. Lệnh nhập tài khoản, phiên, giá,
+   số dư, giao dịch, đơn, yêu cầu đối soát và nhật ký trong một giao dịch.
+   Lệnh kết thúc sau khi nhập và từ chối ghi đè database ZnPlay đã có dữ liệu.
+4. Đặt cùng `DATABASE_URL` trong Render Environment và triển khai một instance.
+   Kiểm tra `/api/health` có `storage: "postgresql"`, đăng nhập, đối chiếu số dư
+   và lịch sử trước khi mở lại giao dịch. Giữ bản sao JSON riêng.
+
+Với cửa hàng mới hoàn toàn, có thể đặt `ZNPLAY_NEW_DATABASE=true` trên Render
+kèm `ADMIN_PASSWORD` để khởi tạo PostgreSQL trống. Gỡ biến khởi tạo sau lần đầu.
+Khi `DATABASE_URL` đã cấu hình, lỗi PostgreSQL khiến API tạm ngừng phục vụ.
+Mỗi môi trường chạy một tiến trình ghi. Dùng database hoặc nhánh Neon riêng
+cho localhost để hai môi trường không tiếp quản dữ liệu của nhau.
+
+Đặt `TEST_DATABASE_URL` vào môi trường chạy `npm test` để chạy thêm kiểm thử
+tích hợp PostgreSQL. Bài kiểm thử tạo rồi dọn một schema riêng.
+
+## Đưa lên Render
 
 Kết nối repo GitHub bằng Blueprint `render.yaml` hoặc tạo **Web Service** thủ công:
 
@@ -45,12 +76,11 @@ Kết nối repo GitHub bằng Blueprint `render.yaml` hoặc tạo **Web Servic
 - Health Check: `/api/health`.
 - Nhập mật khẩu admin và thông tin nguồn tại **Environment** của Render.
 
-Blueprint sử dụng gói Free, phù hợp kiểm tra giao diện và luồng đăng nhập.
-File JSON trên Render Free có thể mất thay đổi khi dịch vụ ngủ, khởi động lại hoặc
-triển khai lại. Không dùng cách lưu này cho ví và đơn cần giữ lâu dài.
-Trước khi cho CTV sử dụng số dư thật, cần chuyển sang cơ sở dữ liệu bền vững
-hoặc gắn persistent disk trên dịch vụ trả phí rồi đặt `DATA_DIR` vào thư mục trên disk.
-Chỉ chạy một instance khi dùng database JSON.
+Blueprint sử dụng Render Free. Dịch vụ ngủ sau 15 phút không có truy cập và có
+thể mất khoảng một phút để thức dậy. Để tránh chế độ ngủ do vắng truy cập,
+cần dùng compute trả phí. Neon giữ dữ liệu khi tiến trình Render khởi động lại.
+Nếu để trống `DATABASE_URL`, ứng dụng dùng JSON tại `DATA_DIR`; tệp trên ổ tạm
+của Render có thể mất khi triển khai lại hoặc khi dịch vụ ngủ. [Render Free](https://render.com/docs/free)
 
 Nạp ví, đặt đơn và hoàn ví đều hoạt động trên Render Free, không yêu cầu persistent
 disk. Admin cấp số dư nội bộ cho CTV trên ZnPlay; khi CTV đặt đơn, ZnPlay trừ ví CTV

@@ -19,3 +19,5 @@ services:
         sync: false
       - key: HOANNGUYEN_PASSWORD
         sync: false
+      - key: DATABASE_URL
+        sync: false

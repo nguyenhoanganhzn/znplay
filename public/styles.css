@@ -1031,3 +1031,41 @@ select.input-box {
   padding: 7px 10px;
   line-height: 1.45;
 }
+
+.sync-loading-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 42px 20px;
+  text-align: center;
+}
+
+.sync-spinner-ring {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid rgba(186, 215, 247, 0.16);
+  border-top-color: #a78bfa;
+  border-right-color: #5eead4;
+  animation: znSpin 0.8s linear infinite;
+}
+
+@keyframes znSpin {
+  to { transform: rotate(360deg); }
+}
+
+.sync-loading-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.sync-loading-sub {
+  font-size: 12.5px;
+  color: var(--color-fog-veil);
+  max-width: 360px;
+  line-height: 1.5;
+}

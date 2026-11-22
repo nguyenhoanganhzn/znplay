@@ -1027,10 +1027,21 @@ function bindOrderRowActionButtons() {
   });
 }
 
+function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ Zn...', sub = 'Đang đồng bộ trạng thái hoạt động và giá gốc mới nhất từ hệ thống để đảm bảo chính xác tuyệt đối.') {
+  return `
+    <div class="sync-loading-screen">
+      <div class="sync-spinner-ring" aria-hidden="true"></div>
+      <div class="sync-loading-title">${escapeHtml(message)}</div>
+      <div class="sync-loading-sub">${escapeHtml(sub)}</div>
+    </div>
+  `;
+}
+
 // ============================================================================
-// 2. MODAL: + THÊM ĐƠN HÀNG (CREATE ORDER DIALOG)
+// 2. MODAL: + THÊM ĐƠN HÀNG (CREATE ORDER DIALOG — LIVE SYNC BEFORE ORDER!)
 // ============================================================================
-function openCreateOrderModal(catKey) {
+let createOrderModalSeq = 0;
+async function openCreateOrderModal(catKey, presetOptions = null) {
   if (catKey === 'weather_buff') { showToast('Buff thời tiết hiện chỉ hỗ trợ xem lịch sử; chưa mở tạo đơn để tránh tính phí sai.'); return; }
   // Check CTV wallet balance first!
   if (state.user.role !== 'admin' && Number(state.user.balance || 0) <= 0) {
@@ -1038,17 +1049,45 @@ function openCreateOrderModal(catKey) {
     return;
   }
 
-  const r = state.catalogData;
-  if (!r) return;
+  const overlay = document.getElementById('appModalOverlay');
+  const box = document.getElementById('appModalBox');
+  const title = document.getElementById('appModalTitle');
+  const body = document.getElementById('appModalBody');
+  if (!overlay || !box || !title || !body) return;
 
-  state.modalOrder.category = catKey === 'fruit_coin' ? 'fruit_coin' : catKey;
+  const mySeq = ++createOrderModalSeq;
+  box.className = 'modal-box';
+  title.textContent = `+ Thêm mới: ${VIEW_TITLES[catKey] || 'Đơn hàng'}`;
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
+  overlay.style.display = 'flex';
+
+  // ALWAYS sync fresh live status & prices from HoanNguyen + ZnStudio Admin BEFORE letting user configure/place order!
+  await loadCatalog(true);
+  if (mySeq !== createOrderModalSeq || overlay.style.display === 'none' || !state.user) return;
+
+  const r = state.catalogData;
+  if (!r || state.catalogWarning) {
+    body.innerHTML = `
+      <div class="sync-loading-screen" style="padding:28px 16px;">
+        <div style="font-size:28px;">⚠️</div>
+        <div class="sync-loading-title" style="color:#fca5a5;">Không thể cập nhật bảng giá mới nhất từ Zn</div>
+        <div class="sync-loading-sub">${escapeHtml(state.catalogWarning || 'Hệ thống nguồn tạm thời không phản hồi. Để tránh sai giá, vui lòng thử cập nhật lại trước khi đặt đơn.')}</div>
+        <button type="button" class="btn-violet" id="btnRetryModalCatalogSync">↻ Thử cập nhật lại</button>
+      </div>
+    `;
+    body.querySelector('#btnRetryModalCatalogSync')?.addEventListener('click', () => openCreateOrderModal(catKey, presetOptions));
+    return;
+  }
+
+  state.modalOrder.category = presetOptions?.category || (catKey === 'fruit_coin' ? 'fruit_coin' : catKey);
   state.modalOrder.requestKey = null;
   state.modalOrder.requestSignature = null;
   state.modalOrder.quotedPrice = 0;
-  state.modalOrder.fruitOrderType = 'by_coin';
+  state.modalOrder.fruitOrderType = presetOptions?.fruitOrderType || 'by_coin';
+  if (presetOptions?.fruit_item_id) state.modalOrder.fruit_item_id = Number(presetOptions.fruit_item_id);
 
   const cat = r.catalog || {};
-  if (cat.fruit_coin?.length && !state.modalOrder.coin_price_package_id) {
+  if (cat.fruit_coin?.length && !cat.fruit_coin.some(p => Number(p.id) === Number(state.modalOrder.coin_price_package_id))) {
     state.modalOrder.coin_price_package_id = cat.fruit_coin[0].id;
   }
   if (cat.buff_tim?.length && catKey === 'buff_tim') {
@@ -1065,23 +1104,8 @@ function openCreateOrderModal(catKey) {
     state.modalOrder.gift_plant_id = cat.farm_gift[0].packages?.[0]?.id || null;
   }
 
-  const overlay = document.getElementById('appModalOverlay');
-  const box = document.getElementById('appModalBox');
-  const title = document.getElementById('appModalTitle');
-  if (!overlay || !box || !title) return;
-
-  box.className = 'modal-box';
-  title.textContent = `+ Thêm mới: ${VIEW_TITLES[catKey] || 'Đơn hàng'}`;
-  overlay.style.display = 'flex';
-
   renderCreateOrderModalBody();
-  // Always sync latest prices in background when opening order modal so CTV sees Admin's newest prices immediately.
-  loadCatalog(false).then((changed) => {
-    if (changed && document.getElementById('appModalOverlay')?.style.display !== 'none') {
-      renderCreateOrderModalBody();
-      if (state.modalOrder.category === 'fruit_by_fruit') triggerModalFruitPreview();
-    }
-  }).catch(() => {});
+  if (state.modalOrder.category === 'fruit_by_fruit') triggerModalFruitPreview();
 }
 
 function renderCreateOrderModalBody() {
@@ -1748,7 +1772,7 @@ async function submitModalOrder(confirmDuplicate = false) {
   payload.idempotency_key = m.requestKey;
   if (btn) {
     btn.disabled = true;
-    btn.textContent = 'Đang xử lý...';
+    btn.textContent = '⏳ Đang xác thực giá & gửi đơn...';
   }
 
   try {
@@ -1798,15 +1822,21 @@ async function submitModalOrder(confirmDuplicate = false) {
 // ============================================================================
 // 3. MODALS: FRUIT WAREHOUSE, COIN WAREHOUSE, CATEGORY PRICE LIST
 // ============================================================================
-function openFruitWarehouseModal() {
+async function openFruitWarehouseModal() {
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
   const title = document.getElementById('appModalTitle');
   const body = document.getElementById('appModalBody');
-  if (!overlay || !box || !title || !body || !state.catalogData) return;
+  if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box wide';
   title.textContent = '📦 Kho Trái Cây Trực Tuyến';
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
+  overlay.style.display = 'flex';
+
+  await loadCatalog(true);
+  if (overlay.style.display === 'none' || !state.catalogData) return;
+
   const fruits = (state.catalogData.catalog?.fruit_by_fruit || [])
     .slice()
     .sort((a, b) => b.stock_quantity - a.stock_quantity);
@@ -1839,14 +1869,11 @@ function openFruitWarehouseModal() {
 
     grid.querySelectorAll('[data-wh-fruit]').forEach((card) => {
       card.addEventListener('click', () => {
-        state.modalOrder.fruitOrderType = 'by_fruit';
-        state.modalOrder.category = 'fruit_by_fruit';
-        state.modalOrder.fruit_item_id = Number(card.dataset.whFruit);
-        openCreateOrderModal('fruit_coin');
-        state.modalOrder.fruitOrderType = 'by_fruit';
-        state.modalOrder.category = 'fruit_by_fruit';
-        renderCreateOrderModalBody();
-        triggerModalFruitPreview();
+        openCreateOrderModal('fruit_coin', {
+          fruitOrderType: 'by_fruit',
+          category: 'fruit_by_fruit',
+          fruit_item_id: Number(card.dataset.whFruit),
+        });
       });
     });
   };
@@ -1858,21 +1885,23 @@ function openFruitWarehouseModal() {
     if (whTimer && typeof clearTimeout === 'function') clearTimeout(whTimer);
     whTimer = setTimeout(() => renderList(val), 80);
   });
-  overlay.style.display = 'flex';
-  loadCatalog(false).then((changed) => {
-    if (changed && document.getElementById('whFruitGrid')) openFruitWarehouseModal();
-  }).catch(() => {});
 }
 
-function openCoinWarehouseModal() {
+async function openCoinWarehouseModal() {
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
   const title = document.getElementById('appModalTitle');
   const body = document.getElementById('appModalBody');
-  if (!overlay || !box || !title || !body || !state.catalogData) return;
+  if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box';
   title.textContent = '🪙 Kho Xu Nông Trại Trực Tuyến';
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
+  overlay.style.display = 'flex';
+
+  await loadCatalog(true);
+  if (overlay.style.display === 'none' || !state.catalogData) return;
+
   const coin = state.catalogData.coinStock || {};
   const tiers = state.catalogData.coinTiers || [];
 
@@ -1907,18 +1936,23 @@ function openCoinWarehouseModal() {
       </table>
     </div>
   `;
-  overlay.style.display = 'flex';
 }
 
-function openCategoryPriceListModal(catKey) {
+async function openCategoryPriceListModal(catKey) {
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
   const title = document.getElementById('appModalTitle');
   const body = document.getElementById('appModalBody');
-  if (!overlay || !box || !title || !body || !state.catalogData) return;
+  if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box';
   title.textContent = `🏷️ Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
+  overlay.style.display = 'flex';
+
+  await loadCatalog(true);
+  if (overlay.style.display === 'none' || !state.catalogData) return;
+
   const items = state.catalogData.catalog?.[catKey] || [];
   const isGiftCat = catKey === 'farm_gift' || catKey === 'mail_gift';
 
@@ -3906,18 +3940,23 @@ function bindAdminSystemEvents() {
 // GLOBAL EVENTS & BOOTSTRAP
 // ============================================================================
 function bindGlobalEvents() {
-  // Keep status dots, active/inactive flags, and prices synced live with HoanNguyen & Admin every 10s!
+  // Catalog auto-sync schedule: Admin every 1 min, CTV every 10 min (zero lag; pre-order modal ALWAYS live-syncs!).
+  let lastClientCatalogSyncAt = Date.now();
   setInterval(async () => {
     if (!state.user || document.hidden) return;
+    const isAdmin = state.user.role === 'admin';
+    const intervalMs = isAdmin ? 60 * 1000 : 10 * 60 * 1000;
+    if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
+    lastClientCatalogSyncAt = Date.now();
     try {
       const catChanged = await loadCatalog(false);
-      if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard')) {
+      if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
         renderCurrentView();
       }
     } catch {}
-  }, 10000);
+  }, 30000);
 
-  // Sync session, wallet balance, and live orders every 45s.
+  // Sync session, wallet balance, and live orders every 60s.
   setInterval(async () => {
     if (!state.user || document.hidden) return;
     try {
@@ -3930,15 +3969,18 @@ function bindGlobalEvents() {
         if (changed && !isUserTypingOrModalOpen()) renderCurrentView();
       }
     } catch {}
-  }, 45000);
+  }, 60000);
 
-  // Immediately refresh live status & prices when user switches back to this tab.
+  // When returning to tab, refresh only if stale (> 1 min for Admin, > 10 min for CTV).
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden || !state.user) return;
+      const intervalMs = state.user.role === 'admin' ? 60 * 1000 : 10 * 60 * 1000;
+      if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
+      lastClientCatalogSyncAt = Date.now();
       try {
         const catChanged = await loadCatalog(false);
-        if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard')) {
+        if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
           renderCurrentView();
         }
       } catch {}

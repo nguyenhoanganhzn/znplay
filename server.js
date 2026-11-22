@@ -1152,11 +1152,15 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 }));
 
 // ============================================================================
-// REALTIME CATALOG, SYSTEM STATUS & PROCESSING RATE SYNC (15s LIVE SYNC)
+// REALTIME CATALOG, SYSTEM STATUS & PROCESSING RATE SYNC
+// - CTV passive browsing: 10 min cache (ultra-light, zero lag)
+// - Admin passive browsing: 1 min cache
+// - Pre-order / explicit refresh (?refresh=1) & order placement: ALWAYS live from HoanNguyen!
 // ============================================================================
-const CATALOG_FRESH_MS = 15000;
-const CATALOG_STALE_MS = 25000;
-let lastCatalogRequestAt = 0;
+const CTV_CATALOG_FRESH_MS = 10 * 60 * 1000;   // 10 phút cho CTV xem thường
+const ADMIN_CATALOG_FRESH_MS = 60 * 1000;      // 1 phút cho Admin
+let lastAdminActivityAt = 0;
+let lastCtvActivityAt = 0;
 let settingsVersion = 1;
 let catalogCache = {
   timestamp: 0,
@@ -1176,17 +1180,10 @@ function getCurrentMondayStr() {
 }
 
 let catalogPromise = null;
-async function fetchRawCatalogFromHoanNguyen(force = false) {
+async function fetchRawCatalogFromHoanNguyen(force = false, maxAgeMs = CTV_CATALOG_FRESH_MS) {
   const age = Date.now() - catalogCache.timestamp;
-  if (!force && catalogCache.raw) {
-    if (age < CATALOG_FRESH_MS) return catalogCache.raw;
-    if (age < CATALOG_STALE_MS) {
-      // Short 10s SWR window: serve immediately while refreshing in background so status & prices stay <= 15s fresh.
-      if (!catalogPromise) {
-        catalogPromise = buildRawCatalogFromHoanNguyen(true).catch(() => catalogCache.raw).finally(() => { catalogPromise = null; });
-      }
-      return catalogCache.raw;
-    }
+  if (!force && catalogCache.raw && age < maxAgeMs) {
+    return catalogCache.raw;
   }
   if (catalogPromise) return catalogPromise;
   catalogPromise = buildRawCatalogFromHoanNguyen(true);
@@ -1196,7 +1193,7 @@ async function fetchRawCatalogFromHoanNguyen(force = false) {
 
 async function buildRawCatalogFromHoanNguyen(force = false) {
   const now = Date.now();
-  if (!force && catalogCache.raw && now - catalogCache.timestamp < CATALOG_FRESH_MS) {
+  if (!force && catalogCache.raw && now - catalogCache.timestamp < ADMIN_CATALOG_FRESH_MS) {
     return catalogCache.raw;
   }
 
@@ -1331,11 +1328,15 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
-    // Allow both Admin and CTV to request live refresh (throttled to 3s for non-admin to protect upstream).
-    const force = req.query.refresh === '1' && (isAdmin || Date.now() - catalogCache.timestamp > 3000);
-    lastCatalogRequestAt = Date.now();
+    const now = Date.now();
+    if (isAdmin) lastAdminActivityAt = now;
+    else lastCtvActivityAt = now;
 
-    const raw = await fetchRawCatalogFromHoanNguyen(force);
+    // Pre-order / manual refresh (?refresh=1): ALWAYS fetch live from HoanNguyen (deduplicated via catalogPromise, 1.5s burst guard for CTV).
+    const force = req.query.refresh === '1' && (isAdmin || now - catalogCache.timestamp > 1500);
+    const maxAgeMs = isAdmin ? ADMIN_CATALOG_FRESH_MS : CTV_CATALOG_FRESH_MS;
+
+    const raw = await fetchRawCatalogFromHoanNguyen(force, maxAgeMs);
     const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${settingsVersion}:${raw.syncedAt}`;
     const memoized = catalogResponseCache.get(cacheKey);
     if (memoized) {
@@ -3149,11 +3150,18 @@ app.listen(PORT, HOST, async () => {
   } catch (err) {
     console.warn('Initial HoanNguyen login warning:', err.message);
   }
-  // Keep catalog & active/inactive status fresh every 15s while users are active (shared across all CTVs).
+  // Background sync: 1 min when Admin is active, 10 min when only CTVs are active (prevents lag & upstream spam).
   const refreshTimer = setInterval(() => {
-    if (Date.now() - lastCatalogRequestAt <= 3 * 60 * 1000 && !catalogPromise) {
+    if (catalogPromise) return;
+    const now = Date.now();
+    const age = now - catalogCache.timestamp;
+    const adminActive = now - lastAdminActivityAt <= 3 * 60 * 1000;
+    const ctvActive = now - lastCtvActivityAt <= 15 * 60 * 1000;
+    if (adminActive && age >= ADMIN_CATALOG_FRESH_MS) {
+      fetchRawCatalogFromHoanNguyen(true).catch(() => {});
+    } else if (ctvActive && age >= CTV_CATALOG_FRESH_MS) {
       fetchRawCatalogFromHoanNguyen(true).catch(() => {});
     }
-  }, CATALOG_FRESH_MS);
+  }, 30000);
   if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
 });

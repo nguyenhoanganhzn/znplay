@@ -776,3 +776,33 @@ test('per-category percentage and manual pricing modes work across packages, fru
   assert.equal(catFixed.body.catalog.buff_tim[0].total_price, 13000);
   assert.ok(catFixed.body.pricingVersion > beforeVer);
 });
+
+test('passive CTV catalog reads reuse 10-minute cache while pre-order refresh fetches live upstream prices', async t => {
+  let upstreamSettingsHits = 0;
+  let livePrice = 10000;
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options) => {
+    const p = new URL(url).pathname;
+    if (p === '/api/settings') upstreamSettingsHits += 1;
+    if (p === '/api/buff-tim-price-packages') {
+      return { ok: true, status: 200, json: async () => ({ data: [{ id: 7, is_active: true, quantity: 100, total_price: livePrice }] }) };
+    }
+    return base(url, options);
+  });
+  const seller = await server.login('seller', 'seller-test-password');
+  const first = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(first.body.catalog.buff_tim[0].total_price, 15000);
+  assert.equal(upstreamSettingsHits, 1);
+
+  // Passive read reuses cache (zero upstream calls)
+  livePrice = 12000;
+  const cached = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(cached.body.catalog.buff_tim[0].total_price, 15000);
+  assert.equal(upstreamSettingsHits, 1);
+
+  // Wait past 1.5s burst guard and verify pre-order ?refresh=1 gets the live updated price
+  await new Promise(resolve => setTimeout(resolve, 1600));
+  const refreshed = await server.request('/api/catalog?refresh=1', 'GET', seller.body.token);
+  assert.equal(refreshed.body.catalog.buff_tim[0].total_price, 17000);
+  assert.equal(upstreamSettingsHits, 2);
+});

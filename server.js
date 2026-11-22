@@ -3,10 +3,12 @@ import { openPostgres } from './postgres-store.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const HAS_ZLIB = typeof zlib !== 'undefined' && typeof zlib.gzipSync === 'function';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -17,7 +19,7 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 app.set('trust proxy', process.env.RENDER === 'true' ? 1 : false);
 
 // ============================================================================
-// SECURITY HEADERS & BODY PARSER
+// SECURITY HEADERS, COMPRESSION & STATIC ASSET CACHE
 // ============================================================================
 app.disable('x-powered-by');
 app.use((req, res, next) => {
@@ -29,34 +31,132 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   next();
 });
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '2mb' }));
+
+function sendJsonPayload(req, res, sendOriginal, body) {
+  if (!HAS_ZLIB) return sendOriginal(body);
+  const accept = String(req.headers['accept-encoding'] || '');
+  const jsonStr = JSON.stringify(body);
+  if (jsonStr.length < 1024 || (!accept.includes('br') && !accept.includes('gzip'))) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.send(jsonStr);
+  }
+  const rawBuf = Buffer.from(jsonStr, 'utf8');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Vary', 'Accept-Encoding');
+  if (accept.includes('br') && typeof zlib.brotliCompressSync === 'function') {
+    const compressed = zlib.brotliCompressSync(rawBuf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } });
+    res.setHeader('Content-Encoding', 'br');
+    return res.send(compressed);
+  }
+  const compressed = zlib.gzipSync(rawBuf, { level: 6 });
+  res.setHeader('Content-Encoding', 'gzip');
+  return res.send(compressed);
+}
+
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
-  const send = res.json.bind(res);
+  const sendOriginal = res.json.bind(res);
+  const send = body => sendJsonPayload(req, res, sendOriginal, body);
   const unavailable = () => {
     res.status(503);
     return send({ success: false, message: 'Kho dữ liệu tạm thời chưa sẵn sàng.' });
   };
   res.json = body => {
     const actor = req.user || req.auditUser;
-    const recordActivity = actor && ['POST', 'PUT', 'DELETE'].includes(req.method);
-    const committed = recordActivity
-      ? audit({ user: actor }, `${req.method} ${req.path}`, { status: res.statusCode, ...req.auditDetails })
-      : postgres?.flush();
+    const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+    const recordActivity = Boolean(actor && isMutation);
+    let committed = null;
+    if (recordActivity) {
+      pushAuditRecord(actor, `${req.method} ${req.path}`, { status: res.statusCode, ...req.auditDetails });
+      committed = saveDb(db);
+    } else if (req.needsSave) {
+      committed = saveDb(db);
+    } else if (postgres?.hasPending?.()) {
+      committed = postgres.flush();
+    }
     if (!committed) return send(body);
     committed.then(() => send(body), unavailable);
     return res;
   };
   if (postgres) {
     if (!storageHealthy) return unavailable();
-    postgres.ready().then(ready => ready && storageHealthy ? next() : unavailable(), unavailable);
-    return;
+    const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+    if (isMutation) {
+      postgres.ready().then(ready => ready && storageHealthy ? next() : unavailable(), unavailable);
+      return;
+    }
+    if (postgres.hasPending?.()) {
+      postgres.flush().then(() => storageHealthy ? next() : unavailable(), unavailable);
+      return;
+    }
   }
   next();
 });
-app.use(express.static(path.join(__dirname, 'public'), {
+
+// Pre-compressed static assets cache (instant 0-disk-I/O serving + ETag 304)
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const STATIC_MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+};
+const staticCache = new Map();
+function getCachedStaticAsset(relPath) {
+  if (!HAS_ZLIB) return null;
+  if (staticCache.has(relPath)) return staticCache.get(relPath);
+  const fullPath = path.join(PUBLIC_DIR, relPath);
+  const ext = path.extname(relPath);
+  if (!STATIC_MIME[ext] || !fs.existsSync(fullPath)) return null;
+  const raw = fs.readFileSync(fullPath);
+  const etag = `"${crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16)}"`;
+  const gzip = zlib.gzipSync(raw, { level: 6 });
+  const br = typeof zlib.brotliCompressSync === 'function'
+    ? zlib.brotliCompressSync(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
+    : null;
+  const entry = { raw, gzip, br, etag, mime: STATIC_MIME[ext] };
+  staticCache.set(relPath, entry);
+  return entry;
+}
+
+function serveCachedStatic(req, res, relPath) {
+  const asset = getCachedStaticAsset(relPath);
+  if (!asset) return false;
+  res.setHeader('Content-Type', asset.mime);
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('ETag', asset.etag);
+  res.setHeader('Vary', 'Accept-Encoding');
+  if (req.headers['if-none-match'] === asset.etag) {
+    res.status(304).end();
+    return true;
+  }
+  const accept = String(req.headers['accept-encoding'] || '');
+  if (asset.br && accept.includes('br')) {
+    res.setHeader('Content-Encoding', 'br');
+    res.send(asset.br);
+    return true;
+  }
+  if (accept.includes('gzip')) {
+    res.setHeader('Content-Encoding', 'gzip');
+    res.send(asset.gzip);
+    return true;
+  }
+  res.send(asset.raw);
+  return true;
+}
+
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+  const cleanPath = req.path === '/' ? 'index.html' : req.path.replace(/^\/+/, '');
+  if (['index.html', 'styles.css', 'app.js', 'tools.js'].includes(cleanPath)) {
+    if (serveCachedStatic(req, res, cleanPath)) return;
+  }
+  next();
+});
+
+app.use(express.static(PUBLIC_DIR, {
   setHeaders(res, filePath) {
-    if (/\.(html|js)$/.test(filePath)) res.setHeader('Cache-Control', 'no-store');
+    if (/\.(html|js|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
   },
 }));
 
@@ -68,6 +168,17 @@ function hashPassword(plain) {
   const salt = crypto.randomBytes(16).toString('hex');
   const derived = crypto.scryptSync(s, salt, 64).toString('hex');
   return `scrypt$${salt}$${derived}`;
+}
+
+function hashPasswordAsync(plain) {
+  const s = String(plain || '');
+  const salt = crypto.randomBytes(16).toString('hex');
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(s, salt, 64, (err, derived) => {
+      if (err) reject(err);
+      else resolve(`scrypt$${salt}$${derived.toString('hex')}`);
+    });
+  });
 }
 
 function verifyPassword(plain, stored) {
@@ -84,6 +195,26 @@ function verifyPassword(plain, stored) {
   const expected = Buffer.from(hashHex, 'hex');
   if (derived.length !== expected.length) return false;
   return crypto.timingSafeEqual(derived, expected);
+}
+
+function verifyPasswordAsync(plain, stored) {
+  const p = String(plain || '');
+  const st = String(stored || '');
+  if (!p || p.length > 128 || !st) return Promise.resolve(false);
+  if (!st.startsWith('scrypt$')) {
+    return Promise.resolve(p === st);
+  }
+  const parts = st.split('$');
+  if (parts.length !== 3) return Promise.resolve(false);
+  const [, salt, hashHex] = parts;
+  const expected = Buffer.from(hashHex, 'hex');
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(p, salt, 64, (err, derived) => {
+      if (err) reject(err);
+      else if (derived.length !== expected.length) resolve(false);
+      else resolve(crypto.timingSafeEqual(derived, expected));
+    });
+  });
 }
 
 const loginAttempts = new Map();
@@ -268,8 +399,9 @@ const importOnly = process.argv?.includes('--import-json');
 if (importOnly && !process.env.DATABASE_URL) throw new Error('Cần DATABASE_URL để nhập PostgreSQL.');
 let db;
 if (process.env.DATABASE_URL) {
-  // A freshly deployed Render instance may have lost its legacy JSON file.
-  const requireFile = importOnly || (process.env.RENDER === 'true' && process.env.ZNPLAY_NEW_DATABASE !== 'true');
+  // Only require db.json when running explicit --import-json migration.
+  // When attaching a fresh free PostgreSQL (Neon/Supabase) on Render, initialize cleanly using ADMIN_PASSWORD.
+  const requireFile = importOnly;
   postgres = await openPostgres(process.env.DATABASE_URL, () => readSeed(requireFile).data, { importOnly });
   if (importOnly) {
     console.log('Đã nhập dữ liệu ZnPlay vào PostgreSQL.');
@@ -284,13 +416,17 @@ if (process.env.DATABASE_URL) {
   if (loaded.migrated) await saveDb(db);
 }
 
-async function audit(req, action, details = {}) {
+function pushAuditRecord(actor, action, details = {}) {
   db.auditLog.unshift({
-    id: crypto.randomUUID(), actorId: req.user.id, actorName: req.user.name,
-    actorRole: req.user.role, action: String(action).slice(0, 160), details,
+    id: crypto.randomUUID(), actorId: actor.id, actorName: actor.name,
+    actorRole: actor.role, action: String(action).slice(0, 160), details,
     createdAt: new Date().toISOString(),
   });
-  db.auditLog = db.auditLog.slice(0, 5000);
+  if (db.auditLog.length > 5000) db.auditLog = db.auditLog.slice(0, 5000);
+}
+
+async function audit(req, action, details = {}) {
+  pushAuditRecord(req.user, action, details);
   await saveDb(db);
 }
 
@@ -867,17 +1003,23 @@ function sanitizeUser(u) {
 // PLAY TOGETHER ASSET PROXY
 // ============================================================================
 app.get('/assets/playtogether/*', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=86400');
   const targetUrl = `https://hoannguyenplaytogether.com${req.originalUrl}`;
   res.redirect(302, targetUrl);
 });
 
 // ============================================================================
-// AUTH ENDPOINTS
+// AUTH & HEALTH ENDPOINTS
 // ============================================================================
+app.get('/api/ping', (req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
 app.get('/api/health', (req, res) => {
   res.status(storageHealthy ? 200 : 503).json({
     success: storageHealthy,
     storage: postgres ? 'postgresql' : 'json',
+    persistent: Boolean(postgres || process.env.DATA_DIR),
     upstream: { connected: upstreamStatus.connected, checkedAt: upstreamStatus.lastCheckedAt },
   });
 });
@@ -903,7 +1045,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     (u) => u.email?.toLowerCase() === loginKey || u.username?.toLowerCase() === loginKey
   );
 
-  if (!user || !verifyPassword(pwd, user.password)) {
+  if (!user || !(await verifyPasswordAsync(pwd, user.password))) {
     return res.status(401).json({
       success: false,
       message: 'Tài khoản hoặc mật khẩu không chính xác.',
@@ -926,7 +1068,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   db.sessions[token] = { userId: user.id, createdAt: Date.now(), authVersion: AUTH_VERSION };
   user.lastSeenAt = new Date().toISOString();
   req.user = user;
-  await saveDb(db);
+  req.needsSave = true;
 
   res.json({
     success: true,
@@ -951,18 +1093,22 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
   if (token && db.sessions[token]) {
     delete db.sessions[token];
-    await saveDb(db);
+    req.needsSave = true;
   }
   res.json({ success: true });
 }));
 
 // ============================================================================
-// REALTIME CATALOG, SYSTEM STATUS & PROCESSING RATE SYNC
+// REALTIME CATALOG, SYSTEM STATUS & PROCESSING RATE SYNC (SWR + MEMOIZED)
 // ============================================================================
+const CATALOG_FRESH_MS = 60000;
+const CATALOG_STALE_MS = 300000;
+let settingsVersion = 1;
 let catalogCache = {
   timestamp: 0,
   raw: null,
 };
+const catalogResponseCache = new Map();
 
 function getCurrentMondayStr() {
   const now = new Date();
@@ -977,7 +1123,17 @@ function getCurrentMondayStr() {
 
 let catalogPromise = null;
 async function fetchRawCatalogFromHoanNguyen(force = false) {
-  if (!force && catalogCache.raw && Date.now() - catalogCache.timestamp < 15000) return catalogCache.raw;
+  const age = Date.now() - catalogCache.timestamp;
+  if (!force && catalogCache.raw) {
+    if (age < CATALOG_FRESH_MS) return catalogCache.raw;
+    if (age < CATALOG_STALE_MS) {
+      // Stale-while-revalidate: serve immediately and refresh silently in background.
+      if (!catalogPromise) {
+        catalogPromise = buildRawCatalogFromHoanNguyen(true).catch(() => catalogCache.raw).finally(() => { catalogPromise = null; });
+      }
+      return catalogCache.raw;
+    }
+  }
   if (catalogPromise) return catalogPromise;
   catalogPromise = buildRawCatalogFromHoanNguyen(true);
   try { return await catalogPromise; }
@@ -986,7 +1142,7 @@ async function fetchRawCatalogFromHoanNguyen(force = false) {
 
 async function buildRawCatalogFromHoanNguyen(force = false) {
   const now = Date.now();
-  if (!force && catalogCache.raw && now - catalogCache.timestamp < 15000) {
+  if (!force && catalogCache.raw && now - catalogCache.timestamp < CATALOG_FRESH_MS) {
     return catalogCache.raw;
   }
 
@@ -1105,6 +1261,12 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     const force = isAdmin && req.query.refresh === '1';
 
     const raw = await fetchRawCatalogFromHoanNguyen(force);
+    const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${settingsVersion}:${raw.syncedAt}`;
+    const memoized = catalogResponseCache.get(cacheKey);
+    if (memoized) {
+      return res.json(memoized);
+    }
+
     const coinTiers = Array.isArray(raw.fruitStockMeta?.coin_tiers)
       ? raw.fruitStockMeta.coin_tiers
       : [];
@@ -1236,7 +1398,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       buildPublicPackage(pkg, 'weather_buff', isAdmin, 0)
     );
 
-    res.json({
+    const payload = {
       success: true,
       syncedAt: raw.syncedAt,
       systemStatus,
@@ -1260,7 +1422,10 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
         mail_gift: mailGifts,
         weather_buff: weatherPackages,
       },
-    });
+    };
+    if (catalogResponseCache.size > 8) catalogResponseCache.clear();
+    catalogResponseCache.set(cacheKey, payload);
+    res.json(payload);
   } catch (err) {
     console.error('Error in GET /api/catalog:', err);
     res.status(500).json({
@@ -1791,7 +1956,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
           hnResult.message ||
           'Khách hàng này đang có đơn hàng đang chạy. Bạn có chắc chắn muốn tạo thêm đơn mới?',
       };
-      await saveDb(db);
+      req.needsSave = true;
       return res.json(intent.response);
     }
 
@@ -1863,7 +2028,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       order: publicOrder(localOrder, isAdmin),
       userBalance: user.balance,
     };
-    await saveDb(db);
+    req.needsSave = true;
     res.json(intent.response);
   } catch (err) {
     const definitiveRejection = err.status >= 400 && err.status < 500 || (err.status === 200 && err.data?.success === false);
@@ -1878,7 +2043,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       intent.status = 'rejected';
       intent.responseStatus = 400;
       intent.response = { success: false, message: 'Nguồn đã từ chối đơn. Khoản giữ tiền đã được trả lại.' };
-      await saveDb(db);
+      req.needsSave = true;
       return res.status(400).json(intent.response);
     }
     res.status(err.status === 503 ? 503 : 400).json({
@@ -1904,21 +2069,36 @@ const orderPaths = [
   '/api/weather-buff-orders?page=1&per_page=25&status_group=active',
 ];
 
+const ORDER_FRESH_MS = 15000;
+const ORDER_STALE_MS = 90000;
 let orderCache = {};
-async function loadRemoteOrders() {
+async function loadRemoteOrders(force = false) {
   const cache = orderCache;
-  if (cache.until > Date.now()) return cache.result;
+  const now = Date.now();
+  if (!force && cache.result) {
+    if (cache.until > now) return cache.result;
+    if (cache.staleUntil > now) {
+      if (!cache.pending) {
+        cache.pending = fetchRemoteOrderPages(cache).finally(() => { cache.pending = null; });
+      }
+      return cache.result;
+    }
+  }
   if (cache.pending) return cache.pending;
-  cache.pending = (async () => {
-    const responses = await Promise.allSettled(orderPaths.map(path => hnApiCall(path)));
-    const partial = responses.some(r => r.status === 'rejected');
-    const pages = responses.map((r, i) => r.status === 'fulfilled' ? r.value : cache.result?.pages[i]);
-    cache.result = { pages, partial };
-    cache.until = Date.now() + (partial ? 2000 : 10000);
-    return cache.result;
-  })();
+  cache.pending = fetchRemoteOrderPages(cache);
   try { return await cache.pending; }
   finally { cache.pending = null; }
+}
+
+async function fetchRemoteOrderPages(cache) {
+  const responses = await Promise.allSettled(orderPaths.map(path => hnApiCall(path)));
+  const partial = responses.some(r => r.status === 'rejected');
+  const pages = responses.map((r, i) => r.status === 'fulfilled' ? r.value : cache.result?.pages[i]);
+  cache.result = { pages, partial };
+  const finishedAt = Date.now();
+  cache.until = finishedAt + (partial ? 2000 : ORDER_FRESH_MS);
+  cache.staleUntil = finishedAt + (partial ? 5000 : ORDER_STALE_MS);
+  return cache.result;
 }
 
 app.get('/api/orders', requireAuth, async (req, res) => {
@@ -1926,11 +2106,12 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const user = req.user;
     const isAdmin = user.role === 'admin';
     const categoryFilter = req.query.category || 'all';
+    const force = req.query.refresh === '1';
 
     if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
       return res.json({ success: true, orders: [], partial: false });
     }
-    const remote = await loadRemoteOrders();
+    const remote = await loadRemoteOrders(force);
 
     // Fetch live active & completed orders from HoanNguyen across all endpoints
     const [
@@ -2169,7 +2350,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
       if (lo.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã được hủy.' });
       lo.cancelRequested = true;
       lo.cancelRequestedAt = lo.cancelRequestedAt || new Date().toISOString();
-      await saveDb(db);
+      req.needsSave = true;
       return res.json({ success: true, message: 'Đã gửi yêu cầu hủy tới admin. Đơn tại nguồn vẫn có thể đang chạy; tiền chưa tự động hoàn.' });
     }
     if (lo?.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã hủy; lịch sử được giữ lại.' });
@@ -2184,7 +2365,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
       lo.cancelRequested = false;
       lo.cancelledAt = new Date().toISOString();
       lo.refundPending = lo.placedBy?.role === 'ctv';
-      await saveDb(db);
+      req.needsSave = true;
     }
 
     res.json({
@@ -2271,7 +2452,7 @@ app.post('/api/admin/intents/:id/acknowledge', asyncRoute(async (req, res) => {
   const order = db.localOrders.find(o => o.intentId === intent.id);
   if (order) order.requiresReview = false;
   req.auditDetails = { intentId: intent.id, note: intent.reviewNote };
-  await saveDb(db);
+  req.needsSave = true;
   res.json({ success: true, message: 'Đã ghi nhận chi phí nguồn. Không tự điều chỉnh thêm tiền ví CTV.' });
 }));
 
@@ -2311,7 +2492,7 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
   intent.reviewedAt = new Date().toISOString();
   intent.reviewNote = note.trim();
   req.auditDetails = { intentId: intent.id, resolution, note: intent.reviewNote };
-  await saveDb(db);
+  req.needsSave = true;
   res.json({ success: true, message: 'Đã lưu kết quả đối soát.' });
 }));
 
@@ -2340,34 +2521,38 @@ app.post('/api/admin/orders/:id/refund', asyncRoute(async (req, res) => {
   db.transactions.unshift({ id: crypto.randomUUID(), refundKey: idempotency_key, userId: owner.id, userName: owner.name,
     type: 'order_refund', amount, balanceAfter: owner.balance, note: `Hoàn đơn #${order.remoteOrderId}: ${note.trim()}`, createdAt: new Date().toISOString() });
   req.auditDetails = { orderId: order.id, userId: owner.id, amount, sourceRefund, note: note.trim() };
-  await saveDb(db);
+  req.needsSave = true;
   res.json({ success: true, message: 'Đã hoàn ví theo kết quả đối soát; đã ghi nhật ký.' });
 }));
 
 app.put('/api/admin/password', asyncRoute(async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
-  if (typeof currentPassword !== 'string' || !verifyPassword(currentPassword, req.user.password)) {
+  if (typeof currentPassword !== 'string' || !(await verifyPasswordAsync(currentPassword, req.user.password))) {
     return res.status(400).json({ success: false, message: 'Mật khẩu hiện tại không chính xác.' });
   }
   if (typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 128) {
     return res.status(400).json({ success: false, message: 'Mật khẩu mới cần từ 12 đến 128 ký tự.' });
   }
-  if (verifyPassword(newPassword, req.user.password)) {
+  if (await verifyPasswordAsync(newPassword, req.user.password)) {
     return res.status(400).json({ success: false, message: 'Vui lòng chọn mật khẩu mới khác mật khẩu hiện tại.' });
   }
-  req.user.password = hashPassword(newPassword);
+  req.user.password = await hashPasswordAsync(newPassword);
   for (const [token, session] of Object.entries(db.sessions)) {
     const userId = typeof session === 'string' ? session : session.userId;
     if (userId === req.user.id) delete db.sessions[token];
   }
-  await saveDb(db);
+  req.needsSave = true;
   res.json({ success: true, message: 'Đã đổi mật khẩu. Vui lòng đăng nhập lại bằng mật khẩu mới.' });
 }));
 
+let upstreamCheckPending = false;
 app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   try {
-    if (!upstreamStatus.lastCheckedAt || Date.now() - Date.parse(upstreamStatus.lastCheckedAt) > 30000) {
+    if (!upstreamStatus.lastCheckedAt) {
       await hnApiCall('/api/settings?keys=is_send_task');
+    } else if (!upstreamCheckPending && Date.now() - Date.parse(upstreamStatus.lastCheckedAt) > 60000) {
+      upstreamCheckPending = true;
+      hnApiCall('/api/settings?keys=is_send_task').catch(() => {}).finally(() => { upstreamCheckPending = false; });
     }
   } catch {}
 
@@ -2389,9 +2574,16 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   const totalRevenue = db.localOrders.reduce((s, o) => s + Number(o.sellPrice || 0) - Number(o.refundedAmount || 0), 0);
   const totalCost = db.localOrders.reduce((s, o) => s + Number(o.costPrice || 0) - Number(o.sourceRefunded || 0), 0);
   const totalProfit = totalRevenue - totalCost;
+  const totalCtvBalance = ctvList.reduce((s, u) => s + Number(u.balance || 0), 0);
 
   res.json({
     success: true,
+    storage: {
+      mode: postgres ? 'postgresql' : 'json',
+      persistent: Boolean(postgres || process.env.DATA_DIR),
+      isRender: process.env.RENDER === 'true',
+      healthy: storageHealthy,
+    },
     settings: {
       brandName: db.settings.brandName,
       defaultMarkup: db.settings.defaultMarkup,
@@ -2414,11 +2606,98 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       totalCost,
       totalProfit,
       totalCtvCount: ctvList.length,
+      totalCtvBalance,
+      totalTransactions: db.transactions.length,
     },
     ctvs: ctvList,
     transactions: db.transactions.slice(0, 80),
   });
 });
+
+// Admin Backup Export & Import (Safe snapshot for migration / disaster recovery)
+app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
+  const safeSettings = structuredClone(db.settings);
+  if (safeSettings.hoanNguyen) {
+    safeSettings.hoanNguyen.password = '';
+    safeSettings.hoanNguyen.token = '';
+  }
+  const snapshot = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: safeSettings,
+    users: db.users,
+    localOrders: db.localOrders,
+    transactions: db.transactions,
+    orderIntents: db.orderIntents,
+    auditLog: db.auditLog,
+  };
+  res.setHeader('Content-Disposition', `attachment; filename="znplay-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.json({ success: true, backup: snapshot });
+});
+
+app.post('/api/admin/backup/import', requireAdmin, asyncRoute(async (req, res) => {
+  const raw = req.body?.backup || req.body;
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.users) || !raw.users.some(u => u && u.role === 'admin' && u.id && u.username && u.password)) {
+    return res.status(400).json({ success: false, message: 'Tệp sao lưu không hợp lệ hoặc thiếu tài khoản quản trị viên.' });
+  }
+  const arrays = ['localOrders', 'transactions', 'orderIntents', 'auditLog'];
+  for (const name of arrays) {
+    if (raw[name] !== undefined && !Array.isArray(raw[name])) {
+      return res.status(400).json({ success: false, message: `Trường ${name} trong tệp sao lưu không hợp lệ.` });
+    }
+  }
+  for (const u of raw.users) {
+    if (!u || typeof u !== 'object' || typeof u.id !== 'string' || typeof u.username !== 'string' || !['admin', 'ctv'].includes(u.role) || !validMoney(Number(u.balance ?? 0))) {
+      return res.status(400).json({ success: false, message: 'Danh sách tài khoản trong tệp sao lưu không hợp lệ.' });
+    }
+  }
+
+  const currentHn = structuredClone(db.settings.hoanNguyen);
+  const currentSessions = structuredClone(db.sessions);
+  const candidate = {
+    settings: {
+      ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}),
+      hoanNguyen: {
+        ...(raw.settings?.hoanNguyen || {}),
+        email: currentHn.email || raw.settings?.hoanNguyen?.email || '',
+        password: currentHn.password || '',
+        token: currentHn.token || '',
+        user: currentHn.user || null,
+        lastLoginAt: currentHn.lastLoginAt || null,
+      },
+    },
+    users: structuredClone(raw.users),
+    sessions: currentSessions,
+    localOrders: structuredClone(raw.localOrders || []),
+    transactions: structuredClone(raw.transactions || []),
+    orderIntents: structuredClone(raw.orderIntents || []),
+    auditLog: structuredClone(raw.auditLog || []).slice(0, 5000),
+  };
+
+  let normalized;
+  try {
+    normalized = normalizeDb(candidate).data;
+  } catch (err) {
+    return res.status(400).json({ success: false, message: `Không thể khôi phục tệp sao lưu: ${err.message}` });
+  }
+
+  // Keep only sessions whose user still exists and is unlocked in the restored DB.
+  for (const [tok, sess] of Object.entries(normalized.sessions)) {
+    const owner = normalized.users.find(u => u.id === sess?.userId && !u.isLocked);
+    if (!owner) delete normalized.sessions[tok];
+  }
+
+  Object.assign(db, normalized);
+  settingsVersion += 1;
+  catalogResponseCache.clear();
+  orderCache = {};
+  req.auditDetails = { restoredUsers: db.users.length, restoredOrders: db.localOrders.length, restoredTransactions: db.transactions.length };
+  req.needsSave = true;
+  res.json({
+    success: true,
+    message: `Đã khôi phục thành công ${db.users.filter(u => u.role === 'ctv').length} tài khoản CTV, ${db.localOrders.length} đơn hàng và ${db.transactions.length} giao dịch!`,
+  });
+}));
 
 app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
   try {
@@ -2502,15 +2781,17 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
       needRelogin = true;
     }
 
+    settingsVersion += 1;
+    catalogResponseCache.clear();
     if (needRelogin) {
       db.settings.hoanNguyen.token = '';
       orderCache = {};
       catalogCache = { timestamp: 0, raw: null };
-    }
-    await saveDb(db);
-    if (needRelogin) {
+      await saveDb(db);
       await loginToHoanNguyen(true);
       await fetchRawCatalogFromHoanNguyen(true);
+    } else {
+      req.needsSave = true;
     }
 
     res.json({
@@ -2577,7 +2858,7 @@ app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
     id: `usr_ctv_${crypto.randomUUID()}`,
     username: cleanUsername,
     email: cleanEmail,
-    password: hashPassword(String(password)),
+    password: await hashPasswordAsync(String(password)),
     name: String(name).trim(),
     phone: String(phone || '').trim(),
     role: 'ctv',
@@ -2599,7 +2880,7 @@ app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
       createdAt: new Date().toISOString(),
     });
   }
-  await saveDb(db);
+  req.needsSave = true;
 
   res.json({
     success: true,
@@ -2627,7 +2908,7 @@ app.put('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
   if (email !== undefined) ctv.email = String(email).trim().toLowerCase();
   if (phone !== undefined) ctv.phone = String(phone).trim();
   if (password !== undefined && String(password).trim() !== '') {
-    ctv.password = hashPassword(password);
+    ctv.password = await hashPasswordAsync(password);
   }
   if (isLocked !== undefined) ctv.isLocked = !!isLocked;
   if (password !== undefined || isLocked === true) {
@@ -2635,7 +2916,7 @@ app.put('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
   }
   req.auditDetails = { userId: ctv.id, passwordReset: password !== undefined, isLocked: ctv.isLocked };
 
-  await saveDb(db);
+  req.needsSave = true;
   res.json({
     success: true,
     message: `Đã cập nhật tài khoản CTV "${ctv.name}".`,
@@ -2672,7 +2953,7 @@ app.post('/api/admin/ctv/:id/balance', requireAdmin, asyncRoute(async (req, res)
     createdAt: new Date().toISOString(),
   });
   req.auditDetails = { userId: ctv.id, amount, balanceAfter: ctv.balance, note };
-  await saveDb(db);
+  req.needsSave = true;
 
   res.json({
     success: true,
@@ -2693,7 +2974,7 @@ app.delete('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
   removed.isLocked = true;
   removed.archivedAt = new Date().toISOString();
   for (const [token, session] of Object.entries(db.sessions)) if (session.userId === removed.id) delete db.sessions[token];
-  await saveDb(db);
+  req.needsSave = true;
   res.json({
     success: true,
     message: `Đã khóa và lưu trữ tài khoản CTV "${removed.name}"; giữ nguyên số dư, đơn hàng và lịch sử đối soát.`,
@@ -2707,14 +2988,19 @@ app.use((err, req, res, next) => {
   res.status(err.status === 503 ? 503 : 400).json({ success: false, message: err.status === 503 ? err.message : 'Yêu cầu không hợp lệ. Vui lòng kiểm tra lại dữ liệu.' });
 });
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  if (serveCachedStatic(req, res, 'index.html')) return;
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
 app.listen(PORT, HOST, async () => {
-  console.log(`ZnPlay Server running at http://localhost:${PORT}`);
+  console.log(`ZnPlay Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
   try {
     await hnApiCall('/api/settings?keys=is_send_task');
     console.log('HoanNguyen API verified via HTTPS.');
+    // Pre-warm catalog cache in background so first login/page load is instant.
+    fetchRawCatalogFromHoanNguyen(true).then(() => {
+      console.log('HoanNguyen catalog pre-warmed.');
+    }).catch(() => {});
   } catch (err) {
     console.warn('Initial HoanNguyen login warning:', err.message);
   }

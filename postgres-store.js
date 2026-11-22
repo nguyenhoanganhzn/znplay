@@ -35,42 +35,105 @@ function decode(rows) {
   return state;
 }
 
+function isLocalHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+function isTransientPgError(error) {
+  if (!error) return false;
+  const code = String(error.code || error.cause?.code || '');
+  const msg = String(error.message || '');
+  if (['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ENOTFOUND', '57P01', '57P02', '57P03', '08000', '08003', '08006'].includes(code)) {
+    return true;
+  }
+  return /Connection terminated|Client has encountered a connection error|timeout expired|socket hang up/i.test(msg);
+}
+
+async function withTransientRetry(fn, maxAttempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isTransientPgError(error)) throw error;
+      await new Promise(resolve => setTimeout(resolve, attempt * 300));
+    }
+  }
+  throw lastError;
+}
+
 export async function openPostgres(connectionString, seed, { importOnly = false } = {}) {
   if (!URL.canParse(connectionString)) throw new Error('DATABASE_URL không hợp lệ.');
   const url = new URL(connectionString);
-  if (url.hostname.endsWith('.neon.tech')) url.searchParams.set('sslmode', 'verify-full');
-  const pool = new pg.Pool({ connectionString: url.href, max: 3, connectionTimeoutMillis: 10000,
-    statement_timeout: 15000, query_timeout: 20000, application_name: 'znplay' });
-  pool.on('error', () => console.error('Kết nối PostgreSQL nhàn rỗi bị ngắt.'));
+  const poolConfig = {
+    max: 3,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 15000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
+    statement_timeout: 15000,
+    query_timeout: 20000,
+    application_name: 'znplay',
+  };
+
+  if (url.hostname.endsWith('.neon.tech')) {
+    url.searchParams.set('sslmode', 'verify-full');
+  } else if (!isLocalHost(url.hostname)) {
+    const sslmode = (url.searchParams.get('sslmode') || '').toLowerCase();
+    if (!sslmode) {
+      url.searchParams.set('sslmode', 'require');
+    }
+    if (sslmode !== 'verify-full' && sslmode !== 'verify-ca' && sslmode !== 'disable') {
+      poolConfig.ssl = { rejectUnauthorized: false };
+    }
+  }
+
+  poolConfig.connectionString = url.href;
+  const pool = new pg.Pool(poolConfig);
+  pool.on('error', () => console.error('Kết nối PostgreSQL nhàn rỗi bị ngắt (sẽ tự kết nối lại khi cần).'));
+
   const owner = randomUUID();
   let previous;
   let initialized = false;
   let pending = Promise.resolve();
+  let activeWrites = 0;
 
   async function commit(current) {
     const changed = {};
+    let changedCount = 0;
     for (const [key, value] of current) {
-      if (previous.get(key) !== value) changed[key] = JSON.parse(value);
+      if (previous.get(key) !== value) {
+        changed[key] = JSON.parse(value);
+        changedCount += 1;
+      }
     }
     const removed = [...previous.keys()].filter(key => !current.has(key));
+
     // All changes, including a wallet hold and its intent, commit together.
     // A replaced Render instance cannot overwrite its successor's records.
-    const result = await pool.query(`
-      WITH writer AS (
-        SELECT id FROM znplay_writer WHERE id = 1 AND owner = $1 FOR SHARE
-      ), saved AS (
-        INSERT INTO znplay_records (key, value)
-        SELECT e.key, e.value FROM jsonb_each($2::jsonb) e CROSS JOIN writer
-        ON CONFLICT (key) DO UPDATE SET value = excluded.value
-      ), removed AS (
-        DELETE FROM znplay_records USING writer WHERE key = ANY($3::text[])
-      )
-      SELECT id FROM writer`, [owner, JSON.stringify(changed), removed]);
+    const result = await withTransientRetry(() => {
+      if (changedCount === 0 && removed.length === 0) {
+        return pool.query('SELECT id FROM znplay_writer WHERE id = 1 AND owner = $1', [owner]);
+      }
+      return pool.query(`
+        WITH writer AS (
+          SELECT id FROM znplay_writer WHERE id = 1 AND owner = $1 FOR SHARE
+        ), saved AS (
+          INSERT INTO znplay_records (key, value)
+          SELECT e.key, e.value FROM jsonb_each($2::jsonb) e CROSS JOIN writer
+          ON CONFLICT (key) DO UPDATE SET value = excluded.value
+        ), removed AS (
+          DELETE FROM znplay_records USING writer WHERE key = ANY($3::text[])
+        )
+        SELECT id FROM writer`, [owner, JSON.stringify(changed), removed]);
+    });
     if (!result.rowCount) throw new Error('Một tiến trình mới đã tiếp quản PostgreSQL.');
     previous = current;
   }
 
-  const client = await pool.connect();
+  const client = await withTransientRetry(() => pool.connect());
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(165005931, 1)');
@@ -94,14 +157,22 @@ export async function openPostgres(connectionString, seed, { importOnly = false 
       state,
       save(data) {
         const snapshot = encode(data);
-        pending = pending.then(() => commit(snapshot));
-        return pending;
+        activeWrites += 1;
+        const run = pending
+          .catch(() => {})
+          .then(() => commit(snapshot))
+          .finally(() => { activeWrites -= 1; });
+        pending = run.catch(() => {});
+        return run;
       },
       async ready() {
         await pending;
-        const result = await pool.query('SELECT 1 FROM znplay_writer WHERE id = 1 AND owner = $1', [owner]);
+        const result = await withTransientRetry(() =>
+          pool.query('SELECT 1 FROM znplay_writer WHERE id = 1 AND owner = $1', [owner])
+        );
         return result.rowCount === 1;
       },
+      hasPending: () => activeWrites > 0,
       flush: () => pending,
       close: () => pool.end(),
     };

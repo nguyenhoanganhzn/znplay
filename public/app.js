@@ -10,6 +10,9 @@ const state = {
   catalogData: null,
   catalogWarning: '',
   ordersWarning: '',
+  loadingCatalog: false,
+  loadingOrders: false,
+  lastOrdersSig: '',
 
   // Active Sidebar View
   currentView: 'fruit_coin', // default to 'fruit_coin' (Trái cây) or 'dashboard'
@@ -184,6 +187,9 @@ function clearAuthState() {
   state.catalogData = null;
   state.catalogWarning = '';
   state.ordersWarning = '';
+  state.loadingCatalog = false;
+  state.loadingOrders = false;
+  state.lastOrdersSig = '';
   state.orders = [];
   state.adminOverview = null;
   state.adminMonitor = null;
@@ -192,6 +198,7 @@ function clearAuthState() {
   state.modalOrder.fruit_preview_admin = null;
   localStorage.removeItem('znplay_token');
   sessionStorage.removeItem('znplay_token');
+  sessionStorage.removeItem('znplay_catalog_cache');
   const container = document.getElementById('mainViewContainer');
   if (container) container.innerHTML = '';
   const modal = document.getElementById('appModalOverlay');
@@ -200,6 +207,56 @@ function clearAuthState() {
   if (modalBody) modalBody.innerHTML = '';
   const adminSection = document.getElementById('sidebarAdminSection');
   if (adminSection) adminSection.style.display = 'none';
+}
+
+function hydrateCachedCatalog() {
+  if (!state.user) return false;
+  try {
+    const raw = sessionStorage.getItem('znplay_catalog_cache');
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.userId !== state.user.id || parsed.role !== state.user.role) return false;
+    if (Date.now() - Number(parsed.cachedAt || 0) > 5 * 60 * 1000) return false;
+    if (parsed.data && parsed.data.success) {
+      state.catalogData = parsed.data;
+      applyCatalogSideEffects(parsed.data);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function saveCachedCatalog(data) {
+  if (!state.user || !data) return;
+  try {
+    sessionStorage.setItem('znplay_catalog_cache', JSON.stringify({
+      userId: state.user.id,
+      role: state.user.role,
+      cachedAt: Date.now(),
+      data,
+    }));
+  } catch {}
+}
+
+function isUserTypingOrModalOpen() {
+  const modal = document.getElementById('appModalOverlay');
+  if (modal && modal.style.display !== 'none') return true;
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return true;
+  return false;
+}
+
+async function loadInitialAppData() {
+  if (!state.user) return;
+  hydrateCachedCatalog();
+  renderCurrentView();
+  const catTask = loadCatalog(false).then(() => {
+    if (state.user && !isUserTypingOrModalOpen()) renderCurrentView();
+  });
+  const ordTask = loadOrders(false).then(() => {
+    if (state.user && !isUserTypingOrModalOpen()) renderCurrentView();
+  });
+  await Promise.all([catTask, ordTask]);
 }
 
 async function initAuth() {
@@ -238,9 +295,7 @@ async function loginWithCredentials(identifier, password) {
     if (passwordInput) passwordInput.value = '';
     showToast(`Chào mừng ${r.user.name}!`);
     updateShellAuthUI();
-    document.getElementById('mainViewContainer').textContent = 'Đang tải bảng giá và đơn hàng…';
-    await Promise.all([loadCatalog(false), loadOrders()]);
-    renderCurrentView();
+    await loadInitialAppData();
   }
 }
 
@@ -306,35 +361,41 @@ function updateShellAuthUI() {
 // ============================================================================
 // LOAD CATALOG, SYSTEM STATUS DOTS & FLASH SALE MARQUEE
 // ============================================================================
+function applyCatalogSideEffects(r) {
+  const st = r?.systemStatus || {};
+  const updateDot = (id, working) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('is-off', !working);
+    el.title = working ? 'Đang hoạt động' : 'Không hoạt động';
+  };
+  updateDot('dot_farm_gift', st.farm_gift);
+  updateDot('dot_mail_gift', st.mail_gift);
+  updateDot('dot_guestbook', st.guestbook);
+  updateDot('dot_buff_tim', st.buff_tim);
+  updateDot('dot_buff_sao', st.buff_sao);
+  updateDot('dot_weather_buff', st.weather_buff);
+  updateDot('dot_fruit_coin', st.fruit_coin);
+
+  updateSaleMarquee();
+  updateShellAuthUI();
+}
+
 async function loadCatalog(forceRefresh = false) {
   if (!state.user) return;
   const requestToken = state.token;
+  state.loadingCatalog = true;
   try {
     const r = await apiFetch(`/api/catalog${forceRefresh ? '?refresh=1' : ''}`);
     if (!r.success || state.token !== requestToken) return;
     state.catalogData = r;
     state.catalogWarning = '';
-
-    // Update Sidebar Status Dots (Exact match with HoanNguyen!)
-    const st = r.systemStatus || {};
-    const updateDot = (id, working) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.classList.toggle('is-off', !working);
-      el.title = working ? 'Đang hoạt động' : 'Không hoạt động';
-    };
-    updateDot('dot_farm_gift', st.farm_gift);
-    updateDot('dot_mail_gift', st.mail_gift);
-    updateDot('dot_guestbook', st.guestbook);
-    updateDot('dot_buff_tim', st.buff_tim);
-    updateDot('dot_buff_sao', st.buff_sao);
-    updateDot('dot_weather_buff', st.weather_buff);
-    updateDot('dot_fruit_coin', st.fruit_coin);
-
-    updateSaleMarquee();
-    updateShellAuthUI();
+    saveCachedCatalog(r);
+    applyCatalogSideEffects(r);
   } catch (err) {
     if (state.token === requestToken) state.catalogWarning = 'Chưa đồng bộ được bảng giá nguồn. Bấm Làm mới dữ liệu để thử lại.';
+  } finally {
+    if (state.token === requestToken) state.loadingCatalog = false;
   }
 }
 
@@ -374,21 +435,30 @@ function updateSaleMarquee() {
 // ============================================================================
 // LOAD ORDERS & ADMIN OVERVIEW
 // ============================================================================
-async function loadOrders() {
-  if (!state.user) return;
+async function loadOrders(forceRefresh = false) {
+  if (!state.user) return false;
   const requestToken = state.token;
+  state.loadingOrders = true;
   try {
-    const r = await apiFetch('/api/orders?category=all');
+    const r = await apiFetch(`/api/orders?category=all${forceRefresh ? '&refresh=1' : ''}`);
     if (r.success && state.token === requestToken) {
-      state.orders = r.orders || [];
+      const nextOrders = r.orders || [];
+      const sig = `${nextOrders.length}:${nextOrders.map(o => `${o.id}:${o.status}:${o.isActive}:${o.completedCnt}:${o.sendingCnt}:${o.failedCnt}:${o.cancelRequested ? 1 : 0}`).join('|')}`;
+      const changed = sig !== state.lastOrdersSig;
+      state.lastOrdersSig = sig;
+      state.orders = nextOrders;
       state.ordersWarning = r.partial ? 'Một phần danh sách đơn chưa đồng bộ được với nguồn.' : '';
       const activeCount = state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
       const badge = document.getElementById('sidebarActiveOrdersCount');
       if (badge) badge.textContent = String(activeCount);
+      return changed;
     }
   } catch (err) {
     if (state.token === requestToken) state.ordersWarning = 'Chưa cập nhật được danh sách đơn.';
+  } finally {
+    if (state.token === requestToken) state.loadingOrders = false;
   }
+  return false;
 }
 
 async function loadAdminOverview() {
@@ -715,23 +785,49 @@ function renderOrderCategoryPageHtml(catKey) {
               <th>THAO TÁC</th>
             </tr>
           </thead>
-          <tbody>
-            ${
-              filteredOrders.length === 0
-                ? `
-              <tr>
-                <td colspan="13" style="text-align:center;padding:32px;color:var(--color-fog-veil);">
-                  Không có dữ liệu
-                </td>
-              </tr>
-            `
-                : filteredOrders.map((o) => renderOrderTableRowHtml(o)).join('')
-            }
+          <tbody id="catOrdersTbody">
+            ${renderCatOrdersTbodyHtml(catKey)}
           </tbody>
         </table>
       </div>
     </div>
   `;
+}
+
+function getFilteredCatOrders(catKey) {
+  const catOrders = state.orders.filter((o) =>
+    catKey === 'fruit_coin'
+      ? o.category === 'fruit_coin' || o.category === 'fruit_by_fruit'
+      : o.category === catKey
+  );
+  const q = state.orderSearch.trim().toLowerCase();
+  return catOrders.filter((o) => {
+    if (state.orderActiveFilter === '1' && !o.isActive) return false;
+    if (state.orderActiveFilter === '0' && o.isActive) return false;
+    if (state.orderProgressFilter === 'running' && ['completed', 'cancelled'].includes(o.status)) return false;
+    if (state.orderProgressFilter === 'completed' && o.status !== 'completed') return false;
+    if (q) {
+      const matchName = String(o.customer?.nickname || '').toLowerCase().includes(q);
+      const matchSuid = String(o.customer?.suid || '').toLowerCase().includes(q);
+      const matchId = String(o.remoteOrderId || o.id).toLowerCase().includes(q);
+      if (!matchName && !matchSuid && !matchId) return false;
+    }
+    return true;
+  });
+}
+
+function renderCatOrdersTbodyHtml(catKey) {
+  const filteredOrders = getFilteredCatOrders(catKey);
+  if (filteredOrders.length === 0) {
+    return `
+      <tr>
+        <td colspan="13" style="text-align:center;padding:32px;color:var(--color-fog-veil);">
+          ${state.loadingOrders ? '<span class="loading-inline"><span class="loading-dot"></span>Đang đồng bộ danh sách đơn hàng...</span>' : 'Không có dữ liệu'}
+        </td>
+      </tr>
+    `;
+  }
+  return filteredOrders.map((o) => renderOrderTableRowHtml(o)).join('');
 }
 
 function renderOrderTableRowHtml(o) {
@@ -799,10 +895,13 @@ function renderOrderTableRowHtml(o) {
   `;
 }
 
+let catFilterTimer = null;
 function bindOrderCategoryPageEvents(catKey) {
   document.getElementById('btnRefreshCatPage')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btnRefreshCatPage');
+    if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
     showToast('Đang đồng bộ dữ liệu mới nhất...');
-    await Promise.all([loadCatalog(true), loadOrders()]);
+    await Promise.all([loadCatalog(true), loadOrders(true)]);
     renderCurrentView();
   });
 
@@ -816,25 +915,28 @@ function bindOrderCategoryPageEvents(catKey) {
     openCategoryPriceListModal(catKey);
   });
 
+  const updateTbodyOnly = () => {
+    const tbody = document.getElementById('catOrdersTbody');
+    if (!tbody) return;
+    tbody.innerHTML = renderCatOrdersTbodyHtml(catKey);
+    bindOrderRowActionButtons();
+  };
+
   const searchIn = document.getElementById('catOrderSearchInput');
   searchIn?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
-    renderCurrentView();
-    const el = document.getElementById('catOrderSearchInput');
-    if (el) {
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
+    if (catFilterTimer && typeof clearTimeout === 'function') clearTimeout(catFilterTimer);
+    catFilterTimer = setTimeout(updateTbodyOnly, 80);
   });
 
   document.getElementById('catOrderActiveSelect')?.addEventListener('change', (e) => {
     state.orderActiveFilter = e.target.value;
-    renderCurrentView();
+    updateTbodyOnly();
   });
 
   document.getElementById('catOrderProgressSelect')?.addEventListener('change', (e) => {
     state.orderProgressFilter = e.target.value;
-    renderCurrentView();
+    updateTbodyOnly();
   });
 
   bindOrderRowActionButtons();
@@ -1357,22 +1459,38 @@ function bindCreateOrderModalEvents() {
   });
 }
 
+function estimateFruitOrderPriceLocally(fruitItem, qty, muts) {
+  if (!fruitItem) return 0;
+  const base = Number(fruitItem.unit_price || 0);
+  const cleanQty = Math.max(1, Math.floor(Number(qty || 1)));
+  if (!muts || muts.length === 0) return cleanQty * base;
+  let sumMut = 0;
+  for (const mk of muts) {
+    const m = (fruitItem.mutation_prices || []).find(x => Number(x.mutation_key) === Number(mk));
+    sumMut += m ? Number(m.unit_price || base) : base;
+  }
+  const combined = Math.max(base, sumMut - (muts.length - 1) * base);
+  return cleanQty * combined;
+}
+
 let modalPreviewTimer = null;
 function triggerModalFruitPreview() {
-  if (modalPreviewTimer) clearTimeout(modalPreviewTimer);
+  if (modalPreviewTimer && typeof clearTimeout === 'function') clearTimeout(modalPreviewTimer);
   state.modalOrder.fruit_preview_price = 0;
   state.modalOrder.quotedPrice = 0;
+  const muts = state.modalOrder.fruit_variant_mode === 'specify' ? state.modalOrder.fruit_mutation_list : [];
   const signature = JSON.stringify([state.modalOrder.fruit_item_id, state.modalOrder.fruit_total_cnt, state.modalOrder.fruit_variant_mode, state.modalOrder.fruit_mutation_list]);
   const priceEl = document.getElementById('modalTotalPriceText');
-  if (priceEl) priceEl.textContent = 'Đang tính...';
+  const fi = (state.catalogData?.catalog?.fruit_by_fruit || []).find(f => Number(f.id) === Number(state.modalOrder.fruit_item_id));
+  const localEst = estimateFruitOrderPriceLocally(fi, state.modalOrder.fruit_total_cnt, muts);
+  if (priceEl) priceEl.textContent = localEst > 0 ? `~${formatVnd(localEst)}` : 'Đang tính...';
 
   modalPreviewTimer = setTimeout(async () => {
     try {
       const r = await apiFetch('/api/catalog/preview-fruit', 'POST', {
         fruit_item_id: state.modalOrder.fruit_item_id,
         total_cnt: state.modalOrder.fruit_total_cnt,
-        mutation_list:
-          state.modalOrder.fruit_variant_mode === 'specify' ? state.modalOrder.fruit_mutation_list : [],
+        mutation_list: muts,
       });
       const currentSignature = JSON.stringify([state.modalOrder.fruit_item_id, state.modalOrder.fruit_total_cnt, state.modalOrder.fruit_variant_mode, state.modalOrder.fruit_mutation_list]);
       if (r.success && r.data && signature === currentSignature) {
@@ -1383,7 +1501,7 @@ function triggerModalFruitPreview() {
     } catch {
       if (priceEl) priceEl.textContent = 'Lỗi tính giá';
     }
-  }, 180);
+  }, 150);
 }
 
 function updateCreateOrderModalPrice() {
@@ -1654,7 +1772,7 @@ function openFruitWarehouseModal() {
         (f) => `
         <div class="pkg-picker-card" data-wh-fruit="${f.id}">
           <div style="display:flex;align-items:center;gap:10px;">
-            ${f.icon ? `<img src="${escapeHtml(f.icon)}" style="width:36px;height:36px;object-fit:contain;" alt="" />` : '🍎'}
+            ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:36px;height:36px;object-fit:contain;" alt="" />` : '🍎'}
             <div>
               <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(f.name)}</div>
               <div style="font-size:11px;color:#4ade80;">Tồn kho: ${formatNum(f.stock_quantity)}</div>
@@ -1681,7 +1799,12 @@ function openFruitWarehouseModal() {
   };
 
   renderList('');
-  body.querySelector('#whFruitFilterInput')?.addEventListener('input', (e) => renderList(e.target.value));
+  let whTimer = null;
+  body.querySelector('#whFruitFilterInput')?.addEventListener('input', (e) => {
+    const val = e.target.value;
+    if (whTimer && typeof clearTimeout === 'function') clearTimeout(whTimer);
+    whTimer = setTimeout(() => renderList(val), 80);
+  });
   overlay.style.display = 'flex';
 }
 
@@ -1979,23 +2102,8 @@ function renderOrderHistoryHtml() {
               <th>THAO TÁC</th>
             </tr>
           </thead>
-          <tbody>
-            ${
-              state.orders.length === 0
-                ? `<tr><td colspan="13" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Không có dữ liệu</td></tr>`
-                : state.orders
-                    .filter((o) => {
-                      if (!state.orderSearch.trim()) return true;
-                      const q = state.orderSearch.trim().toLowerCase();
-                      return (
-                        String(o.customer?.nickname || '').toLowerCase().includes(q) ||
-                        String(o.customer?.suid || '').toLowerCase().includes(q) ||
-                        String(o.remoteOrderId || o.id).toLowerCase().includes(q)
-                      );
-                    })
-                    .map((o) => renderOrderTableRowHtml(o))
-                    .join('')
-            }
+          <tbody id="histOrdersTbody">
+            ${renderOrderHistoryTbodyHtml()}
           </tbody>
         </table>
       </div>
@@ -2003,16 +2111,34 @@ function renderOrderHistoryHtml() {
   `;
 }
 
+function renderOrderHistoryTbodyHtml() {
+  const q = state.orderSearch.trim().toLowerCase();
+  const list = state.orders.filter((o) => {
+    if (!q) return true;
+    return (
+      String(o.customer?.nickname || '').toLowerCase().includes(q) ||
+      String(o.customer?.suid || '').toLowerCase().includes(q) ||
+      String(o.remoteOrderId || o.id).toLowerCase().includes(q)
+    );
+  });
+  if (list.length === 0) {
+    return `<tr><td colspan="13" style="text-align:center;padding:28px;color:var(--color-fog-veil);">${state.loadingOrders ? '<span class="loading-inline"><span class="loading-dot"></span>Đang đồng bộ lịch sử đơn...</span>' : 'Không có dữ liệu'}</td></tr>`;
+  }
+  return list.map((o) => renderOrderTableRowHtml(o)).join('');
+}
+
+let histFilterTimer = null;
 function bindOrderHistoryEvents() {
   const input = document.getElementById('histSearchInput');
   input?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
-    renderCurrentView();
-    const el = document.getElementById('histSearchInput');
-    if (el) {
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
+    if (histFilterTimer && typeof clearTimeout === 'function') clearTimeout(histFilterTimer);
+    histFilterTimer = setTimeout(() => {
+      const tbody = document.getElementById('histOrdersTbody');
+      if (!tbody) return;
+      tbody.innerHTML = renderOrderHistoryTbodyHtml();
+      bindOrderRowActionButtons();
+    }, 80);
   });
   bindOrderRowActionButtons();
 }
@@ -2264,47 +2390,8 @@ function renderAdminPricingPageHtml() {
                 <th>19 HỆ ĐỘT BIẾN</th>
               </tr>
             </thead>
-            <tbody>
-              ${filteredFruits
-                .map((f) => {
-                  const cost = f._admin?.cost_unit_price ?? 130;
-                  const sell = f.unit_price;
-                  const profit = sell - cost;
-                  return `
-                    <tr>
-                      <td>
-                        <div style="display:flex;align-items:center;gap:10px;">
-                          ${f.icon ? `<img src="${escapeHtml(f.icon)}" style="width:30px;height:30px;object-fit:contain;" alt="" />` : '🍎'}
-                          <strong style="color:#fff;">${escapeHtml(f.name)}</strong>
-                        </div>
-                      </td>
-                      <td>${formatNum(f.stock_quantity)} trái</td>
-                      <td><strong style="color:var(--color-moon-mist);">${formatVnd(cost)}</strong></td>
-                      <td style="max-width:160px;">
-                        <input
-                          type="number"
-                          class="input-box adm-fruit-unit-input"
-                          data-fruit-id="${f.id}"
-                          data-cost="${cost}"
-                          value="${sell}"
-                          step="10"
-                          min="0"
-                        />
-                      </td>
-                      <td>
-                        <span class="badge-tag ${profit >= 0 ? 'green' : 'red'}" id="admFruitProfit_${f.id}">
-                          ${profit >= 0 ? `+${formatVnd(profit)}` : formatVnd(profit)} / trái
-                        </span>
-                      </td>
-                      <td>
-                        <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-open-mut-pricing="${f.id}">
-                          Chỉnh giá đột biến (${f.mutation_prices?.length || 0})
-                        </button>
-                      </td>
-                    </tr>
-                  `;
-                })
-                .join('')}
+            <tbody id="admFruitTbody">
+              ${renderAdminFruitRowsHtml(filteredFruits)}
             </tbody>
           </table>
         </div>
@@ -2391,26 +2478,50 @@ function renderAdminPricingPageHtml() {
   `;
 }
 
-function bindAdminPricingEvents() {
-  document.querySelectorAll('[data-adm-ptab]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.adminPricingTab = btn.dataset.admPtab;
-      renderCurrentView();
-    });
-  });
+function renderAdminFruitRowsHtml(fruits) {
+  return fruits
+    .map((f) => {
+      const cost = f._admin?.cost_unit_price ?? 130;
+      const sell = f.unit_price;
+      const profit = sell - cost;
+      return `
+        <tr>
+          <td>
+            <div style="display:flex;align-items:center;gap:10px;">
+              ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:30px;height:30px;object-fit:contain;" alt="" />` : '🍎'}
+              <strong style="color:#fff;">${escapeHtml(f.name)}</strong>
+            </div>
+          </td>
+          <td>${formatNum(f.stock_quantity)} trái</td>
+          <td><strong style="color:var(--color-moon-mist);">${formatVnd(cost)}</strong></td>
+          <td style="max-width:160px;">
+            <input
+              type="number"
+              class="input-box adm-fruit-unit-input"
+              data-fruit-id="${f.id}"
+              data-cost="${cost}"
+              value="${sell}"
+              step="10"
+              min="0"
+            />
+          </td>
+          <td>
+            <span class="badge-tag ${profit >= 0 ? 'green' : 'red'}" id="admFruitProfit_${f.id}">
+              ${profit >= 0 ? `+${formatVnd(profit)}` : formatVnd(profit)} / trái
+            </span>
+          </td>
+          <td>
+            <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-open-mut-pricing="${f.id}">
+              Chỉnh giá đột biến (${f.mutation_prices?.length || 0})
+            </button>
+          </td>
+        </tr>
+      `;
+    })
+    .join('');
+}
 
-  const searchIn = document.getElementById('admFruitSearchInput');
-  searchIn?.addEventListener('input', (e) => {
-    state.adminFruitSearch = e.target.value;
-    renderCurrentView();
-    const el = document.getElementById('admFruitSearchInput');
-    if (el) {
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  });
-
-  // Live profit calculation when typing fruit unit price
+function bindAdminFruitRowEvents() {
   document.querySelectorAll('.adm-fruit-unit-input').forEach((inp) => {
     inp.addEventListener('input', () => {
       const fid = inp.dataset.fruitId;
@@ -2425,6 +2536,39 @@ function bindAdminPricingEvents() {
     });
   });
 
+  document.querySelectorAll('[data-open-mut-pricing]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      openAdminMutationPricingModal(Number(btn.dataset.openMutPricing));
+    });
+  });
+}
+
+let admFruitSearchTimer = null;
+function bindAdminPricingEvents() {
+  document.querySelectorAll('[data-adm-ptab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.adminPricingTab = btn.dataset.admPtab;
+      renderCurrentView();
+    });
+  });
+
+  const searchIn = document.getElementById('admFruitSearchInput');
+  searchIn?.addEventListener('input', (e) => {
+    state.adminFruitSearch = e.target.value;
+    if (admFruitSearchTimer && typeof clearTimeout === 'function') clearTimeout(admFruitSearchTimer);
+    admFruitSearchTimer = setTimeout(() => {
+      const tbody = document.getElementById('admFruitTbody');
+      if (!tbody) return;
+      const fruits = state.catalogData?.catalog?.fruit_by_fruit || [];
+      const q = state.adminFruitSearch.trim().toLowerCase();
+      const filtered = q ? fruits.filter((f) => f.name.toLowerCase().includes(q)) : fruits;
+      tbody.innerHTML = renderAdminFruitRowsHtml(filtered);
+      bindAdminFruitRowEvents();
+    }, 80);
+  });
+
+  bindAdminFruitRowEvents();
+
   // Live profit calculation when typing package override price
   document.querySelectorAll('.adm-pkg-override-input').forEach((inp) => {
     inp.addEventListener('input', () => {
@@ -2437,13 +2581,6 @@ function bindAdminPricingEvents() {
         badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)}`;
         badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
       }
-    });
-  });
-
-  // Open Mutation Pricing Modal for a specific fruit
-  document.querySelectorAll('[data-open-mut-pricing]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      openAdminMutationPricingModal(Number(btn.dataset.openMutPricing));
     });
   });
 
@@ -2576,8 +2713,18 @@ function openAdminMutationPricingModal(fruitId) {
 function renderAdminCtvPageHtml() {
   const ctvs = state.adminOverview?.ctvs || [];
   const stats = state.adminOverview?.stats || {};
+  const storage = state.adminOverview?.storage || {};
+  const ephemeralBanner = storage.isRender && !storage.persistent
+    ? `
+      <div class="tool-warning" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <span>⚠️ Đang chạy trên ổ tạm Render Free (chưa gắn PostgreSQL miễn phí). Tài khoản CTV và số dư sẽ bị mất khi Render tắt/redeploy — hãy gắn <strong>Neon PostgreSQL miễn phí</strong> trong mục <strong>Cấu hình Nguồn API</strong>.</span>
+        <button type="button" class="btn-frost" id="btnGotoStorageSetup" style="font-size:12px;">Xem hướng dẫn gắn DB miễn phí →</button>
+      </div>
+    `
+    : '';
 
   return `
+    ${ephemeralBanner}
     <div class="stats-three-grid">
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng số tài khoản CTV</div>
@@ -2709,6 +2856,9 @@ function openResetCtvPasswordModal(ctvId) {
 }
 
 function bindAdminCtvEvents() {
+  document.getElementById('btnGotoStorageSetup')?.addEventListener('click', () => {
+    switchView('admin_system');
+  });
   document.querySelectorAll('[data-reset-ctv]').forEach(button => button.addEventListener('click', async () => {
     openResetCtvPasswordModal(button.dataset.resetCtv);
   }));
@@ -2820,8 +2970,62 @@ function openTopupCtvModal(ctvId, ctvName) {
 
 function renderAdminSystemPageHtml() {
   const hn = state.adminOverview?.settings?.hoanNguyen || {};
+  const storage = state.adminOverview?.storage || { mode: 'json', persistent: false, isRender: false, healthy: true };
+  const stats = state.adminOverview?.stats || {};
+  const isPg = storage.mode === 'postgresql';
+
   return `
-    <div class="glass-panel" style="max-width:680px;">
+    <div class="glass-panel" style="max-width:760px;">
+      <div class="panel-title-row">
+        <span class="panel-title-text">💾 Lưu trữ Dữ liệu & Sao lưu (Chống mất tài khoản CTV)</span>
+        <span class="badge-tag ${isPg ? 'green' : storage.isRender ? 'red' : 'amber'}">
+          ${isPg ? '● PostgreSQL (Bền vững — Không mất khi hosting tắt)' : storage.isRender ? '● JSON ổ tạm Render (Sẽ mất khi ngủ/redeploy)' : '● JSON cục bộ (data/db.json)'}
+        </span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+          <div class="stat-subcard" style="padding:12px 14px;">
+            <div style="font-size:11px;color:var(--color-fog-veil);">Tài khoản CTV</div>
+            <strong style="font-size:18px;color:#fff;">${stats.totalCtvCount || 0} CTV</strong>
+          </div>
+          <div class="stat-subcard" style="padding:12px 14px;">
+            <div style="font-size:11px;color:var(--color-fog-veil);">Tổng số dư ví CTV</div>
+            <strong style="font-size:18px;color:#4ade80;">${formatVnd(stats.totalCtvBalance || 0)}</strong>
+          </div>
+          <div class="stat-subcard" style="padding:12px 14px;">
+            <div style="font-size:11px;color:var(--color-fog-veil);">Đơn hàng / Giao dịch</div>
+            <strong style="font-size:18px;color:#fbbf24;">${stats.totalLocalOrders || 0} / ${stats.totalTransactions || 0}</strong>
+          </div>
+        </div>
+
+        ${!isPg ? `
+          <div class="storage-guide-box">
+            <strong style="color:#fff;">✨ Phương án lưu trữ MIỄN PHÍ vĩnh viễn cho Render Free (&lt;10 CTV): Neon PostgreSQL</strong>
+            <ol>
+              <li>Vào <strong>neon.tech</strong> (đăng nhập bằng GitHub/Google, miễn phí 0đ trọn đời, không cần thẻ tín dụng) → Tạo Project mới (chọn Region gần Render như Singapore hoặc US East).</li>
+              <li>Bấm <strong>Connect</strong> → Copy chuỗi kết nối PostgreSQL (bắt đầu bằng <code>postgresql://...</code>).</li>
+              <li>Vào Render Dashboard → Service ZnPlay → <strong>Environment</strong> → Thêm biến <code>DATABASE_URL</code> = chuỗi vừa copy → Lưu &amp; Deploy lại. Từ đó toàn bộ CTV, ví, đơn hàng và bảng giá sẽ <strong>không bao giờ bị mất</strong> kể cả khi Render ngủ hoặc tắt!</li>
+            </ol>
+            <div style="font-size:12px;color:var(--color-fog-veil);">
+              💡 Mẹo giữ web mượt không bị ngủ 15 phút: Tạo monitor miễn phí trên <strong>UptimeRobot</strong> hoặc <strong>cron-job.org</strong> gọi <code>https://&lt;domain-của-bạn&gt;/api/ping</code> mỗi 10 phút.
+            </div>
+          </div>
+        ` : `
+          <div style="font-size:12.5px;color:#5eead4;background:rgba(38,150,132,0.12);padding:10px 14px;border-radius:10px;">
+            ✓ Hệ thống đang kết nối PostgreSQL bền vững. Toàn bộ tài khoản CTV, số dư ví, đơn hàng và bảng giá được bảo toàn an toàn khi hosting nghỉ hoặc khởi động lại.
+          </div>
+        `}
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <button type="button" class="btn-frost" id="btnExportBackupJson">⬇ Tải bản sao lưu JSON</button>
+          <button type="button" class="btn-frost" id="btnImportBackupJson">⬆ Khôi phục từ file JSON</button>
+          <input type="file" id="admBackupFileInput" accept="application/json,.json" style="display:none;" />
+          <span style="font-size:11.5px;color:var(--color-fog-veil);">Bản sao lưu không chứa mật khẩu/token nguồn HoanNguyen.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="glass-panel" style="max-width:760px;">
       <div class="panel-title-row">
         <span class="panel-title-text">⚙️ Cấu hình Tài khoản Nguồn HoanNguyen</span>
         <span class="badge-tag ${hn.connected ? 'green' : 'red'}">
@@ -2844,7 +3048,7 @@ function renderAdminSystemPageHtml() {
         </div>
       </div>
     </div>
-    <form class="glass-panel" id="adminPasswordForm" style="max-width:680px;display:flex;flex-direction:column;gap:14px;">
+    <form class="glass-panel" id="adminPasswordForm" style="max-width:760px;display:flex;flex-direction:column;gap:14px;">
       <div class="panel-title-text">Đổi mật khẩu đăng nhập Admin</div>
       <div style="font-size:12px;color:var(--color-moon-mist);">Sau khi đổi mật khẩu, tất cả phiên đăng nhập Admin sẽ được đăng xuất.</div>
       <label>Mật khẩu hiện tại
@@ -2862,6 +3066,51 @@ function renderAdminSystemPageHtml() {
 }
 
 function bindAdminSystemEvents() {
+  document.getElementById('btnExportBackupJson')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btnExportBackupJson');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await apiFetch('/api/admin/backup/export');
+      const blob = new Blob([JSON.stringify(r.backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `znplay-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast('Đã tải bản sao lưu JSON thành công!');
+    } catch (err) {
+      showToast(`Lỗi sao lưu: ${err.message}`);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  const fileInput = document.getElementById('admBackupFileInput');
+  document.getElementById('btnImportBackupJson')?.addEventListener('click', () => {
+    if (fileInput) {
+      fileInput.value = '';
+      fileInput.click();
+    }
+  });
+  fileInput?.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (!confirm(`Khôi phục toàn bộ CTV, số dư, đơn hàng và bảng giá từ tệp "${file.name}"? Dữ liệu hiện tại sẽ được thay thế bằng bản sao lưu này.`)) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const payload = parsed.backup ? { backup: parsed.backup } : { backup: parsed };
+      const r = await apiFetch('/api/admin/backup/import', 'POST', payload);
+      showToast(r.message || 'Đã khôi phục dữ liệu thành công!');
+      await Promise.all([loadAdminOverview(), loadCatalog(true), loadOrders(true)]);
+      renderCurrentView();
+    } catch (err) {
+      showToast(`Lỗi khôi phục: ${err.message}`);
+    }
+  });
   document.getElementById('adminPasswordForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.currentTarget;
@@ -2935,9 +3184,14 @@ function bindGlobalEvents() {
     try {
       const result = await apiFetch('/api/auth/me');
       if (result.user) { state.user = result.user; updateShellAuthUI(); }
-      if (state.currentView === 'admin_monitor' && state.user?.role === 'admin') await loadAdminMonitor();
+      if (state.currentView === 'admin_monitor' && state.user?.role === 'admin') {
+        await loadAdminMonitor();
+      } else if ((ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'order_history') && !isUserTypingOrModalOpen()) {
+        const changed = await loadOrders(false);
+        if (changed && !isUserTypingOrModalOpen()) renderCurrentView();
+      }
     } catch {}
-  }, 30000);
+  }, 45000);
   // Sidebar menu navigation
   document.querySelectorAll('.sidebar-item[data-view]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -2995,8 +3249,7 @@ async function bootstrap() {
   bindGlobalEvents();
   await initAuth();
   if (state.user) {
-    await Promise.all([loadCatalog(false), loadOrders()]);
-    renderCurrentView();
+    await loadInitialAppData();
   }
 }
 

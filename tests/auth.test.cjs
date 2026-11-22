@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const express = require('express');
 
 const root = path.resolve(__dirname, '..');
@@ -41,7 +42,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
       app.listen = () => {}; // Avoid the production listener and startup login.
       return app;
     },
-    fs: fakeFs, path, crypto,
+    fs: fakeFs, path, crypto, zlib,
     fileURLToPath: () => path.join(root, 'server.js'),
     process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
     fetch: upstreamFetch,
@@ -653,4 +654,49 @@ test('settlements expose only CTV-visible order fields, excluding source refund 
   const seller = await server.login('seller', 'seller-test-password');
   const response = await server.request('/api/settlements', 'GET', seller.body.token);
   for (const field of ['costPrice', 'markupAmount', 'sourceRefunded', 'apiOrderPath', 'intentId']) assert.equal(response.body.orders[0][field], undefined);
+});
+
+test('ping responds immediately, catalog supports compression and invalidates cache on price changes', async t => {
+  const server = await startTestServer(t, financeSource());
+  const ping = await server.request('/api/ping');
+  assert.equal(ping.status, 200);
+  assert.equal(ping.body.ok, true);
+
+  const admin = await server.login('owner', 'owner-test-password');
+  const cat1 = await server.request('/api/catalog', 'GET', admin.body.token);
+  assert.equal(cat1.status, 200);
+  assert.equal(cat1.body.catalog.buff_tim[0].total_price, 15000);
+
+  await server.request('/api/admin/settings', 'PUT', admin.body.token, { packagePriceOverrides: { 'buff_tim:7': 19000 } });
+  const cat2 = await server.request('/api/catalog', 'GET', admin.body.token);
+  assert.equal(cat2.status, 200);
+  assert.equal(cat2.body.catalog.buff_tim[0].total_price, 19000);
+});
+
+test('admin backup export excludes upstream secrets and backup import restores CTVs safely', async t => {
+  const server = await startTestServer(t);
+  const admin = await server.login('owner', 'owner-test-password');
+  const seller = await server.login('seller', 'seller-test-password');
+
+  assert.equal((await server.request('/api/admin/backup/export', 'GET', seller.body.token)).status, 403);
+  assert.equal((await server.request('/api/admin/backup/import', 'POST', seller.body.token, { backup: {} })).status, 403);
+
+  const exported = await server.request('/api/admin/backup/export', 'GET', admin.body.token);
+  assert.equal(exported.status, 200);
+  assert.equal(exported.body.backup.settings.hoanNguyen.password, '');
+  assert.equal(exported.body.backup.settings.hoanNguyen.token, '');
+  assert.equal(exported.body.backup.users.length, 2);
+
+  // Reject malformed backup
+  assert.equal((await server.request('/api/admin/backup/import', 'POST', admin.body.token, { backup: { users: [] } })).status, 400);
+
+  // Modify backup (add a CTV) and restore while preserving upstream credentials
+  const modified = structuredClone(exported.body.backup);
+  modified.users.push({ id: 'ctv_restored', username: 'restored01', email: 'restored01@znplay.vn', password: 'restored-ctv-password-123', name: 'Restored CTV', phone: '', role: 'ctv', balance: 75000, isLocked: false, createdAt: new Date().toISOString() });
+  const imported = await server.request('/api/admin/backup/import', 'POST', admin.body.token, { backup: modified });
+  assert.equal(imported.status, 200);
+  assert.equal(server.db.users.find(u => u.username === 'restored01')?.balance, 75000);
+  assert.equal(server.db.settings.hoanNguyen.password, 'source-test-password');
+  assert.equal(server.db.settings.hoanNguyen.token, 'test-upstream-token');
+  assert.equal((await server.login('restored01', 'restored-ctv-password-123')).status, 200);
 });

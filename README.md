@@ -41,25 +41,27 @@ hiện có bằng chức năng trong giao diện admin.
 Biến tài khoản nguồn, khi có giá trị, được ưu tiên hơn cấu hình đã lưu trong database.
 Nếu thay tài khoản nguồn qua Environment trên Render, cần triển khai lại dịch vụ.
 
-## Chuyển dữ liệu hiện có sang Neon
+## Chuyển dữ liệu hiện có sang Neon (Miễn phí vĩnh viễn)
 
+### Cách nhanh nhất (Cửa hàng mới hoặc muốn giữ dữ liệu từ giờ trở đi)
+1. Đăng ký miễn phí tại [neon.tech](https://neon.tech) (không cần thẻ tín dụng, miễn phí 0.5 GB & 100 CU-giờ/tháng — quá dư cho dưới 10 CTV).
+2. Tạo Project mới → bấm **Connect** → copy chuỗi `DATABASE_URL` (`postgresql://...`).
+3. Dán `DATABASE_URL` vào **Render → Environment** (đảm bảo đã có `ADMIN_PASSWORD`) → Deploy lại.
+4. Hệ thống sẽ tự khởi tạo bảng PostgreSQL lần đầu. Kiểm tra `/api/health` thấy `storage: "postgresql"`. Từ lúc này toàn bộ tài khoản CTV, số dư ví, đơn hàng và bảng giá sẽ **không bao giờ bị mất** khi Render ngủ hoặc tắt.
+5. Nếu muốn mang dữ liệu từ localhost lên hosting, mở **Quản trị → Cấu hình Nguồn API → Tải bản sao lưu JSON** ở localhost rồi **Khôi phục từ file JSON** trên hosting (hoặc dùng CLI `npm run db:import` bên dưới).
+
+### Chuyển bằng CLI (`npm run db:import`)
 1. Trước khi redeploy Render hoặc thay biến môi trường, ngừng các thao tác làm
    thay đổi dữ liệu và lấy bản sao riêng của `data/db.json` đang phục vụ.
-   Đối chiếu tài khoản CTV, số dư, giao dịch và đơn đang chờ với bản sao.
-   Dữ liệu localhost có thể khác dữ liệu hosting.
-2. Tạo database trên Neon. Lấy chuỗi kết nối PostgreSQL có TLS từ **Connect**.
-   Trên máy nhập dữ liệu, đặt `DATABASE_URL` trong `.env`; đặt `DATA_DIR` trỏ
-   đến thư mục chứa bản sao chính thức. Giữ file này ngoài Git.
+2. Đặt `DATABASE_URL` trong `.env`; đặt `DATA_DIR` trỏ đến thư mục chứa bản sao chính thức. Giữ file này ngoài Git.
 3. Chạy `npm ci` và `npm run db:import`. Lệnh nhập tài khoản, phiên, giá,
-   số dư, giao dịch, đơn, yêu cầu đối soát và nhật ký trong một giao dịch.
-   Lệnh kết thúc sau khi nhập và từ chối ghi đè database ZnPlay đã có dữ liệu.
+   số dư, giao dịch, đơn, yêu cầu đối soát và nhật ký trong một giao dịch và từ chối ghi đè database ZnPlay đã có dữ liệu.
 4. Đặt cùng `DATABASE_URL` trong Render Environment và triển khai một instance.
-   Kiểm tra `/api/health` có `storage: "postgresql"`, đăng nhập, đối chiếu số dư
-   và lịch sử trước khi mở lại giao dịch. Giữ bản sao JSON riêng.
 
-Với cửa hàng mới hoàn toàn, có thể đặt `ZNPLAY_NEW_DATABASE=true` trên Render
-kèm `ADMIN_PASSWORD` để khởi tạo PostgreSQL trống. Gỡ biến khởi tạo sau lần đầu.
-Khi `DATABASE_URL` đã cấu hình, lỗi PostgreSQL khiến API tạm ngừng phục vụ.
+### Giữ Render Free phản hồi nhanh (tùy chọn miễn phí)
+Render Free ngủ sau 15 phút không có truy cập. Bạn có thể tạo 1 monitor miễn phí trên **UptimeRobot** hoặc **cron-job.org** gọi `GET https://<domain-của-bạn>/api/ping` mỗi 10 phút trong khung giờ bán hàng để trang luôn nóng và phản hồi tức thì.
+
+Khi `DATABASE_URL` đã cấu hình, lỗi PostgreSQL kéo dài khiến API tạm ngừng phục vụ để bảo vệ số dư; lỗi ngắt kết nối tạm thời khi Neon thức dậy sẽ tự động thử lại.
 Mỗi môi trường chạy một tiến trình ghi. Dùng database hoặc nhánh Neon riêng
 cho localhost để hai môi trường không tiếp quản dữ liệu của nhau.
 

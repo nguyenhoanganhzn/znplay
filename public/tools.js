@@ -41,6 +41,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     if (details.category) parts.push(`Mục: ${CAT_LABELS[details.category] || details.category}`);
     if (details.remoteOrderId) parts.push(`Đơn #${details.remoteOrderId}`);
     if (details.sellPrice !== undefined) parts.push(`Giá bán: ${money(details.sellPrice)}`);
+    if (details.refundedAmount !== undefined && Number(details.refundedAmount) > 0) parts.push(`Hoàn ví: +${money(details.refundedAmount)}`);
     if (details.amount !== undefined) parts.push(`Số tiền: ${Number(details.amount) >= 0 ? '+' : ''}${money(details.amount)}`);
     if (details.balanceAfter !== undefined) parts.push(`Sau GD: ${money(details.balanceAfter)}`);
     if (details.nickname) parts.push(`Tên tìm: ${details.nickname}${details.resultCount !== undefined ? ` (${details.resultCount} KQ)` : ''}`);
@@ -283,7 +284,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
       : '';
 
     const intents = (data.intents || []).map(intent => `<tr><td>${esc(intent.userName)}<div class="tool-note">${date(intent.createdAt)}</div></td><td>${esc(intent.summary || intent.category)}<div class="tool-note">${esc(intent.id)}</div></td><td>${money(intent.heldAmount)}<div class="tool-note">Chi phí dự kiến: ${money(intent.expectedCost)}</div></td><td>${esc(statuses[intent.status] || intent.status)}</td><td>${intent.status === 'uncertain' ? button('Đối soát nguồn', 'data-reconcile-intent', intent.id) : intent.requiresReview ? button('Ghi nhận chênh lệch', 'data-ack-intent', intent.id) : 'Đợi phản hồi nguồn'}</td></tr>`).join('');
-    const cancellations = (data.cancellations || []).map(order => `<tr><td>${esc(order.placedBy?.name)}<div class="tool-note">${esc(order.categoryName)} #${esc(order.remoteOrderId)}</div></td><td>${esc(order.summary)}</td><td>${money(order.sellPrice)}<div class="tool-note">Đã hoàn CTV: ${money(order.refundedAmount || 0)}</div></td><td>${order.status === 'cancelled' ? 'Đã hủy tại nguồn, chờ đối soát tiền' : 'CTV yêu cầu hủy; nguồn có thể vẫn chạy'}</td><td>${order.status === 'cancelled' ? button('Hoàn tiền đã đối soát', 'data-refund-order', order.id) : button('Hủy tại nguồn', 'data-cancel-source', order.id)}</td></tr>`).join('');
+    const cancellations = (data.cancellations || []).map(order => `<tr><td>${esc(order.placedBy?.name)}<div class="tool-note">${esc(order.categoryName)} #${esc(order.remoteOrderId)}</div></td><td>${esc(order.summary)}</td><td>${money(order.sellPrice)}<div class="tool-note">Đã hoàn CTV: ${money(order.refundedAmount || 0)}</div></td><td>${order.status === 'cancelled' ? 'Đã hủy tại nguồn, chờ hoàn tiền & dọn đơn' : 'CTV yêu cầu hủy; nguồn có thể vẫn chạy'}</td><td style="display:flex;gap:6px;flex-wrap:wrap;">${order.status === 'cancelled' ? `${button('💰 Hoàn đủ & xóa đơn', 'data-quick-refund-clean', order.id, 'btn-violet')}${button('Hoàn một phần', 'data-refund-order', order.id)}` : button('Hủy & hoàn tiền', 'data-cancel-source', order.id, 'btn-violet')}</td></tr>`).join('');
     const events = (data.events || []).map(event => `<tr><td style="white-space:nowrap;font-size:12px;">${date(event.createdAt)}</td><td>${esc(event.actorName)}<div class="tool-note">${esc(event.actorRole)}</div></td><td>${esc(formatAuditAction(event.action))}</td><td style="font-size:12px;color:var(--color-moon-mist);">${esc(formatAuditDetails(event.details))}</td></tr>`).join('');
     const table = (headers, rows) => `<div class="table-wrap"><table class="data-table"><thead><tr>${headers.map(title => `<th>${title}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}">Chưa có dữ liệu</td></tr>`}</tbody></table></div>`;
 
@@ -381,6 +382,19 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     }));
     document.querySelectorAll('[data-ack-intent]').forEach(control => control.addEventListener('click', () => {
       openReviewModal('Ghi nhận chênh lệch chi phí nguồn', '<p class="tool-note">Thao tác này ghi nhận admin đã kiểm tra chi phí, không tự trừ thêm tiền ví CTV.</p>', form => apiFetch(`/api/admin/intents/${encodeURIComponent(control.dataset.ackIntent)}/acknowledge`, 'POST', readReview(form)));
+    }));
+    document.querySelectorAll('[data-quick-refund-clean]').forEach(control => control.addEventListener('click', async () => {
+      const order = state.adminMonitor.cancellations.find(item => item.id === control.dataset.quickRefundClean);
+      if (!order) return;
+      const rem = Math.max(0, Number(order.sellPrice || 0) - Number(order.refundedAmount || 0));
+      if (!confirm(`Hoàn đủ ${money(rem)} về ví CTV "${order.placedBy?.name || ''}" và xóa hẳn đơn #${order.remoteOrderId} khỏi hệ thống?`)) return;
+      control.disabled = true;
+      try {
+        const response = await apiFetch(`/api/orders/${encodeURIComponent(order.category)}/${encodeURIComponent(order.remoteOrderId)}`, 'DELETE', { deletion_note: 'Hoàn tiền & dọn đơn đã hủy' });
+        showToast(response.message || 'Đã hoàn tiền & xóa đơn!');
+        await Promise.all([loadAdminMonitor(), loadOrders(true)]);
+      } catch (error) { showToast(error.message); }
+      finally { control.disabled = false; }
     }));
     document.querySelectorAll('[data-cancel-source]').forEach(control => control.addEventListener('click', async () => {
       const order = state.adminMonitor.cancellations.find(item => item.id === control.dataset.cancelSource);

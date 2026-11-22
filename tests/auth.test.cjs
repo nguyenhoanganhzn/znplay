@@ -430,29 +430,61 @@ test('disk failure prevents source dispatch and disables health and subsequent m
   assert.equal(creates, 0);
 });
 
-test('order IDs are scoped by category; CTV cancellation never deletes source order or auto-refunds', async t => {
+test('order IDs are scoped by category; CTV cannot delete while Admin delete auto-refunds uncompleted portion and removes order', async t => {
   let deletes = 0;
+  let failNextDelete = false;
   const source = financeSource();
   const server = await startTestServer(t, async (url, options) => {
-    if (options.method === 'DELETE') deletes += 1;
+    if (options.method === 'DELETE') {
+      if (failNextDelete) return { ok: false, status: 400, json: async () => ({ success: false, message: 'Cannot delete' }) };
+      deletes += 1;
+    }
     return source(url, options);
   }, { seed: data => {
-    data.localOrders.push({ id: 'my-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, status: 'pending', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
-      { id: 'foreign-order', category: 'buff_sao', remoteOrderId: 42, status: 'pending', placedBy: { id: 'other', role: 'ctv' }, customer: {} });
+    data.localOrders.push(
+      { id: 'my-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 0, status: 'pending', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
+      { id: 'partial-order', category: 'buff_tim', remoteOrderId: 43, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 40, status: 'assigned', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
+      { id: 'done-order', category: 'buff_tim', remoteOrderId: 44, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 100, status: 'completed', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
+      { id: 'foreign-order', category: 'buff_sao', remoteOrderId: 42, status: 'pending', placedBy: { id: 'other', role: 'ctv' }, customer: {} }
+    );
   } });
   const seller = await server.login('seller', 'seller-test-password');
   assert.equal((await server.request('/api/orders/buff_sao/42', 'DELETE', seller.body.token)).status, 403);
   assert.equal((await server.request('/api/orders/buff_sao/42/toggle-active', 'PUT', seller.body.token)).status, 403);
   assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', seller.body.token)).status, 403);
   assert.equal(deletes, 0);
-  assert.equal(server.db.localOrders[0].cancelRequested, undefined);
   assert.equal(server.db.users.find(u => u.id === 'seller').balance, 50000);
+
   const admin = await server.login('owner', 'owner-test-password');
-  assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', admin.body.token)).status, 200);
-  assert.equal(deletes, 1);
-  assert.equal(server.db.localOrders.length, 2);
-  assert.equal(server.db.localOrders[0].status, 'cancelled');
+  // Upstream failure must NOT refund or remove order
+  failNextDelete = true;
+  assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', admin.body.token)).status, 400);
   assert.equal(server.db.users.find(u => u.id === 'seller').balance, 50000);
+  assert.equal(server.db.localOrders.length, 4);
+
+  // Admin deletes unstarted CTV order -> refunds 100% (15.000đ) and deletes order from localOrders
+  failNextDelete = false;
+  const delUnstarted = await server.request('/api/orders/buff_tim/42', 'DELETE', admin.body.token);
+  assert.equal(delUnstarted.status, 200);
+  assert.equal(delUnstarted.body.refundedAmount, 15000);
+  assert.equal(deletes, 1);
+  assert.equal(server.db.localOrders.some(o => o.id === 'my-order'), false);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 65000);
+
+  // Admin deletes partially completed CTV order (40/100 done) -> refunds remaining 60% (9.000đ) and removes order
+  const delPartial = await server.request('/api/orders/buff_tim/43', 'DELETE', admin.body.token);
+  assert.equal(delPartial.status, 200);
+  assert.equal(delPartial.body.refundedAmount, 9000);
+  assert.equal(server.db.localOrders.some(o => o.id === 'partial-order'), false);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 74000);
+
+  // Admin deletes completed CTV order -> 0đ refund, removes order cleanly
+  const delDone = await server.request('/api/orders/buff_tim/44', 'DELETE', admin.body.token);
+  assert.equal(delDone.status, 200);
+  assert.equal(delDone.body.refundedAmount, 0);
+  assert.equal(server.db.localOrders.some(o => o.id === 'done-order'), false);
+  assert.equal(server.db.users.find(u => u.id === 'seller').balance, 74000);
+  assert.equal(server.db.localOrders.length, 1);
 });
 
 test('manual partial refund uses cumulative source credit and cannot over-refund or repeat', async t => {

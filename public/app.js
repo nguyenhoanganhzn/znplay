@@ -1203,13 +1203,24 @@ function bindOrderRowActionButtons() {
       btn.addEventListener('click', async () => {
         const remId = btn.dataset.deleteOrder;
         const cat = btn.dataset.orderCat;
-        if (!confirm(`Hủy đơn #${remId} tại nguồn? Tiền ví sẽ chỉ được hoàn sau khi đối soát.`)) return;
+        const ord = state.orders.find((o) => o.category === cat && String(o.remoteOrderId) === String(remId));
+        let confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn?`;
+        if (ord?.placedBy?.role === 'ctv') {
+          if (ord.status === 'completed') {
+            confirmMsg = `Xóa đơn #${remId} đã hoàn thành khỏi hệ thống? (Đơn đã giao đủ nên không hoàn tiền ví CTV.)`;
+          } else if (Number(ord.completedCnt || 0) > 0 && Number(ord.totalCnt || 0) > 0) {
+            confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn (đã chạy ${ord.completedCnt}/${ord.totalCnt})? Hệ thống sẽ xóa đơn và tự động hoàn phần chưa chạy vào ví CTV "${ord.placedBy.name}".`;
+          } else {
+            confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn? Sau khi nguồn xóa thành công, đơn sẽ mất khỏi bảng và tự động hoàn lại ${formatVnd(ord.sellPrice)} vào ví CTV "${ord.placedBy.name}".`;
+          }
+        }
+        if (!confirm(confirmMsg)) return;
         btn.disabled = true;
         try {
           const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
             deletion_note: 'Xóa đơn từ ZnStudio',
           });
-          showToast(res.message || 'Đã xóa đơn hàng');
+          showToast(res.message || 'Đã hủy & xóa đơn hàng');
           await Promise.all([loadOrders(true), initAuth()]);
           renderCurrentView();
         } catch (err) {

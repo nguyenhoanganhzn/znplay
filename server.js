@@ -2497,9 +2497,9 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       }
     }
 
-    // Build list: CTV only sees their own orders and NEVER sees costPrice or markupAmount!
+    // Build list: hide cancelled orders so they never clutter UI or skew stats; CTV only sees own orders!
     let results = db.localOrders
-      .filter((lo) => isAdmin || lo.placedBy?.id === user.id)
+      .filter((lo) => lo.status !== 'cancelled' && (isAdmin || lo.placedBy?.id === user.id))
       .map((lo) => ({
         id: lo.id,
         remoteOrderId: lo.remoteOrderId,
@@ -2926,7 +2926,7 @@ app.post('/api/orders/weather_buff/:remoteId/share-link', requireAuth, limitInte
   }
 }));
 
-// Delete Unstarted / Completed Order (ADMIN ONLY — CTV cannot delete or cancel orders in ANY category!)
+// Delete Unstarted / Completed Order (ADMIN ONLY — auto-refunds uncompleted portion to CTV & removes order cleanly!)
 app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
   try {
     const user = req.user;
@@ -2944,25 +2944,86 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
     if (!Object.hasOwn(CATEGORY_METADATA, category)) {
       return res.status(400).json({ success: false, message: 'Danh mục đơn không hợp lệ.' });
     }
-    const lo = db.localOrders[idx];
-    if (lo?.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã hủy; lịch sử được giữ lại.' });
-    const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}`, 'DELETE', {
-      deletion_note: req.body?.deletion_note || 'Xóa đơn từ ZnStudio',
-    });
+    const lo = idx >= 0 ? db.localOrders[idx] : null;
+    const alreadyCancelled = lo?.status === 'cancelled';
+
+    // Delete at upstream source FIRST (skip only if order was already cancelled at source earlier)
+    if (!alreadyCancelled) {
+      const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}`, 'DELETE', {
+        deletion_note: req.body?.deletion_note || 'Xóa đơn từ ZnStudio',
+      });
+      if (r && r.success === false) {
+        return res.status(400).json({
+          success: false,
+          message: publicError(req, new Error(r.message || ''), 'Nguồn từ chối xóa đơn hàng này.'),
+        });
+      }
+    }
     orderCache = {};
 
+    let refundedAmount = 0;
+    let ownerName = '';
+    let ownerBalanceAfter = null;
+
     if (lo) {
-      lo.status = 'cancelled';
-      lo.isActive = false;
-      lo.cancelRequested = false;
-      lo.cancelledAt = new Date().toISOString();
-      lo.refundPending = lo.placedBy?.role === 'ctv';
+      const totalCnt = Number(lo.totalCnt || 0);
+      const completedCnt = Math.max(0, Number(lo.completedCnt || 0));
+      const isCompleted = lo.status === 'completed' || (totalCnt > 0 && completedCnt >= totalCnt);
+      const alreadyRefunded = Math.max(0, Number(lo.refundedAmount || 0));
+      const remainingSell = Math.max(0, Number(lo.sellPrice || 0) - alreadyRefunded);
+
+      if (lo.placedBy?.role === 'ctv' && !isCompleted && remainingSell > 0) {
+        const computedRefund = completedCnt <= 0
+          ? remainingSell
+          : totalCnt > 0
+          ? Math.min(remainingSell, Math.floor((Number(lo.sellPrice || 0) * Math.max(0, totalCnt - completedCnt)) / totalCnt))
+          : 0;
+
+        const refundKey = `cancel:${lo.id}`;
+        const owner = db.users.find((u) => u.id === lo.placedBy.id);
+        if (computedRefund > 0 && owner && validMoney(owner.balance + computedRefund) && !db.transactions.some((t) => t.refundKey === refundKey)) {
+          owner.balance += computedRefund;
+          refundedAmount = computedRefund;
+          ownerName = owner.name;
+          ownerBalanceAfter = owner.balance;
+          db.transactions.unshift({
+            id: crypto.randomUUID(),
+            refundKey,
+            userId: owner.id,
+            userName: owner.name,
+            type: 'order_refund',
+            amount: computedRefund,
+            balanceAfter: owner.balance,
+            note: `Hoàn tiền hủy đơn ${lo.categoryName || lo.category} #${lo.remoteOrderId}: ${lo.summary || ''}`.trim(),
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      // Remove cancelled/deleted order completely from localOrders so it does not clutter UI or database
+      const currentIdx = db.localOrders.findIndex((o) => o.id === lo.id);
+      if (currentIdx >= 0) db.localOrders.splice(currentIdx, 1);
+
+      req.auditDetails = {
+        userId: lo.placedBy?.id,
+        category,
+        remoteOrderId: lo.remoteOrderId,
+        refundedAmount,
+        balanceAfter: ownerBalanceAfter,
+      };
       req.needsSave = true;
     }
 
+    const msg = refundedAmount > 0
+      ? `Đã hủy & xóa đơn #${remoteId} thành công! Đã hoàn ${refundedAmount.toLocaleString('vi-VN')}đ về ví CTV ${ownerName} (Số dư mới: ${ownerBalanceAfter.toLocaleString('vi-VN')}đ).`
+      : lo?.placedBy?.role === 'ctv' && lo.status === 'completed'
+      ? `Đã xóa đơn #${remoteId} đã hoàn thành khỏi hệ thống (không hoàn tiền vì đơn đã giao đủ).`
+      : `Đã hủy & xóa đơn #${remoteId} khỏi hệ thống.`;
+
     res.json({
       success: true,
-      message: 'Đã hủy tại nguồn. Lịch sử được giữ lại; admin cần đối soát phần tiền nguồn hoàn trước khi hoàn ví CTV.',
+      refundedAmount,
+      message: msg,
     });
   } catch (err) {
     res.status(400).json({
@@ -2994,7 +3055,7 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
         transactions: db.transactions.slice(0, 100),
       });
     } else {
-      const myOrders = db.localOrders.filter((o) => o.placedBy?.id === user.id);
+      const myOrders = db.localOrders.filter((o) => o.status !== 'cancelled' && o.placedBy?.id === user.id);
       const myTrx = db.transactions.filter((t) => t.userId === user.id).slice(0, 100);
       const totalSpent = Math.max(0, -db.transactions.filter(t => t.userId === user.id && ['order_debit', 'order_hold', 'order_release', 'order_refund'].includes(t.type)).reduce((sum, t) => sum + Number(t.amount || 0), 0));
       res.json({
@@ -3203,11 +3264,15 @@ app.post('/api/admin/orders/:id/refund', asyncRoute(async (req, res) => {
   order.sourceRefunded = sourceTotal;
   order.refundedAmount = refundedTotal;
   order.refundPending = refundedTotal < order.sellPrice;
+  if (!order.refundPending) {
+    const idx = db.localOrders.findIndex(o => o.id === order.id);
+    if (idx >= 0) db.localOrders.splice(idx, 1);
+  }
   db.transactions.unshift({ id: crypto.randomUUID(), refundKey: idempotency_key, userId: owner.id, userName: owner.name,
     type: 'order_refund', amount, balanceAfter: owner.balance, note: `Hoàn đơn #${order.remoteOrderId}: ${note.trim()}`, createdAt: new Date().toISOString() });
   req.auditDetails = { orderId: order.id, userId: owner.id, amount, sourceRefund, note: note.trim() };
   req.needsSave = true;
-  res.json({ success: true, message: 'Đã hoàn ví theo kết quả đối soát; đã ghi nhật ký.' });
+  res.json({ success: true, message: !order.refundPending ? 'Đã hoàn đủ tiền về ví CTV và dọn sạch đơn đã hủy.' : 'Đã hoàn ví theo kết quả đối soát; đã ghi nhật ký.' });
 }));
 
 app.put('/api/admin/password', asyncRoute(async (req, res) => {

@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
+const esbuild = require('esbuild');
 const express = require('express');
 
 const root = path.resolve(__dirname, '..');
@@ -30,10 +31,11 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
   };
   if (options.seed) options.seed(data);
   let writeFailure = false;
+  const publicDir = path.join(root, 'public');
   const fakeFs = {
-    existsSync: filePath => !(options.fresh && filePath.endsWith('db.json')),
+    existsSync: filePath => filePath.startsWith(publicDir) ? fs.existsSync(filePath) : !(options.fresh && filePath.endsWith('db.json')),
     mkdirSync() {},
-    readFileSync: () => options.corrupt ? '{broken json' : JSON.stringify(data),
+    readFileSync: (filePath, enc) => filePath.startsWith(publicDir) ? fs.readFileSync(filePath, enc) : (options.corrupt ? '{broken json' : JSON.stringify(data)),
     writeFileSync() { if (writeFailure) throw new Error('Disk full'); }, renameSync() {}, unlinkSync() {},
   };
   const context = vm.createContext({
@@ -42,7 +44,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
       app.listen = () => {}; // Avoid the production listener and startup login.
       return app;
     },
-    fs: fakeFs, path, crypto, zlib,
+    fs: fakeFs, path, crypto, zlib, esbuild,
     fileURLToPath: () => path.join(root, 'server.js'),
     process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
     fetch: upstreamFetch,
@@ -65,7 +67,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     return { status: response.status, headers: response.headers, body: await response.json() };
   };
   const login = async (identifier, password) => request('/api/auth/login', 'POST', '', { identifier, password });
-  return { request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; },
+  return { base, request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; },
     setWriteFailure: value => { writeFailure = value; },
     mockSearch: handler => { context.searchInGameByWebSocket = handler; },
   };
@@ -805,4 +807,62 @@ test('passive CTV catalog reads reuse 10-minute cache while pre-order refresh fe
   const refreshed = await server.request('/api/catalog?refresh=1', 'GET', seller.body.token);
   assert.equal(refreshed.body.catalog.buff_tim[0].total_price, 17000);
   assert.equal(upstreamSettingsHits, 2);
+});
+
+test('raw source files and dotfiles are blocked, minified bundle hides upstream supplier name, and image proxy hides supplier URL', async t => {
+  const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const base = financeSource();
+  let pngHits = 0;
+  const server = await startTestServer(t, async (url, options) => {
+    if (String(url).includes('/assets/playtogether/images/test.png')) {
+      pngHits += 1;
+      return { ok: true, status: 200, arrayBuffer: async () => pngHeader };
+    }
+    return base(url, options);
+  });
+
+  // 1. Minified HTML & security headers
+  const rootRes = await fetch(`${server.base}/`);
+  assert.equal(rootRes.status, 200);
+  assert.equal(rootRes.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal(rootRes.headers.get('x-permitted-cross-domain-policies'), 'none');
+  const htmlText = await rootRes.text();
+  assert.match(htmlText, /\/assets\/zn\.bundle\.js/);
+  assert.match(htmlText, /\/assets\/zn\.bundle\.css/);
+  assert.doesNotMatch(htmlText, /<!--/);
+  assert.doesNotMatch(htmlText, /hoannguyen/i);
+
+  // 2. Minified JS & CSS bundles + ETag 304 + zero upstream brand leaks
+  const jsRes = await fetch(`${server.base}/assets/zn.bundle.js`);
+  assert.equal(jsRes.status, 200);
+  const etag = jsRes.headers.get('etag');
+  assert.ok(etag);
+  const jsText = await jsRes.text();
+  assert.doesNotMatch(jsText, /hoannguyen/i);
+  assert.doesNotMatch(jsText, /SCREENSHOT 1/i);
+  assert.ok(jsText.length < clientSource.length + toolsSource.length);
+  const js304 = await fetch(`${server.base}/assets/zn.bundle.js`, { headers: { 'If-None-Match': etag } });
+  assert.equal(js304.status, 304);
+
+  const cssRes = await fetch(`${server.base}/assets/zn.bundle.css`);
+  assert.equal(cssRes.status, 200);
+
+  // 3. Raw source files, dotfiles, source maps, and backend filenames return 404
+  for (const blocked of ['/app.js', '/tools.js', '/styles.css', '/index.html', '/.env', '/.git/config', '/server.js', '/package.json', '/assets/zn.bundle.js.map']) {
+    const r = await fetch(`${server.base}${blocked}`);
+    assert.equal(r.status, 404, `Expected 404 for ${blocked}`);
+  }
+
+  // 4. Image proxy hides supplier origin (200 image/png, no 302 redirect, cached, rejects traversal)
+  const img1 = await fetch(`${server.base}/assets/playtogether/images/test.png`, { redirect: 'manual' });
+  assert.equal(img1.status, 200);
+  assert.equal(img1.headers.get('content-type'), 'image/png');
+  assert.equal(pngHits, 1);
+  const img2 = await fetch(`${server.base}/assets/playtogether/images/test.png`, { redirect: 'manual' });
+  assert.equal(img2.status, 200);
+  assert.equal(pngHits, 1);
+  for (const badImg of ['/assets/playtogether/images/..%2fsecret.png', '/assets/playtogether/images/bad.html']) {
+    const r = await fetch(`${server.base}${badImg}`, { redirect: 'manual' });
+    assert.equal(r.status, 404, `Expected 404 for ${badImg}`);
+  }
 });

@@ -699,7 +699,6 @@ function renderOrderCategoryPageHtml(catKey) {
 
   return `
     ${[state.catalogWarning, state.ordersWarning].filter(Boolean).map(msg => `<p role="status" class="tool-warning">${escapeHtml(msg)}</p>`).join('')}
-    <!-- TOP STATS PANEL CARD (MATCHING SCREENSHOT 1) -->
     <div class="glass-panel">
       <div class="panel-title-row">
         <div class="panel-title-left">
@@ -715,7 +714,6 @@ function renderOrderCategoryPageHtml(catKey) {
       </div>
 
       <div class="stats-three-grid">
-        <!-- Subcard 1: Đơn hàng -->
         <div class="stat-subcard">
           <div class="stat-subcard-head">
             <div class="stat-icon-box blue">📋</div>
@@ -733,7 +731,6 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
         </div>
 
-        <!-- Subcard 2: Tiến độ -->
         <div class="stat-subcard">
           <div class="stat-subcard-head">
             <div class="stat-icon-box amber">🎁</div>
@@ -751,7 +748,6 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
         </div>
 
-        <!-- Subcard 3: Tốc độ xử lý -->
         <div class="stat-subcard">
           <div class="stat-subcard-head">
             <div class="stat-icon-box violet">⚡</div>
@@ -775,7 +771,6 @@ function renderOrderCategoryPageHtml(catKey) {
       ${footerButtonsHtml}
     </div>
 
-    <!-- BOTTOM ORDER MANAGEMENT CARD (MATCHING SCREENSHOT 1) -->
     <div class="glass-panel">
       <div class="panel-title-row">
         <span class="panel-title-text">Quản lý đơn hàng</span>
@@ -784,7 +779,6 @@ function renderOrderCategoryPageHtml(catKey) {
         </button>
       </div>
 
-      <!-- Filter Row -->
       <div class="filters-grid">
         <div>
           <input
@@ -1957,7 +1951,7 @@ async function openCategoryPriceListModal(catKey) {
   const isGiftCat = catKey === 'farm_gift' || catKey === 'mail_gift';
 
   if (!items.length) {
-    body.innerHTML = `<div style="color:var(--color-fog-veil);padding:16px 0;">Hiện chưa có gói giá nào đang mở bán cho danh mục này trên nguồn HoanNguyen.</div>`;
+    body.innerHTML = `<div style="color:var(--color-fog-veil);padding:16px 0;">Hiện chưa có gói giá nào đang mở bán cho danh mục này.</div>`;
   } else if (isGiftCat) {
     body.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:12px;max-height:440px;overflow-y:auto;">
@@ -2358,79 +2352,6 @@ function bindUserSearchPageEvents() {
   });
 }
 
-async function renderSavedCustomersPage(container, zeroBannerHtml, q = '') {
-  try {
-    const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
-    const list = r.customers || [];
-    container.innerHTML = `
-      ${zeroBannerHtml}
-      <div class="glass-panel">
-        <div class="panel-title-row">
-          <span class="panel-title-text">📁 Tra cứu khách hàng đã lưu (${r.total || list.length} khách)</span>
-          <div style="display:flex;gap:8px;">
-            <input type="text" id="savedCustQueryInput" class="input-box" style="width:260px;" value="${escapeHtml(q)}" placeholder="Nhập tên hoặc SUID..." />
-            <button type="button" class="btn-violet" id="btnSavedCustSearch">Tìm</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>TÊN NHÂN VẬT</th>
-                <th>SUID</th>
-                <th>NGÀY LƯU</th>
-                <th>THAO TÁC</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${list
-                .map(
-                  (c) => `
-                <tr>
-                  <td>#${c.id}</td>
-                  <td><strong style="color:#fff;">${escapeHtml(c.nickname || '—')}</strong></td>
-                  <td>${escapeHtml(c.suid || '—')}</td>
-                  <td>${formatDateVi(c.created_at)}</td>
-                  <td>
-                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-order-for-saved="${c.id}">
-                      + Tạo đơn cho khách này
-                    </button>
-                  </td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
-
-    container.querySelector('#btnSavedCustSearch')?.addEventListener('click', () => {
-      const val = container.querySelector('#savedCustQueryInput')?.value || '';
-      renderSavedCustomersPage(container, zeroBannerHtml, val);
-    });
-    container.querySelectorAll('[data-order-for-saved]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        try {
-          const det = await apiFetch(`/api/customer/saved/${btn.dataset.orderForSaved}`);
-          if (det.success && det.customer) {
-            state.modalOrder.customer = det.customer;
-            openCreateOrderModal('fruit_coin');
-          }
-        } catch (err) {
-          showToast(err.message);
-          btn.disabled = false;
-        }
-      });
-    });
-  } catch (err) {
-    container.innerHTML = `<div class="glass-panel">Lỗi: ${escapeHtml(err.message)}</div>`;
-  }
-}
-
 // ============================================================================
 // 6. ADMIN PAGE: TÙY CHỈNH GIÁ TỪNG DANH MỤC, GÓI & SẢN PHẨM (VNĐ + %)
 // ============================================================================
@@ -2558,7 +2479,7 @@ function renderAdminPricingPageHtml() {
         <div>
           <span class="panel-title-text">🏷️ Tùy chỉnh Giá bán CTV cho từng Danh mục & Sản phẩm</span>
           <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
-            Đồng bộ nguồn HoanNguyen lúc <strong style="color:#5eead4;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
+            Đồng bộ nguồn API lúc <strong style="color:#5eead4;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -2710,7 +2631,7 @@ function renderAdminPricingPageHtml() {
               <tr>
                 <th>DANH MỤC</th>
                 <th>TÊN GÓI DỊCH VỤ</th>
-                <th>GIÁ GỐC HOANNGUYEN</th>
+                <th>GIÁ GỐC NGUỒN</th>
                 <th>GIÁ BÁN CHO CTV (VNĐ)</th>
                 <th>LÃI ADMIN / ĐƠN</th>
                 <th>CẬP NHẬT</th>
@@ -2719,7 +2640,7 @@ function renderAdminPricingPageHtml() {
             <tbody>
               ${
                 filteredPackages.length === 0
-                  ? `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Hiện nguồn HoanNguyen chưa mở gói nào cho danh mục này.</td></tr>`
+                  ? `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Hiện nguồn API chưa mở gói nào cho danh mục này.</td></tr>`
                   : filteredPackages
                       .map((p) => {
                         const pctProfit = p.costPrice > 0 ? Math.round((p.profit / p.costPrice) * 100) : 0;
@@ -2804,7 +2725,7 @@ function renderAdminPricingPageHtml() {
               <tr>
                 <th>TRÁI CÂY</th>
                 <th>TỒN KHO</th>
-                <th>GIÁ GỐC HOANNGUYEN</th>
+                <th>GIÁ GỐC NGUỒN</th>
                 <th>GIÁ BÁN CHO CTV (VNĐ)</th>
                 <th>LÃI ADMIN / TRÁI</th>
                 <th>CẬP NHẬT / 19 ĐỘT BIẾN</th>
@@ -3006,7 +2927,7 @@ function bindAdminPricingEvents() {
   document.getElementById('btnRefreshAdminPricing')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnRefreshAdminPricing');
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
-    showToast('Đang tải giá gốc mới nhất từ nguồn HoanNguyen...');
+    showToast('Đang tải giá gốc mới nhất từ nguồn API...');
     await Promise.all([loadCatalog(true), loadAdminOverview()]);
     renderCurrentView();
   });
@@ -3334,7 +3255,7 @@ function openAdminMutationPricingModal(fruitId) {
         <thead>
           <tr>
             <th>HỆ ĐỘT BIẾN</th>
-            <th>GIÁ GỐC HOANNGUYEN</th>
+            <th>GIÁ GỐC NGUỒN</th>
             <th>GIÁ BÁN CHO CTV (VNĐ)</th>
             <th>LÃI / TRÁI</th>
           </tr>
@@ -3730,7 +3651,7 @@ function openTopupCtvModal(ctvId, ctvName) {
 }
 
 function renderAdminSystemPageHtml() {
-  const hn = state.adminOverview?.settings?.hoanNguyen || {};
+  const srcCfg = state.adminOverview?.settings?.source || {};
   const storage = state.adminOverview?.storage || { mode: 'json', persistent: false, isRender: false, healthy: true };
   const stats = state.adminOverview?.stats || {};
   const isPg = storage.mode === 'postgresql';
@@ -3781,31 +3702,31 @@ function renderAdminSystemPageHtml() {
           <button type="button" class="btn-frost" id="btnExportBackupJson">⬇ Tải bản sao lưu JSON</button>
           <button type="button" class="btn-frost" id="btnImportBackupJson">⬆ Khôi phục từ file JSON</button>
           <input type="file" id="admBackupFileInput" accept="application/json,.json" style="display:none;" />
-          <span style="font-size:11.5px;color:var(--color-fog-veil);">Bản sao lưu không chứa mật khẩu/token nguồn HoanNguyen.</span>
+          <span style="font-size:11.5px;color:var(--color-fog-veil);">Bản sao lưu không chứa mật khẩu hay token nguồn API.</span>
         </div>
       </div>
     </div>
 
     <div class="glass-panel" style="max-width:760px;">
       <div class="panel-title-row">
-        <span class="panel-title-text">⚙️ Cấu hình Tài khoản Nguồn HoanNguyen</span>
-        <span class="badge-tag ${hn.connected ? 'green' : 'red'}">
-          ${hn.connected ? '● Đã kết nối' : '○ Chưa kết nối'}
+        <span class="panel-title-text">⚙️ Cấu hình Tài khoản Nguồn API</span>
+        <span class="badge-tag ${srcCfg.connected ? 'green' : 'red'}">
+          ${srcCfg.connected ? '● Đã kết nối' : '○ Chưa kết nối'}
         </span>
       </div>
-      ${hn.lastError ? `<div style="color:#fca5a5;font-size:12px;">${escapeHtml(hn.lastError)}</div>` : ''}
+      ${srcCfg.lastError ? `<div style="color:#fca5a5;font-size:12px;">${escapeHtml(srcCfg.lastError)}</div>` : ''}
       <div style="display:flex;flex-direction:column;gap:14px;">
         <div>
-          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Email tài khoản nguồn HoanNguyen:</label>
-          <input type="email" id="admHnEmail" class="input-box" value="${escapeHtml(hn.email || '')}" />
+          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Email tài khoản nguồn API:</label>
+          <input type="email" id="admSrcEmail" class="input-box" value="${escapeHtml(srcCfg.email || '')}" />
         </div>
         <div>
-          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Mật khẩu HoanNguyen (Để trống nếu giữ nguyên):</label>
-          <input type="password" id="admHnPassword" class="input-box" autocomplete="new-password" placeholder="••••••••" />
+          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Mật khẩu nguồn API (Để trống nếu giữ nguyên):</label>
+          <input type="password" id="admSrcPassword" class="input-box" autocomplete="new-password" placeholder="••••••••" />
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;">
-          <button type="button" class="btn-frost" id="btnAdmReconnectHn">↻ Đồng bộ & Kết nối lại Token</button>
-          <button type="button" class="btn-violet" id="btnAdmSaveHn">Lưu cấu hình nguồn</button>
+          <button type="button" class="btn-frost" id="btnAdmReconnectSrc">↻ Đồng bộ & Kết nối lại Token</button>
+          <button type="button" class="btn-violet" id="btnAdmSaveSrc">Lưu cấu hình nguồn</button>
         </div>
       </div>
     </div>
@@ -3894,14 +3815,14 @@ function bindAdminSystemEvents() {
       button.disabled = false;
     }
   });
-  document.getElementById('btnAdmReconnectHn')?.addEventListener('click', async () => {
-    const button = document.getElementById('btnAdmReconnectHn');
+  document.getElementById('btnAdmReconnectSrc')?.addEventListener('click', async () => {
+    const button = document.getElementById('btnAdmReconnectSrc');
     if (button.disabled) return;
     button.disabled = true;
     button.textContent = 'Đang kết nối...';
     try {
       showToast('⏳ Đang kết nối lại và đồng bộ dữ liệu...');
-      const r = await apiFetch('/api/admin/hoannguyen/reconnect', 'POST');
+      const r = await apiFetch('/api/admin/source/reconnect', 'POST');
       showToast(r.message);
       await Promise.all([loadCatalog(true), loadAdminOverview()]);
       renderCurrentView();
@@ -3915,14 +3836,14 @@ function bindAdminSystemEvents() {
     }
   });
 
-  document.getElementById('btnAdmSaveHn')?.addEventListener('click', async () => {
-    const button = document.getElementById('btnAdmSaveHn');
+  document.getElementById('btnAdmSaveSrc')?.addEventListener('click', async () => {
+    const button = document.getElementById('btnAdmSaveSrc');
     if (button.disabled) return;
     button.disabled = true;
-    const hoanNguyenEmail = document.getElementById('admHnEmail')?.value || '';
-    const hoanNguyenPassword = document.getElementById('admHnPassword')?.value || '';
+    const sourceEmail = document.getElementById('admSrcEmail')?.value || '';
+    const sourcePassword = document.getElementById('admSrcPassword')?.value || '';
     try {
-      const r = await apiFetch('/api/admin/settings', 'PUT', { hoanNguyenEmail, hoanNguyenPassword });
+      const r = await apiFetch('/api/admin/settings', 'PUT', { sourceEmail, sourcePassword });
       showToast(r.message);
       await Promise.all([loadCatalog(true), loadAdminOverview()]);
       renderCurrentView();
@@ -4039,7 +3960,33 @@ function bindGlobalEvents() {
   });
 }
 
+function installClientProtection() {
+  if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+  document.addEventListener('keydown', (e) => {
+    const key = String(e.key || '').toLowerCase();
+    const ctrlOrMeta = e.ctrlKey || e.metaKey;
+    const isBlockedShortcut =
+      e.key === 'F12' ||
+      (ctrlOrMeta && (key === 'u' || key === 's')) ||
+      (ctrlOrMeta && e.shiftKey && ['i', 'j', 'c'].includes(key)) ||
+      (e.metaKey && e.altKey && ['i', 'j', 'c', 'u'].includes(key));
+    if (isBlockedShortcut) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+
+  document.addEventListener('contextmenu', (e) => {
+    const target = e.target;
+    const tag = target && target.tagName ? target.tagName.toUpperCase() : '';
+    const hasSelection = typeof window !== 'undefined' && typeof window.getSelection === 'function' && String(window.getSelection()).trim().length > 0;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) || hasSelection) return;
+    e.preventDefault();
+  });
+}
+
 async function bootstrap() {
+  installClientProtection();
   bindGlobalEvents();
   await initAuth();
   if (state.user) {

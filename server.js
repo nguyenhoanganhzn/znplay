@@ -4,11 +4,13 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import zlib from 'zlib';
+import * as esbuild from 'esbuild';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const HAS_ZLIB = typeof zlib !== 'undefined' && typeof zlib.gzipSync === 'function';
+const HAS_ESBUILD = typeof esbuild !== 'undefined' && typeof esbuild.buildSync === 'function';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -19,19 +21,26 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 app.set('trust proxy', process.env.RENDER === 'true' ? 1 : false);
 
 // ============================================================================
-// SECURITY HEADERS, COMPRESSION & STATIC ASSET CACHE
+// SECURITY HEADERS, COMPRESSION & PROTECTED BUNDLE CACHE
 // ============================================================================
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'");
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
-app.use(express.json({ limit: '2mb' }));
+app.use((req, res, next) => {
+  if (req.path === '/api/admin/backup/import') return next();
+  return express.json({ limit: '256kb' })(req, res, next);
+});
 
 function sendJsonPayload(req, res, sendOriginal, body) {
   if (!HAS_ZLIB) return sendOriginal(body);
@@ -94,33 +103,67 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// Pre-compressed static assets cache (instant 0-disk-I/O serving + ETag 304)
+// Pre-bundled, minified & compressed static assets (zero source comments, zero raw JS exposure, instant ETag 304)
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const STATIC_MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-};
 const staticCache = new Map();
-function getCachedStaticAsset(relPath) {
-  if (!HAS_ZLIB) return null;
-  if (staticCache.has(relPath)) return staticCache.get(relPath);
-  const fullPath = path.join(PUBLIC_DIR, relPath);
-  const ext = path.extname(relPath);
-  if (!STATIC_MIME[ext] || !fs.existsSync(fullPath)) return null;
-  const raw = fs.readFileSync(fullPath);
-  const etag = `"${crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16)}"`;
-  const gzip = zlib.gzipSync(raw, { level: 6 });
-  const br = typeof zlib.brotliCompressSync === 'function'
-    ? zlib.brotliCompressSync(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
+
+function packStaticBuffer(rawBuf, mime) {
+  const etag = `"${crypto.createHash('sha1').update(rawBuf).digest('hex').slice(0, 16)}"`;
+  const gzip = HAS_ZLIB ? zlib.gzipSync(rawBuf, { level: 6 }) : null;
+  const br = HAS_ZLIB && typeof zlib.brotliCompressSync === 'function'
+    ? zlib.brotliCompressSync(rawBuf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
     : null;
-  const entry = { raw, gzip, br, etag, mime: STATIC_MIME[ext] };
-  staticCache.set(relPath, entry);
-  return entry;
+  return { raw: rawBuf, gzip, br, etag, mime };
 }
 
-function serveCachedStatic(req, res, relPath) {
-  const asset = getCachedStaticAsset(relPath);
+function minifyHtmlDocument(html) {
+  return String(html)
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/href="\/styles\.css"/g, 'href="/assets/zn.bundle.css"')
+    .replace(/<script\s+type="module"\s+src="\/app\.js"><\/script>/g, '<script src="/assets/zn.bundle.js" defer></script>')
+    .replace(/>\s+</g, '><')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function ensureProtectedAssets() {
+  if (staticCache.size > 0 || !HAS_ESBUILD) return;
+  try {
+    const htmlPath = path.join(PUBLIC_DIR, 'index.html');
+    const jsPath = path.join(PUBLIC_DIR, 'app.js');
+    const cssPath = path.join(PUBLIC_DIR, 'styles.css');
+    if (!fs.existsSync(htmlPath) || !fs.existsSync(jsPath) || !fs.existsSync(cssPath)) return;
+
+    const bundledJs = esbuild.buildSync({
+      entryPoints: [jsPath],
+      bundle: true,
+      minify: true,
+      format: 'iife',
+      target: ['es2020'],
+      legalComments: 'none',
+      sourcemap: false,
+      write: false,
+    });
+    const jsOut = bundledJs.outputFiles?.[0]?.contents;
+    if (!jsOut) return;
+
+    const cssRaw = fs.readFileSync(cssPath, 'utf8');
+    const cssMin = esbuild.transformSync(cssRaw, { loader: 'css', minify: true, legalComments: 'none' }).code;
+
+    const htmlRaw = fs.readFileSync(htmlPath, 'utf8');
+    const htmlMin = minifyHtmlDocument(htmlRaw);
+
+    staticCache.set('index.html', packStaticBuffer(Buffer.from(htmlMin, 'utf8'), 'text/html; charset=utf-8'));
+    staticCache.set('assets/zn.bundle.js', packStaticBuffer(Buffer.from(jsOut), 'application/javascript; charset=utf-8'));
+    staticCache.set('assets/zn.bundle.css', packStaticBuffer(Buffer.from(cssMin, 'utf8'), 'text/css; charset=utf-8'));
+  } catch (err) {
+    console.error('Asset bundle build failed:', err.message);
+  }
+}
+
+function serveCachedStatic(req, res, cacheKey) {
+  ensureProtectedAssets();
+  const asset = staticCache.get(cacheKey);
   if (!asset) return false;
   res.setHeader('Content-Type', asset.mime);
   res.setHeader('Cache-Control', 'no-cache');
@@ -136,7 +179,7 @@ function serveCachedStatic(req, res, relPath) {
     res.send(asset.br);
     return true;
   }
-  if (accept.includes('gzip')) {
+  if (asset.gzip && accept.includes('gzip')) {
     res.setHeader('Content-Encoding', 'gzip');
     res.send(asset.gzip);
     return true;
@@ -145,16 +188,29 @@ function serveCachedStatic(req, res, relPath) {
   return true;
 }
 
+const BLOCKED_RAW_PATHS = new Set(['app.js', 'tools.js', 'styles.css', 'index.html']);
+const BLOCKED_EXTENSIONS = /\.(?:js|mjs|cjs|css|json|map|env|sql|log|bak|md|yml|yaml|ts|tsx|jsx|php|sh|ps1)$/i;
 app.use((req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
-  const cleanPath = req.path === '/' ? 'index.html' : req.path.replace(/^\/+/, '');
-  if (['index.html', 'styles.css', 'app.js', 'tools.js'].includes(cleanPath)) {
+  if (req.path.startsWith('/api/')) return next();
+  const cleanPath = req.path.replace(/^\/+/, '');
+  if (cleanPath.startsWith('.') || cleanPath.includes('/.')) {
+    return res.status(404).end();
+  }
+  if (req.path === '/') {
+    if (serveCachedStatic(req, res, 'index.html')) return;
+  }
+  if (cleanPath === 'assets/zn.bundle.js' || cleanPath === 'assets/zn.bundle.css') {
     if (serveCachedStatic(req, res, cleanPath)) return;
+  }
+  if ((HAS_ESBUILD && BLOCKED_RAW_PATHS.has(cleanPath)) || BLOCKED_EXTENSIONS.test(cleanPath)) {
+    return res.status(404).end();
   }
   next();
 });
 
 app.use(express.static(PUBLIC_DIR, {
+  dotfiles: 'deny',
   setHeaders(res, filePath) {
     if (/\.(html|js|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
     else if (/\.(jpg|jpeg|png|webp|svg|ico)$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=604800');
@@ -182,22 +238,6 @@ function hashPasswordAsync(plain) {
   });
 }
 
-function verifyPassword(plain, stored) {
-  const p = String(plain || '');
-  const st = String(stored || '');
-  if (!p || p.length > 128 || !st) return false;
-  if (!st.startsWith('scrypt$')) {
-    return p === st;
-  }
-  const parts = st.split('$');
-  if (parts.length !== 3) return false;
-  const [, salt, hashHex] = parts;
-  const derived = crypto.scryptSync(p, salt, 64);
-  const expected = Buffer.from(hashHex, 'hex');
-  if (derived.length !== expected.length) return false;
-  return crypto.timingSafeEqual(derived, expected);
-}
-
 function verifyPasswordAsync(plain, stored) {
   const p = String(plain || '');
   const st = String(stored || '');
@@ -221,6 +261,10 @@ function verifyPasswordAsync(plain, stored) {
 const loginAttempts = new Map();
 function checkLoginRateLimit(ip) {
   const now = Date.now();
+  if (loginAttempts.size > 1000) {
+    for (const [k, v] of loginAttempts) if (now > v.resetAt) loginAttempts.delete(k);
+    if (loginAttempts.size > 1000) loginAttempts.delete(loginAttempts.keys().next().value);
+  }
   const entry = loginAttempts.get(ip) || { count: 0, resetAt: now + 60000 };
   if (now > entry.resetAt) {
     entry.count = 0;
@@ -454,11 +498,6 @@ function pushAuditRecord(actor, action, details = {}) {
   if (db.auditLog.length > 5000) db.auditLog = db.auditLog.slice(0, 5000);
 }
 
-async function audit(req, action, details = {}) {
-  pushAuditRecord(req.user, action, details);
-  await saveDb(db);
-}
-
 function validMoney(value, allowZero = true) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= (allowZero ? 0 : 1) && value <= 1e12;
 }
@@ -489,6 +528,10 @@ const actionLimits = new Map();
 function limitInteractive(req, res, next) {
   const key = req.user.id;
   const now = Date.now();
+  if (actionLimits.size > 1000) {
+    for (const [k, v] of actionLimits) if (v.until <= now) actionLimits.delete(k);
+    if (actionLimits.size > 1000) actionLimits.delete(actionLimits.keys().next().value);
+  }
   const entry = actionLimits.get(key);
   if (entry && entry.until > now && entry.count >= 30) return res.status(429).json({ success: false, message: 'Bạn thao tác quá nhanh. Vui lòng đợi một phút.' });
   if (!entry || entry.until <= now) actionLimits.set(key, { until: now + 60000, count: 1 });
@@ -1021,19 +1064,6 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// CTV MUST have balance > 0 to perform interactive operations
-function requirePositiveBalanceForCtv(req, res, next) {
-  const user = req.user;
-  if (user.role !== 'admin' && Number(user.balance || 0) <= 0) {
-    return res.status(403).json({
-      success: false,
-      code: 'INSUFFICIENT_BALANCE',
-      message: 'Số dư tài khoản CTV của bạn hiện là 0đ. Vui lòng nạp tiền vào tài khoản để có thể thao tác và đặt đơn!',
-    });
-  }
-  next();
-}
-
 function requireAdmin(req, res, next) {
   const user = getAuthUser(req);
   if (user) req.user = user;
@@ -1053,12 +1083,36 @@ function sanitizeUser(u) {
 }
 
 // ============================================================================
-// PLAY TOGETHER ASSET PROXY
+// PLAY TOGETHER ASSET PROXY (SERVER-SIDE CACHED — NEVER LEAKS UPSTREAM DOMAIN!)
 // ============================================================================
-app.get('/assets/playtogether/*', (req, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  const targetUrl = `https://hoannguyenplaytogether.com${req.originalUrl}`;
-  res.redirect(302, targetUrl);
+const assetProxyCache = new Map();
+const SAFE_ASSET_PATH = /^\/assets\/playtogether\/images\/[A-Za-z0-9_./-]+\.png$/;
+app.get('/assets/playtogether/*', async (req, res) => {
+  const assetPath = req.path;
+  if (!SAFE_ASSET_PATH.test(assetPath) || assetPath.includes('..')) {
+    return res.status(404).end();
+  }
+  const cached = assetProxyCache.get(assetPath);
+  if (cached) {
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    return res.send(cached);
+  }
+  try {
+    const baseUrl = db.settings.hoanNguyen?.baseUrl || 'https://hoannguyenplaytogether.com';
+    const upstream = await fetch(`${baseUrl}${assetPath}`, { signal: AbortSignal.timeout(8000) });
+    if (!upstream.ok) return res.status(404).end();
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    const isPng = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    if (!isPng || buf.length > 512 * 1024) return res.status(404).end();
+    if (assetProxyCache.size >= 300) assetProxyCache.delete(assetProxyCache.keys().next().value);
+    assetProxyCache.set(assetPath, buf);
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    res.send(buf);
+  } catch {
+    res.status(404).end();
+  }
 });
 
 // ============================================================================
@@ -1593,6 +1647,11 @@ app.post('/api/customer/search-ingame', requireAuth, limitInteractive, async (re
       PhotoID: Number(p.PhotoID) || 0, FriendStatusType: Number(p.FriendStatusType) || 0,
       Online_Status: String(p.Online_Status || ''), LastLogin: String(p.LastLogin || ''),
     }));
+    if (searchResults.size > 1000) {
+      const now = Date.now();
+      for (const [k, v] of searchResults) if (v.until <= now) searchResults.delete(k);
+      if (searchResults.size > 1000) searchResults.delete(searchResults.keys().next().value);
+    }
     searchResults.set(req.user.id, { profiles, until: Date.now() + 10 * 60000 });
     req.auditDetails = { nickname: nickname.trim(), resultCount: profiles.length };
     res.json({ success: true, profiles });
@@ -2692,6 +2751,11 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
         user: db.settings.hoanNguyen.user,
         lastLoginAt: db.settings.hoanNguyen.lastLoginAt,
       },
+      source: {
+        email: db.settings.hoanNguyen.email,
+        ...upstreamStatus,
+        lastLoginAt: db.settings.hoanNguyen.lastLoginAt,
+      },
     },
     stats: {
       totalLocalOrders,
@@ -2728,7 +2792,7 @@ app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
   res.json({ success: true, backup: snapshot });
 });
 
-app.post('/api/admin/backup/import', requireAdmin, asyncRoute(async (req, res) => {
+app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }), asyncRoute(async (req, res) => {
   const raw = req.body?.backup || req.body;
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.users) || !raw.users.some(u => u && u.role === 'admin' && u.id && u.username && u.password)) {
     return res.status(400).json({ success: false, message: 'Tệp sao lưu không hợp lệ hoặc thiếu tài khoản quản trị viên.' });
@@ -2806,7 +2870,11 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
       resetCategoryOverrides,
       hoanNguyenEmail,
       hoanNguyenPassword,
+      sourceEmail,
+      sourcePassword,
     } = req.body || {};
+    const upstreamEmail = sourceEmail !== undefined ? sourceEmail : hoanNguyenEmail;
+    const upstreamPassword = sourcePassword !== undefined ? sourcePassword : hoanNguyenPassword;
 
     const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff)$/;
     for (const value of [defaultMarkup, defaultFruitUnitMarkup]) {
@@ -2849,8 +2917,8 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
         if (label === 'categoryMarkups' && !validMoney(value)) throw new Error('Mức cộng danh mục không hợp lệ.');
       }
     }
-    if (hoanNguyenEmail !== undefined && (typeof hoanNguyenEmail !== 'string' || hoanNguyenEmail.length > 254)) throw new Error('Email nguồn không hợp lệ.');
-    if (hoanNguyenPassword !== undefined && (typeof hoanNguyenPassword !== 'string' || hoanNguyenPassword.length > 128)) throw new Error('Mật khẩu nguồn không hợp lệ.');
+    if (upstreamEmail !== undefined && (typeof upstreamEmail !== 'string' || upstreamEmail.length > 254)) throw new Error('Email nguồn không hợp lệ.');
+    if (upstreamPassword !== undefined && (typeof upstreamPassword !== 'string' || upstreamPassword.length > 128)) throw new Error('Mật khẩu nguồn không hợp lệ.');
 
     if (defaultMarkup !== undefined) {
       db.settings.defaultMarkup = Math.max(0, Number(defaultMarkup));
@@ -2918,12 +2986,12 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
     }
 
     let needRelogin = false;
-    if (hoanNguyenEmail && hoanNguyenEmail.trim() !== db.settings.hoanNguyen.email) {
-      db.settings.hoanNguyen.email = hoanNguyenEmail.trim();
+    if (upstreamEmail && upstreamEmail.trim() !== db.settings.hoanNguyen.email) {
+      db.settings.hoanNguyen.email = upstreamEmail.trim();
       needRelogin = true;
     }
-    if (hoanNguyenPassword && hoanNguyenPassword.trim() !== '') {
-      db.settings.hoanNguyen.password = hoanNguyenPassword;
+    if (upstreamPassword && upstreamPassword.trim() !== '') {
+      db.settings.hoanNguyen.password = upstreamPassword;
       needRelogin = true;
     }
 
@@ -2952,13 +3020,13 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
   }
 }));
 
-app.post('/api/admin/hoannguyen/reconnect', requireAdmin, async (req, res) => {
+async function handleReconnectSource(req, res) {
   try {
     await loginToHoanNguyen(true);
     await fetchRawCatalogFromHoanNguyen(true);
     res.json({
       success: true,
-      message: 'Đã kết nối lại và đồng bộ dữ liệu mới nhất từ HoanNguyen!',
+      message: 'Đã kết nối lại và đồng bộ dữ liệu mới nhất từ hệ thống nguồn!',
       hoanNguyen: {
         email: db.settings.hoanNguyen.email,
         ...upstreamStatus,
@@ -2969,10 +3037,12 @@ app.post('/api/admin/hoannguyen/reconnect', requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(502).json({
       success: false,
-      message: publicError(req, err, 'Không thể kết nối tới HoanNguyen.'),
+      message: publicError(req, err, 'Không thể kết nối tới hệ thống nguồn.'),
     });
   }
-});
+}
+app.post('/api/admin/hoannguyen/reconnect', requireAdmin, handleReconnectSource);
+app.post('/api/admin/source/reconnect', requireAdmin, handleReconnectSource);
 
 // Create CTV Account
 app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
@@ -3139,6 +3209,7 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, HOST, async () => {
+  ensureProtectedAssets();
   console.log(`ZnStudio Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
   try {
     await hnApiCall('/api/settings?keys=is_send_task');

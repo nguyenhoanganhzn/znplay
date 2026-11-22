@@ -199,6 +199,11 @@ function clearAuthState() {
   state.orders = [];
   state.adminOverview = null;
   state.adminMonitor = null;
+  state.adminMonitorCtvId = null;
+  state.adminMonitorCtvDetail = null;
+  state.adminMonitorCtvTab = 'orders';
+  state.adminMonitorCtvOrderSearch = '';
+  state.adminMonitorCtvCatFilter = 'all';
   state.currentView = 'fruit_coin';
   state.modalOrder.customer = null;
   state.modalOrder.fruit_preview_admin = null;

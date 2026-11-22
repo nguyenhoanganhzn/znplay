@@ -1042,3 +1042,75 @@ test('weather_buff full workflow: Admin pricing, package-first order creation, s
   const delCtv = await server.request('/api/orders/weather_buff/7701', 'DELETE', seller.body.token);
   assert.equal(delCtv.status, 403);
 });
+
+test('admin per-CTV monitor endpoint returns isolated orders, wallet transactions, and activity logs without secrets', async t => {
+  const server = await startTestServer(t, financeSource(), {
+    seed(data) {
+      data.users.push({ id: 'seller2', username: 'seller2', password: 'seller2-test-password', role: 'ctv', name: 'Seller Two', balance: 20000 });
+      data.localOrders.push(
+        { id: 'ord-s1', remoteOrderId: 101, category: 'buff_tim', categoryName: 'Buff Tim', summary: 'Buff 100 Tim', customer: { nickname: 'KhachA', suid: '111' }, sellPrice: 15000, costPrice: 10000, markupAmount: 5000, status: 'completed', isActive: false, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, createdAt: '2026-11-22T10:00:00Z' },
+        { id: 'ord-s2', remoteOrderId: 202, category: 'buff_sao', categoryName: 'Buff Sao', summary: 'Buff 50 Sao', customer: { nickname: 'KhachB', suid: '222' }, sellPrice: 12000, costPrice: 8000, markupAmount: 4000, status: 'pending', isActive: true, placedBy: { id: 'seller2', name: 'Seller Two', role: 'ctv' }, createdAt: '2026-11-22T10:05:00Z' }
+      );
+      data.transactions.push(
+        { id: 'tx-s1', userId: 'seller', type: 'admin_topup', amount: 50000, balanceAfter: 50000, note: 'Nap cho seller 1', createdAt: '2026-11-22T09:00:00Z' },
+        { id: 'tx-s2', userId: 'seller2', type: 'admin_topup', amount: 20000, balanceAfter: 20000, note: 'Nap cho seller 2', createdAt: '2026-11-22T09:01:00Z' }
+      );
+    },
+  });
+
+  const admin = await server.login('owner', 'owner-test-password');
+  const seller = await server.login('seller', 'seller-test-password');
+  const seller2 = await server.login('seller2', 'seller2-test-password');
+  assert.ok(seller2.body.token);
+
+  // CTV cannot access per-CTV monitor
+  assert.equal((await server.request('/api/admin/monitor/ctv/seller', 'GET', seller.body.token)).status, 403);
+  // Missing CTV returns 404
+  assert.equal((await server.request('/api/admin/monitor/ctv/unknown', 'GET', admin.body.token)).status, 404);
+
+  // Admin top-up on seller appears in seller's activity log
+  const topup = await server.request('/api/admin/ctv/seller/balance', 'POST', admin.body.token, {
+    amount: 10000,
+    note: 'Nap them test',
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(topup.status, 200);
+
+  // Overview monitor includes per-CTV order stats
+  const mon = await server.request('/api/admin/monitor', 'GET', admin.body.token);
+  const s1Row = mon.body.ctvs.find(u => u.id === 'seller');
+  assert.equal(s1Row.orderCount, 1);
+  assert.equal(s1Row.totalSell, 15000);
+  assert.equal(s1Row.totalProfit, 5000);
+
+  // Detailed CTV endpoint returns strictly seller's orders, transactions, and events
+  const det = await server.request('/api/admin/monitor/ctv/seller', 'GET', admin.body.token);
+  assert.equal(det.status, 200);
+  assert.equal(det.body.ctv.password, undefined);
+  assert.equal(det.body.summary.orderCount, 1);
+  assert.equal(det.body.summary.completedCount, 1);
+  assert.equal(det.body.summary.totalSell, 15000);
+  assert.equal(det.body.summary.totalProfit, 5000);
+  assert.equal(det.body.summary.totalTopup, 60000);
+  assert.equal(det.body.orders.length, 1);
+  assert.equal(det.body.orders[0].id, 'ord-s1');
+  assert.ok(det.body.transactions.every(tx => tx.userId === 'seller'));
+  assert.ok(det.body.events.some(ev => ev.actorId === 'seller'));
+  assert.ok(det.body.events.some(ev => ev.details?.userId === 'seller' && ev.details?.amount === 10000));
+  assert.ok(det.body.events.every(ev => ev.actorId !== 'seller2'));
+  assert.doesNotMatch(JSON.stringify(det.body), /seller-test-password|owner-test-password|test-upstream-token/);
+
+  // Client monitor HTML with selected CTV detail safely escapes XSS payloads
+  const { context, state } = createClient();
+  state.adminMonitor = mon.body;
+  state.adminMonitorCtvId = 'seller';
+  state.adminMonitorCtvTab = 'orders';
+  state.adminMonitorCtvDetail = {
+    ...det.body,
+    ctv: { ...det.body.ctv, name: '<img src=x onerror=alert(1)>' },
+    orders: [{ ...det.body.orders[0], summary: '<script>evil()</script>' }],
+  };
+  const rendered = vm.runInContext('renderAdminMonitorHtml()', context);
+  assert.doesNotMatch(rendered, /<img|<script/);
+  assert.match(rendered, /&lt;script&gt;/);
+});

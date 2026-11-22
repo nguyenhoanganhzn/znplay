@@ -3023,11 +3023,104 @@ app.use('/api/admin', requireAdmin);
 app.use('/api/admin', (req, res, next) => req.method === 'GET' ? next() : financialGuard(req, res, next));
 
 app.get('/api/admin/monitor', (req, res) => {
+  const orderStatsByCtv = new Map();
+  for (const o of db.localOrders) {
+    const uid = o.placedBy?.id;
+    if (!uid) continue;
+    const st = orderStatsByCtv.get(uid) || { orderCount: 0, totalSell: 0, totalProfit: 0, lastOrderAt: null };
+    st.orderCount += 1;
+    if (o.status !== 'cancelled') {
+      st.totalSell += Number(o.sellPrice || 0);
+      st.totalProfit += Number(o.markupAmount || 0);
+    }
+    if (!st.lastOrderAt || String(o.createdAt || '') > st.lastOrderAt) st.lastOrderAt = o.createdAt || null;
+    orderStatsByCtv.set(uid, st);
+  }
+  const ctvs = db.users
+    .filter(u => u.role === 'ctv')
+    .map(u => {
+      const base = sanitizeUser(u);
+      const st = orderStatsByCtv.get(u.id) || { orderCount: 0, totalSell: 0, totalProfit: 0, lastOrderAt: null };
+      return { ...base, ...st };
+    });
   res.json({ success: true, storageHealthy,
-    ctvs: db.users.filter(u => u.role === 'ctv').map(sanitizeUser),
+    ctvs,
     intents: db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),
     cancellations: db.localOrders.filter(o => o.cancelRequested || o.refundPending).slice(0, 200),
     events: db.auditLog.slice(0, 200),
+  });
+});
+
+app.get('/api/admin/monitor/ctv/:id', (req, res) => {
+  const ctv = db.users.find(u => u.id === req.params.id && u.role === 'ctv');
+  if (!ctv) {
+    return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV này.' });
+  }
+  const ctvOrders = db.localOrders
+    .filter(o => o.placedBy?.id === ctv.id)
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+  let totalSell = 0;
+  let totalCost = 0;
+  let totalProfit = 0;
+  let completedCount = 0;
+  let runningCount = 0;
+  let cancelledCount = 0;
+  for (const o of ctvOrders) {
+    if (o.status === 'cancelled') {
+      cancelledCount += 1;
+    } else {
+      totalSell += Number(o.sellPrice || 0);
+      totalCost += Number(o.costPrice || 0);
+      totalProfit += Number(o.markupAmount || 0);
+      if (o.status === 'completed') completedCount += 1;
+      else runningCount += 1;
+    }
+  }
+
+  const ctvTransactions = db.transactions.filter(t => t.userId === ctv.id);
+  const totalTopup = ctvTransactions
+    .filter(t => t.type === 'admin_topup' && Number(t.amount) > 0)
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+  const ctvEvents = db.auditLog
+    .filter(e => e.actorId === ctv.id || e.details?.userId === ctv.id)
+    .slice(0, 200);
+
+  res.json({
+    success: true,
+    ctv: sanitizeUser(ctv),
+    summary: {
+      balance: Number(ctv.balance || 0),
+      orderCount: ctvOrders.length,
+      completedCount,
+      runningCount,
+      cancelledCount,
+      totalSell,
+      totalCost,
+      totalProfit,
+      totalTopup,
+      lastOrderAt: ctvOrders[0]?.createdAt || null,
+    },
+    orders: ctvOrders.slice(0, 300).map(o => ({
+      id: o.id,
+      remoteOrderId: o.remoteOrderId,
+      category: o.category,
+      categoryName: CATEGORY_METADATA[o.category]?.menuLabel || o.categoryName || o.category,
+      summary: o.summary,
+      customer: o.customer || null,
+      sellPrice: Number(o.sellPrice || 0),
+      costPrice: Number(o.costPrice || 0),
+      markupAmount: Number(o.markupAmount || 0),
+      status: o.status || 'pending',
+      isActive: !!o.isActive,
+      totalCnt: Number(o.totalCnt || 0),
+      completedCnt: Number(o.completedCnt || 0),
+      trackUrl: o.weather?.trackUrl || null,
+      createdAt: o.createdAt,
+    })),
+    transactions: ctvTransactions.slice(0, 200),
+    events: ctvEvents,
   });
 });
 

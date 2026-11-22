@@ -461,7 +461,7 @@ function updateSaleMarquee() {
   const text =
     saleItems.length > 0
       ? [...saleItems, ...saleItems].join('   ')
-      : '✦ Hệ thống ZnPlay vận hành tự động 24/7 — Vui lòng kiểm tra kỹ thông tin nhân vật trước khi tạo đơn!';
+      : '✦ Hệ thống ZnStudio vận hành tự động 24/7 — Vui lòng kiểm tra kỹ thông tin nhân vật trước khi tạo đơn!';
   track.textContent = text;
 }
 
@@ -522,7 +522,7 @@ function switchView(viewKey) {
   });
   const titleEl = document.getElementById('topNavbarViewTitle');
   if (titleEl) {
-    titleEl.textContent = VIEW_TITLES[viewKey] || 'ZnPlay';
+    titleEl.textContent = VIEW_TITLES[viewKey] || 'ZnStudio';
   }
   // Close mobile sidebar if open
   document.getElementById('appSidebar')?.classList.remove('is-open');
@@ -1014,7 +1014,7 @@ function bindOrderRowActionButtons() {
       btn.disabled = true;
       try {
         const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
-          deletion_note: 'Xóa đơn từ ZnPlay',
+          deletion_note: 'Xóa đơn từ ZnStudio',
         });
         showToast(res.message || 'Đã xóa đơn hàng');
         await Promise.all([loadOrders(), initAuth()]);
@@ -3731,7 +3731,7 @@ function renderAdminSystemPageHtml() {
             <ol>
               <li>Vào <strong>neon.tech</strong> (đăng nhập bằng GitHub/Google, miễn phí 0đ trọn đời, không cần thẻ tín dụng) → Tạo Project mới (chọn Region gần Render như Singapore hoặc US East).</li>
               <li>Bấm <strong>Connect</strong> → Copy chuỗi kết nối PostgreSQL (bắt đầu bằng <code>postgresql://...</code>).</li>
-              <li>Vào Render Dashboard → Service ZnPlay → <strong>Environment</strong> → Thêm biến <code>DATABASE_URL</code> = chuỗi vừa copy → Lưu &amp; Deploy lại. Từ đó toàn bộ CTV, ví, đơn hàng và bảng giá sẽ <strong>không bao giờ bị mất</strong> kể cả khi Render ngủ hoặc tắt!</li>
+              <li>Vào Render Dashboard → Service ZnStudio → <strong>Environment</strong> → Thêm biến <code>DATABASE_URL</code> = chuỗi vừa copy → Lưu &amp; Deploy lại. Từ đó toàn bộ CTV, ví, đơn hàng và bảng giá sẽ <strong>không bao giờ bị mất</strong> kể cả khi Render ngủ hoặc tắt!</li>
             </ol>
             <div style="font-size:12px;color:var(--color-fog-veil);">
               💡 Mẹo giữ web mượt không bị ngủ 15 phút: Tạo monitor miễn phí trên <strong>UptimeRobot</strong> hoặc <strong>cron-job.org</strong> gọi <code>https://&lt;domain-của-bạn&gt;/api/ping</code> mỗi 10 phút.
@@ -3802,7 +3802,7 @@ function bindAdminSystemEvents() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `znplay-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `znstudio-backup-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();

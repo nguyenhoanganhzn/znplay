@@ -4,7 +4,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ZnPlay — Hệ Thống Chạy Đơn Play Together</title>
+  <title>ZnStudio — Hệ Thống Chạy Đơn Play Together</title>
+  <link rel="icon" type="image/jpeg" href="/logo.jpg" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 
@@ -15,10 +16,10 @@
        ======================================================================== -->
   <div class="auth-gate-screen" id="authGateScreen" style="display:flex;">
     <form class="auth-gate-card" id="gateLoginForm">
-      <div style="display:flex;align-items:center;gap:12px;">
-        <div class="brand-glyph">Zn</div>
+      <div style="display:flex;align-items:center;gap:14px;">
+        <img src="/logo.jpg" alt="ZnStudio Logo" class="brand-logo-img brand-logo-lg" />
         <div>
-          <div class="brand-title" style="font-size:22px;">ZNPLAY</div>
+          <div class="brand-title" style="font-size:23px;">ZnStudio</div>
           <div style="font-size:12px;color:var(--color-fog-veil);">Hệ thống quản lý & chạy đơn Play Together</div>
         </div>
       </div>
@@ -62,8 +63,8 @@
     <aside class="app-sidebar" id="appSidebar">
       <div class="sidebar-brand">
         <a href="#" class="brand-logo-wrap" id="brandHomeLink">
-          <div class="brand-glyph">Zn</div>
-          <span class="brand-title">ZNPLAY</span>
+          <img src="/logo.jpg" alt="ZnStudio Logo" class="brand-logo-img" />
+          <span class="brand-title">ZnStudio</span>
         </a>
         <span class="badge-tag violet" id="sidebarRoleBadge">CTV</span>
       </div>
@@ -170,7 +171,7 @@
 
         <!-- QUẢN TRỊ ADMIN (ONLY VISIBLE FOR ADMIN — COMPLETELY HIDDEN FOR CTV) -->
         <div id="sidebarAdminSection" style="display:none;flex-direction:column;gap:4px;">
-          <div class="sidebar-section-label" style="color:#a78bfa;">QUẢN TRỊ ZNPLAY</div>
+          <div class="sidebar-section-label" style="color:#a78bfa;">QUẢN TRỊ ZNSTUDIO</div>
           <button type="button" class="sidebar-item" data-view="admin_monitor">
             <span class="sidebar-item-left"><span class="sidebar-icon">🛡️</span><span>Giám sát & đối soát CTV</span></span>
           </button>

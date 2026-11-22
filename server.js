@@ -157,6 +157,7 @@ app.use((req, res, next) => {
 app.use(express.static(PUBLIC_DIR, {
   setHeaders(res, filePath) {
     if (/\.(html|js|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    else if (/\.(jpg|jpeg|png|webp|svg|ico)$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=604800');
   },
 }));
 
@@ -249,7 +250,7 @@ if (!process.env.DATABASE_URL && !fs.existsSync(DATA_DIR)) {
 
 const DEFAULT_DB = {
   settings: {
-    brandName: 'ZNPLAY',
+    brandName: 'ZnStudio',
     defaultMarkup: 5000,
     categoryMarkups: {
       fruit_coin: 5000,
@@ -1107,7 +1108,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   if (user.isLocked) {
     return res.status(403).json({
       success: false,
-      message: 'Tài khoản của bạn đang tạm khóa. Vui lòng liên hệ Admin ZnPlay.',
+      message: 'Tài khoản của bạn đang tạm khóa. Vui lòng liên hệ Admin ZnStudio.',
     });
   }
 
@@ -2444,7 +2445,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
     }
     if (lo?.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã hủy; lịch sử được giữ lại.' });
     const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}`, 'DELETE', {
-      deletion_note: req.body?.deletion_note || 'Xóa đơn từ ZnPlay',
+      deletion_note: req.body?.deletion_note || 'Xóa đơn từ ZnStudio',
     });
     orderCache = {};
 
@@ -2722,7 +2723,7 @@ app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
     orderIntents: db.orderIntents,
     auditLog: db.auditLog,
   };
-  res.setHeader('Content-Disposition', `attachment; filename="znplay-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.setHeader('Content-Disposition', `attachment; filename="znstudio-backup-${new Date().toISOString().slice(0, 10)}.json"`);
   res.json({ success: true, backup: snapshot });
 });
 
@@ -2976,7 +2977,7 @@ app.post('/api/admin/hoannguyen/reconnect', requireAdmin, async (req, res) => {
 app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
   const { name, username, email, password, phone, balance } = req.body || {};
   const cleanUsername = String(username || '').trim().toLowerCase();
-  const cleanEmail = String(email || `${cleanUsername}@znplay.vn`).trim().toLowerCase();
+  const cleanEmail = String(email || `${cleanUsername}@znstudio.vn`).trim().toLowerCase();
 
   if (typeof name !== 'string' || !name.trim() || name.length > 100 || !/^[a-z0-9_.-]{3,50}$/.test(cleanUsername) ||
       typeof password !== 'string' || password.length < 12 || password.length > 128 || cleanEmail.length > 254 || String(phone || '').length > 30) {
@@ -3137,7 +3138,7 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, HOST, async () => {
-  console.log(`ZnPlay Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
+  console.log(`ZnStudio Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
   try {
     await hnApiCall('/api/settings?keys=is_send_task');
     console.log('HoanNguyen API verified via HTTPS.');

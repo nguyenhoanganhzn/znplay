@@ -442,7 +442,6 @@ function applyCatalogSideEffects(r) {
   updateDot('dot_weather_buff', st.weather_buff);
   updateDot('dot_fruit_coin', st.fruit_coin);
 
-  updateSaleMarquee();
   updateShellAuthUI();
 }
 
@@ -480,59 +479,6 @@ async function loadCatalog(forceRefresh = false) {
   } finally {
     if (state.token === requestToken) state.loadingCatalog = false;
   }
-}
-
-function updateSaleMarquee() {
-  const track = document.getElementById('saleMarqueeTrack');
-  if (!track || !state.catalogData) return;
-
-  const cat = state.catalogData.catalog || {};
-  const saleItems = [];
-
-  for (const p of cat.buff_tim || []) {
-    if (p.is_on_sale && p.sale && p.sale.slots_remaining > 0) {
-      saleItems.push(
-        `✦ Gói ${formatNum(p.quantity)} Tim - ${formatVnd(p.original_price)} → ${formatVnd(
-          p.total_price
-        )} • Còn ${p.sale.slots_remaining}/${p.sale.slots_total} lượt • Đặt ngay!`
-      );
-    }
-  }
-  for (const p of cat.fruit_coin || []) {
-    if (p.is_on_sale && p.sale && p.sale.slots_remaining > 0) {
-      saleItems.push(
-        `✦ Gói ${formatNum(p.coin_quantity || p.quantity)} Xu - ${formatVnd(
-          p.original_price
-        )} → ${formatVnd(p.total_price)} • Còn ${p.sale.slots_remaining}/${p.sale.slots_total} lượt • Đặt ngay!`
-      );
-    }
-  }
-  for (const g of cat.mail_gift || []) {
-    for (const p of g.packages || []) {
-      if (p.is_on_sale && p.sale && p.sale.slots_remaining > 0) {
-        saleItems.push(
-          `✦ Quà thư ${g.name} × ${formatNum(p.quantity)} - ${formatVnd(p.original_price)} → ${formatVnd(
-            p.total_price
-          )} • Còn ${p.sale.slots_remaining}/${p.sale.slots_total} lượt • Đặt ngay!`
-        );
-      }
-    }
-  }
-  for (const p of cat.weather_buff || []) {
-    if (p.is_on_sale && p.sale && p.sale.slots_remaining > 0) {
-      saleItems.push(
-        `✦ Buff Thời Tiết ${formatNum(p.quantity)} lần - ${formatVnd(p.original_price)} → ${formatVnd(
-          p.total_price
-        )} • Còn ${p.sale.slots_remaining}/${p.sale.slots_total} lượt • Đặt ngay!`
-      );
-    }
-  }
-
-  const text =
-    saleItems.length > 0
-      ? [...saleItems, ...saleItems].join('   ')
-      : '✦ Hệ thống ZnStudio vận hành tự động 24/7 — Vui lòng kiểm tra kỹ thông tin nhân vật trước khi tạo đơn!';
-  track.textContent = text;
 }
 
 // ============================================================================

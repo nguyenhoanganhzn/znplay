@@ -771,10 +771,25 @@ function renderOrderCategoryPageHtml(catKey) {
       ${footerButtonsHtml}
     </div>
 
+    ${
+      catKey === 'weather_buff'
+        ? `
+      <div class="glass-panel" style="padding:14px 18px;border-left:3px solid #a78bfa;">
+        <div style="font-size:13px;font-weight:700;color:#c4b5fd;margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
+        <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--color-moon-mist);line-height:1.7;">
+          <li><strong>Bước 1:</strong> Bấm <strong>+ Thêm Đơn Hàng</strong> để mua gói số lần thời tiết trước (chưa cần chọn khách khi tạo gói).</li>
+          <li><strong>Bước 2:</strong> Sau khi tạo đơn, bấm <strong>👤 Gán khách</strong> và <strong>☁️ Chọn thời tiết</strong> (ít nhất 1 loại, tổng số lần không vượt gói) rồi bật công tắc <strong>Bật/Tắt</strong> để chạy.</li>
+          <li>Sau khi bật đơn vẫn có thể <strong>Đổi khách</strong> — khách mới sẽ nhận phần thời tiết còn lại. Phần thời tiết đã chạy xong sẽ cố định không đổi được.</li>
+        </ul>
+      </div>
+    `
+        : ''
+    }
+
     <div class="glass-panel">
       <div class="panel-title-row">
         <span class="panel-title-text">Quản lý đơn hàng</span>
-        <button type="button" class="btn-violet" id="btnOpenAddOrderModal" ${catKey === 'weather_buff' ? 'disabled title="Hiện chỉ hỗ trợ xem lịch sử thời tiết"' : ''}>
+        <button type="button" class="btn-violet" id="btnOpenAddOrderModal">
           + Thêm Đơn Hàng
         </button>
       </div>
@@ -888,17 +903,71 @@ function renderOrderTableRowHtml(o) {
       ? `<div style="font-size:10px;color:#4ade80;">Lãi: +${formatVnd(o.markupAmount)}</div>`
       : '';
 
+  const isWeather = o.category === 'weather_buff';
+  const canEditWeather = isWeather && o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview;
+  const wbSlots = isWeather ? (o.weather?.slots || []) : [];
+  const wbHasCust = isWeather ? wbSlots.some(s => s.customer_id || s.customer) || Boolean(o.customer?.customerId) : true;
+  const wbLines = isWeather ? (o.weather?.weathers || []) : [];
+  const wbTotalQty = wbLines.reduce((s, w) => s + Number(w.quantity || 0), 0);
+  const wbPkgQty = Number(o.weather?.packageQuantity || o.totalCnt || 0);
+  const wbReadyToRun = !isWeather || (wbHasCust && wbTotalQty > 0 && (wbPkgQty <= 0 || wbTotalQty <= wbPkgQty));
+
+  const customerCellHtml = isWeather
+    ? `
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        ${
+          wbHasCust
+            ? `<div style="font-weight:600;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
+               <div style="font-size:11px;color:var(--color-fog-veil);">#${escapeHtml(o.remoteOrderId || o.id)} · SUID: ${escapeHtml(o.customer?.suid || '—')}</div>`
+            : `<div><span class="badge-tag amber">⚠️ Chưa gán khách</span></div>
+               <div style="font-size:11px;color:var(--color-fog-veil);">Đơn #${escapeHtml(o.remoteOrderId || o.id)}</div>`
+        }
+        ${
+          canEditWeather
+            ? `<div><button type="button" class="${wbHasCust ? 'btn-frost' : 'btn-violet'}" style="padding:3px 9px;font-size:11px;" data-weather-slot-order="${escapeHtml(o.remoteOrderId)}">${wbHasCust ? '✏️ Đổi khách' : '👤 Gán khách'}</button></div>`
+            : ''
+        }
+      </div>
+    `
+    : `
+      <div style="font-weight:600;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
+      <div style="font-size:11px;color:var(--color-fog-veil);">
+        #${escapeHtml(o.remoteOrderId || o.id)} · SUID: ${escapeHtml(o.customer?.suid || '—')}
+      </div>
+    `;
+
+  const packageCellHtml = isWeather
+    ? `
+      <div style="display:flex;flex-direction:column;gap:5px;">
+        ${
+          wbLines.length > 0
+            ? `<div style="display:flex;flex-wrap:wrap;gap:4px;">
+                ${wbLines
+                  .map(
+                    (w) => `
+                  <span class="badge-tag" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;">
+                    ${w.icon ? `<img src="${escapeHtml(w.icon)}" alt="" style="width:14px;height:14px;object-fit:contain;" />` : '☁️'}
+                    ${escapeHtml(w.name)}: <strong>${formatNum(w.completed_cnt || 0)}/${formatNum(w.quantity || 0)}</strong>
+                  </span>
+                `
+                  )
+                  .join('')}
+              </div>`
+            : `<div><span class="badge-tag amber">⚠️ Chưa chọn thời tiết</span> <span style="font-size:11px;color:var(--color-fog-veil);">(Gói ${formatNum(wbPkgQty)} lần)</span></div>`
+        }
+        ${
+          canEditWeather
+            ? `<div><button type="button" class="${wbLines.length > 0 ? 'btn-frost' : 'btn-violet'}" style="padding:3px 9px;font-size:11px;" data-weather-config-order="${escapeHtml(o.remoteOrderId)}">${wbLines.length > 0 ? '✏️ Sửa thời tiết' : '☁️ Chọn thời tiết'}</button></div>`
+            : ''
+        }
+      </div>
+    `
+    : `<span class="badge-tag">${escapeHtml(o.summary)}</span>`;
+
   return `
     <tr>
-      <td>
-        <div style="font-weight:600;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
-        <div style="font-size:11px;color:var(--color-fog-veil);">
-          #${escapeHtml(o.remoteOrderId || o.id)} · SUID: ${escapeHtml(o.customer?.suid || '—')}
-        </div>
-      </td>
-      <td>
-        <span class="badge-tag">${escapeHtml(o.summary)}</span>
-      </td>
+      <td>${customerCellHtml}</td>
+      <td>${packageCellHtml}</td>
       <td><strong>${formatNum(o.totalCnt || 0)}</strong></td>
       <td>
         <div style="font-weight:600;color:#fbbf24;">${formatVnd(o.sellPrice)}</div>
@@ -914,7 +983,7 @@ function renderOrderTableRowHtml(o) {
       <td>
         ${
           o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview
-            ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="Bật/Tắt đơn"></button>`
+            ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
             : '—'
         }
       </td>
@@ -991,12 +1060,28 @@ function bindOrderRowActionButtons() {
       try {
         const res = await apiFetch(`/api/orders/${cat}/${remId}/toggle-active`, 'PUT');
         showToast(res.message || 'Đã cập nhật trạng thái đơn hàng');
-        await loadOrders();
+        await loadOrders(true);
         renderCurrentView();
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
         btn.disabled = false;
       }
+    });
+  });
+
+  document.querySelectorAll('[data-weather-slot-order]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const remId = btn.dataset.weatherSlotOrder;
+      const ord = state.orders.find((o) => o.category === 'weather_buff' && String(o.remoteOrderId) === String(remId));
+      if (ord) openWeatherSlotModal(ord);
+    });
+  });
+
+  document.querySelectorAll('[data-weather-config-order]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const remId = btn.dataset.weatherConfigOrder;
+      const ord = state.orders.find((o) => o.category === 'weather_buff' && String(o.remoteOrderId) === String(remId));
+      if (ord) openWeatherConfigModal(ord);
     });
   });
 
@@ -1036,7 +1121,6 @@ function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ Zn
 // ============================================================================
 let createOrderModalSeq = 0;
 async function openCreateOrderModal(catKey, presetOptions = null) {
-  if (catKey === 'weather_buff') { showToast('Buff thời tiết hiện chỉ hỗ trợ xem lịch sử; chưa mở tạo đơn để tránh tính phí sai.'); return; }
   // Check CTV wallet balance first!
   if (state.user.role !== 'admin' && Number(state.user.balance || 0) <= 0) {
     showToast('Số dư ví CTV của bạn là 0đ. Vui lòng nạp tiền vào ví trước khi tạo đơn!');
@@ -1090,6 +1174,8 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
     state.modalOrder.price_package_id = cat.buff_sao[0].id;
   } else if (cat.guestbook?.length && catKey === 'guestbook') {
     state.modalOrder.price_package_id = cat.guestbook[0].id;
+  } else if (cat.weather_buff?.length && catKey === 'weather_buff') {
+    state.modalOrder.price_package_id = cat.weather_buff[0].id;
   } else if (catKey === 'mail_gift' && cat.mail_gift?.length) {
     state.modalOrder.gift_id = cat.mail_gift[0].id;
     state.modalOrder.gift_plant_id = cat.mail_gift[0].packages?.[0]?.id || null;
@@ -1236,13 +1322,13 @@ function renderCreateOrderModalBody() {
       `
       }
     `;
-  } else if (catKey === 'buff_tim' || catKey === 'buff_sao' || catKey === 'guestbook') {
+  } else if (catKey === 'buff_tim' || catKey === 'buff_sao' || catKey === 'guestbook' || catKey === 'weather_buff') {
     const pkgs = catalog[catKey] || [];
-    const unitTxt = catKey === 'buff_tim' ? 'Tim' : catKey === 'buff_sao' ? 'Sao' : 'Bài viết';
+    const unitTxt = catKey === 'buff_tim' ? 'Tim' : catKey === 'buff_sao' ? 'Sao' : catKey === 'weather_buff' ? 'Lần' : 'Bài viết';
 
     categoryFormHtml = `
       <div>
-        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn gói số lượng:</label>
+        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn gói số lượng${catKey === 'weather_buff' ? ' (Buff Thời Tiết)' : ''}:</label>
         ${
           pkgs.length === 0
             ? `<div style="padding:14px;background:rgba(228,109,76,0.14);border-radius:8px;color:#fca5a5;">Hiện chưa có gói giá đang mở cho danh mục này.</div>`
@@ -1254,7 +1340,7 @@ function renderCreateOrderModalBody() {
                 return `
                   <div class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-std-pkg="${p.id}">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
-                      <strong style="color:#fff;font-size:14px;">${formatNum(p.quantity)} ${unitTxt}</strong>
+                      <strong style="color:#fff;font-size:14px;">${catKey === 'weather_buff' ? '☁️ ' : ''}${formatNum(p.quantity)} ${unitTxt}</strong>
                       ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Còn ${p.sale.slots_remaining} slot</span>` : ''}
                     </div>
                     <div style="display:flex;align-items:baseline;gap:8px;">
@@ -1336,62 +1422,69 @@ function renderCreateOrderModalBody() {
         : ''
     }
 
-    <!-- STEP 1: FIND & SELECT CUSTOMER -->
-    <div style="background:rgba(255,255,255,0.02);padding:14px;border-radius:12px;box-shadow:var(--shadow-subtle);display:flex;flex-direction:column;gap:12px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-        <strong style="color:#fff;font-size:13px;">1. Chọn khách hàng Play Together</strong>
-        <div style="display:flex;gap:6px;">
-          <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'ingame' ? 'is-active' : ''}" data-mcust-tab="ingame" style="padding:4px 10px;font-size:11px;">
-            Tìm theo Tên (Trong Game)
-          </button>
-          <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'roleid' ? 'is-active' : ''}" data-mcust-tab="roleid" style="padding:4px 10px;font-size:11px;">
-            Theo Role ID
-          </button>
-          ${state.user.role === 'admin' ? `<button type="button" class="btn-frost ${state.modalOrder.customerTab === 'saved' ? 'is-active' : ''}" data-mcust-tab="saved" style="padding:4px 10px;font-size:11px;">
-            Khách đã lưu
-          </button>` : ''}
-        </div>
+    ${
+      catKey === 'weather_buff'
+        ? `
+      <div style="padding:11px 14px;background:rgba(139,92,246,0.14);border-radius:10px;border:1px solid rgba(167,139,250,0.3);color:#ddd6fe;font-size:12.5px;line-height:1.55;">
+        ☁️ <strong>Quy tắc Buff Thời Tiết:</strong> Chọn gói số lần và bấm <strong>Xác Nhận</strong> để tạo đơn trước (chưa cần chọn khách ngay lúc này). Sau khi tạo xong, bấm <strong>👤 Gán khách</strong> và <strong>☁️ Chọn thời tiết</strong> trên bảng đơn rồi bật chạy!
       </div>
-
-      ${
-        cust
-          ? `
-        <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(102,58,243,0.18);padding:10px 14px;border-radius:8px;box-shadow:rgba(156,127,249,0.5) 0 0 0 1px inset;">
-          <div>
-            <div style="font-weight:600;color:#fff;font-size:14px;">✓ ${escapeHtml(cust.nickname)}</div>
-            <div style="font-size:11px;color:var(--color-moon-mist);">SUID: ${escapeHtml(cust.suid || '—')} ${cust.region ? `· ${escapeHtml(cust.region)}` : ''}</div>
+    `
+        : `
+      <div style="background:rgba(255,255,255,0.02);padding:14px;border-radius:12px;box-shadow:var(--shadow-subtle);display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+          <strong style="color:#fff;font-size:13px;">1. Chọn khách hàng Play Together</strong>
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'ingame' ? 'is-active' : ''}" data-mcust-tab="ingame" style="padding:4px 10px;font-size:11px;">
+              Tìm theo Tên (Trong Game)
+            </button>
+            <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'roleid' ? 'is-active' : ''}" data-mcust-tab="roleid" style="padding:4px 10px;font-size:11px;">
+              Theo Role ID
+            </button>
+            ${state.user.role === 'admin' ? `<button type="button" class="btn-frost ${state.modalOrder.customerTab === 'saved' ? 'is-active' : ''}" data-mcust-tab="saved" style="padding:4px 10px;font-size:11px;">
+              Khách đã lưu
+            </button>` : ''}
           </div>
-          <button type="button" class="btn-frost" id="btnModalClearCust" style="padding:4px 10px;font-size:11px;">Đổi khách</button>
         </div>
-      `
-          : `
-        <div style="display:flex;gap:8px;">
-          <input
-            type="text"
-            id="modalCustSearchInput"
-            class="input-box"
-            placeholder="${
-              state.modalOrder.customerTab === 'ingame'
-                ? 'Nhập tên nhân vật cần tìm trong game...'
-                : state.modalOrder.customerTab === 'roleid'
-                ? 'Nhập mã Role ID (XXXX-XXXX-XXXX)...'
-                : 'Nhập tên hoặc SUID khách quen...'
-            }"
-          />
-          <button type="button" class="btn-violet" id="btnModalSearchCust">Tìm</button>
-        </div>
-        <div id="modalCustSearchStatus" style="font-size:12px;color:var(--color-fog-veil);"></div>
-        <div id="modalCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:190px;overflow-y:auto;"></div>
-      `
-      }
-    </div>
 
-    <!-- STEP 2: PACKAGE / FRUIT CONFIGURATION -->
+        ${
+          cust
+            ? `
+          <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(102,58,243,0.18);padding:10px 14px;border-radius:8px;box-shadow:rgba(156,127,249,0.5) 0 0 0 1px inset;">
+            <div>
+              <div style="font-weight:600;color:#fff;font-size:14px;">✓ ${escapeHtml(cust.nickname)}</div>
+              <div style="font-size:11px;color:var(--color-moon-mist);">SUID: ${escapeHtml(cust.suid || '—')} ${cust.region ? `· ${escapeHtml(cust.region)}` : ''}</div>
+            </div>
+            <button type="button" class="btn-frost" id="btnModalClearCust" style="padding:4px 10px;font-size:11px;">Đổi khách</button>
+          </div>
+        `
+            : `
+          <div style="display:flex;gap:8px;">
+            <input
+              type="text"
+              id="modalCustSearchInput"
+              class="input-box"
+              placeholder="${
+                state.modalOrder.customerTab === 'ingame'
+                  ? 'Nhập tên nhân vật cần tìm trong game...'
+                  : state.modalOrder.customerTab === 'roleid'
+                  ? 'Nhập mã Role ID (XXXX-XXXX-XXXX)...'
+                  : 'Nhập tên hoặc SUID khách quen...'
+              }"
+            />
+            <button type="button" class="btn-violet" id="btnModalSearchCust">Tìm</button>
+          </div>
+          <div id="modalCustSearchStatus" style="font-size:12px;color:var(--color-fog-veil);"></div>
+          <div id="modalCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:190px;overflow-y:auto;"></div>
+        `
+        }
+      </div>
+    `
+    }
+
     <div style="display:flex;flex-direction:column;gap:12px;">
       ${categoryFormHtml}
     </div>
 
-    <!-- STEP 3: TOTAL PRICE & SUBMIT -->
     <div style="background:rgba(5,6,15,0.7);padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
       <div>
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng tiền thanh toán:</div>
@@ -1400,7 +1493,7 @@ function renderCreateOrderModalBody() {
       <div style="display:flex;gap:10px;">
         <button type="button" class="btn-frost" id="btnModalCancel">Hủy</button>
         <button type="button" class="btn-violet" id="btnModalSaveOrder" ${!isWorking ? 'disabled' : ''}>
-          Lưu & Chạy Đơn Hàng →
+          ${catKey === 'weather_buff' ? 'Xác Nhận Tạo Gói →' : 'Lưu & Chạy Đơn Hàng →'}
         </button>
       </div>
     </div>
@@ -1591,7 +1684,7 @@ function updateCreateOrderModalPrice() {
     price = tObj?.total_price || 0;
   } else if (cat === 'fruit_by_fruit') {
     price = state.modalOrder.fruit_preview_price || 0;
-  } else if (cat === 'buff_tim' || cat === 'buff_sao' || cat === 'guestbook') {
+  } else if (cat === 'buff_tim' || cat === 'buff_sao' || cat === 'guestbook' || cat === 'weather_buff') {
     const pkg = (catalog[cat] || []).find((p) => Number(p.id) === Number(state.modalOrder.price_package_id));
     price = pkg?.total_price || 0;
   } else if (cat === 'farm_gift' || cat === 'mail_gift') {
@@ -1718,7 +1811,8 @@ async function runModalCustomerSearch() {
 
 async function submitModalOrder(confirmDuplicate = false) {
   const m = state.modalOrder;
-  if (!m.customer?.customerId) {
+  const isWeather = m.category === 'weather_buff';
+  if (!isWeather && !m.customer?.customerId) {
     showToast('Vui lòng tìm và chọn khách hàng trước khi lưu đơn!');
     return;
   }
@@ -1729,9 +1823,9 @@ async function submitModalOrder(confirmDuplicate = false) {
 
   const payload = {
     category: m.category,
-    customer_id: m.customer.customerId,
-    game_profile_id: m.customer.gameProfileId,
-    customer_snapshot: m.customer,
+    customer_id: isWeather ? null : m.customer.customerId,
+    game_profile_id: isWeather ? null : m.customer.gameProfileId,
+    customer_snapshot: isWeather ? null : m.customer,
     confirm_duplicate_customer: confirmDuplicate,
     expected_price: m.quotedPrice,
   };
@@ -1744,7 +1838,7 @@ async function submitModalOrder(confirmDuplicate = false) {
     payload.total_cnt = m.fruit_total_cnt;
     payload.variant_mode = 'select';
     payload.mutation_list = m.fruit_variant_mode === 'specify' ? m.fruit_mutation_list : [];
-  } else if (m.category === 'buff_tim' || m.category === 'buff_sao' || m.category === 'guestbook') {
+  } else if (m.category === 'buff_tim' || m.category === 'buff_sao' || m.category === 'guestbook' || m.category === 'weather_buff') {
     payload.price_package_id = m.price_package_id;
     payload.expect_sale = true;
     if (m.category === 'guestbook') {
@@ -1780,7 +1874,7 @@ async function submitModalOrder(confirmDuplicate = false) {
         await submitModalOrder(true);
       } else if (btn) {
         btn.disabled = false;
-        btn.textContent = 'Lưu & Chạy Đơn Hàng →';
+        btn.textContent = isWeather ? 'Xác Nhận Tạo Gói →' : 'Lưu & Chạy Đơn Hàng →';
       }
       return;
     }
@@ -1792,7 +1886,7 @@ async function submitModalOrder(confirmDuplicate = false) {
         state.user.balance = r.userBalance;
         updateShellAuthUI();
       }
-      await loadOrders();
+      await loadOrders(true);
       renderCurrentView();
     }
   } catch (err) {
@@ -1808,9 +1902,377 @@ async function submitModalOrder(confirmDuplicate = false) {
       if (btn) { btn.disabled = true; btn.textContent = 'Chờ admin đối soát'; }
     } else if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Lưu & Chạy Đơn Hàng →';
+      btn.textContent = isWeather ? 'Xác Nhận Tạo Gói →' : 'Lưu & Chạy Đơn Hàng →';
     }
   }
+}
+
+// ============================================================================
+// 2B. WEATHER BUFF MODALS: ASSIGN/CHANGE CUSTOMER SLOT & CONFIGURE WEATHERS
+// ============================================================================
+function openWeatherSlotModal(order) {
+  const overlay = document.getElementById('appModalOverlay');
+  const box = document.getElementById('appModalBox');
+  const title = document.getElementById('appModalTitle');
+  const body = document.getElementById('appModalBody');
+  if (!overlay || !box || !title || !body) return;
+
+  let tab = 'ingame';
+  const remId = order.remoteOrderId;
+  const hasCust = Boolean(order.customer?.customerId || order.weather?.slots?.some(s => s.customer_id || s.customer));
+  const canClear = hasCust && !order.weather?.remoteRef && !order.isActive && Number(order.completedCnt || 0) === 0;
+
+  box.className = 'modal-box';
+  title.textContent = `${hasCust ? '✏️ Đổi khách hàng' : '👤 Gán khách hàng'} — Đơn Buff Thời Tiết #${remId}`;
+
+  const renderSlotBody = () => {
+    body.innerHTML = `
+      ${
+        hasCust
+          ? `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:rgba(102,58,243,0.16);border-radius:10px;border:1px solid rgba(167,139,250,0.35);">
+          <div>
+            <div style="font-size:11px;color:var(--color-moon-mist);">Khách hiện tại:</div>
+            <div style="font-weight:600;color:#fff;">${escapeHtml(order.customer?.nickname || '—')} <span style="font-weight:400;font-size:11px;color:var(--color-fog-veil);">(SUID: ${escapeHtml(order.customer?.suid || '—')})</span></div>
+          </div>
+          ${canClear ? `<button type="button" class="btn-frost" id="btnWbClearSlot" style="color:#fca5a5;font-size:11px;padding:5px 10px;">🗑️ Gỡ khách</button>` : ''}
+        </div>
+      `
+          : ''
+      }
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button type="button" class="btn-frost ${tab === 'ingame' ? 'is-active' : ''}" data-wb-cust-tab="ingame" style="padding:5px 11px;font-size:12px;">Tìm theo Tên (Trong Game)</button>
+        <button type="button" class="btn-frost ${tab === 'roleid' ? 'is-active' : ''}" data-wb-cust-tab="roleid" style="padding:5px 11px;font-size:12px;">Theo Role ID</button>
+        ${state.user?.role === 'admin' ? `<button type="button" class="btn-frost ${tab === 'saved' ? 'is-active' : ''}" data-wb-cust-tab="saved" style="padding:5px 11px;font-size:12px;">Khách đã lưu</button>` : ''}
+      </div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="wbCustSearchInput" class="input-box" placeholder="${tab === 'ingame' ? 'Nhập tên nhân vật trong game...' : tab === 'roleid' ? 'Nhập Role ID (XXXX-XXXX-XXXX)...' : 'Nhập tên hoặc SUID khách quen...'}" />
+        <button type="button" class="btn-violet" id="btnWbCustSearch">Tìm</button>
+      </div>
+      <div id="wbCustSearchStatus" style="font-size:12px;color:var(--color-fog-veil);"></div>
+      <div id="wbCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto;"></div>
+    `;
+
+    const assignCustomerId = async (customerId) => {
+      const stEl = body.querySelector('#wbCustSearchStatus');
+      if (stEl) stEl.textContent = '⏳ Đang gán khách vào đơn Buff Thời Tiết...';
+      try {
+        const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/slots/0`, 'PUT', {
+          customer_id: Number(customerId),
+        });
+        showToast(res.message || 'Đã gán khách hàng thành công!');
+        overlay.style.display = 'none';
+        await loadOrders(true);
+        renderCurrentView();
+      } catch (err) {
+        showToast(err.message);
+        if (stEl) stEl.textContent = `Lỗi: ${err.message}`;
+      }
+    };
+
+    const runSearch = async () => {
+      const q = String(body.querySelector('#wbCustSearchInput')?.value || '').trim();
+      const stEl = body.querySelector('#wbCustSearchStatus');
+      const resEl = body.querySelector('#wbCustSearchResults');
+      if (!stEl || !resEl) return;
+
+      if (tab === 'ingame') {
+        if (!q) { showToast('Vui lòng nhập tên nhân vật cần tìm.'); return; }
+        stEl.textContent = '⏳ Đang tìm nhân vật trong game...';
+        resEl.innerHTML = '';
+        try {
+          const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
+          const list = r.profiles || [];
+          stEl.textContent = `Tìm thấy ${list.length} nhân vật:`;
+          resEl.innerHTML = list.map((p, i) => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+              <div>
+                <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
+                <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
+                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+              </div>
+              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-ingame="${i}">Gán khách</button>
+            </div>
+          `).join('');
+          resEl.querySelectorAll('[data-wb-pick-ingame]').forEach((b) => {
+            b.addEventListener('click', async () => {
+              const prof = list[Number(b.dataset.wbPickIngame)];
+              b.disabled = true;
+              b.textContent = 'Đang gán...';
+              try {
+                const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
+                if (sel.success && sel.customer?.customerId) {
+                  await assignCustomerId(sel.customer.customerId);
+                }
+              } catch (err) {
+                showToast(err.message);
+                b.disabled = false;
+                b.textContent = 'Gán khách';
+              }
+            });
+          });
+        } catch (err) {
+          stEl.textContent = `Lỗi: ${err.message}`;
+        }
+      } else if (tab === 'roleid') {
+        if (!q) { showToast('Vui lòng nhập Role ID.'); return; }
+        stEl.textContent = '⏳ Đang kiểm tra Role ID...';
+        try {
+          const r = await apiFetch('/api/customer/resolve-role-id', 'POST', { role_id: q });
+          if (r.success && r.customer?.customerId) {
+            await assignCustomerId(r.customer.customerId);
+          }
+        } catch (err) {
+          stEl.textContent = `Lỗi: ${err.message}`;
+        }
+      } else if (tab === 'saved') {
+        stEl.textContent = '⏳ Đang tải danh sách khách hàng...';
+        try {
+          const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
+          const list = r.customers || [];
+          stEl.textContent = `Hiển thị ${list.length} khách hàng:`;
+          resEl.innerHTML = list.map((c) => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+              <div>
+                <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
+                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+              </div>
+              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-saved="${c.id}">Gán khách</button>
+            </div>
+          `).join('');
+          resEl.querySelectorAll('[data-wb-pick-saved]').forEach((b) => {
+            b.addEventListener('click', async () => {
+              b.disabled = true;
+              b.textContent = 'Đang gán...';
+              await assignCustomerId(Number(b.dataset.wbPickSaved));
+            });
+          });
+        } catch (err) {
+          stEl.textContent = `Lỗi: ${err.message}`;
+        }
+      }
+    };
+
+    body.querySelectorAll('[data-wb-cust-tab]').forEach((b) => {
+      b.addEventListener('click', () => {
+        tab = b.dataset.wbCustTab;
+        renderSlotBody();
+        if (tab === 'saved') runSearch();
+      });
+    });
+    body.querySelector('#btnWbCustSearch')?.addEventListener('click', runSearch);
+    body.querySelector('#wbCustSearchInput')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+    });
+    body.querySelector('#btnWbClearSlot')?.addEventListener('click', async () => {
+      if (!confirm('Gỡ khách hàng khỏi đơn Buff Thời Tiết này?')) return;
+      try {
+        const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/slots/0`, 'DELETE');
+        showToast(res.message || 'Đã gỡ khách hàng khỏi đơn.');
+        overlay.style.display = 'none';
+        await loadOrders(true);
+        renderCurrentView();
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+  };
+
+  overlay.style.display = 'flex';
+  renderSlotBody();
+}
+
+async function openWeatherConfigModal(order) {
+  const overlay = document.getElementById('appModalOverlay');
+  const box = document.getElementById('appModalBox');
+  const title = document.getElementById('appModalTitle');
+  const body = document.getElementById('appModalBody');
+  if (!overlay || !box || !title || !body) return;
+
+  const remId = order.remoteOrderId;
+  box.className = 'modal-box';
+  title.textContent = `☁️ Chọn loại thời tiết — Đơn #${remId}`;
+  overlay.style.display = 'flex';
+
+  if (!Array.isArray(state.catalogData?.catalog?.weather_buff_types) || state.catalogData.catalog.weather_buff_types.length === 0) {
+    body.innerHTML = renderSyncLoadingHtml('Đang tải danh sách thời tiết từ Zn...', 'Đang đồng bộ các loại thời tiết đang hỗ trợ.');
+    await loadCatalog(true);
+    if (overlay.style.display === 'none') return;
+  }
+
+  const activeTypes = state.catalogData?.catalog?.weather_buff_types || [];
+  if (activeTypes.length === 0) {
+    body.innerHTML = `<div style="padding:16px;color:#fca5a5;">Không tải được danh sách loại thời tiết. Vui lòng thử làm mới dữ liệu.</div>`;
+    return;
+  }
+
+  const pkgQty = Math.max(1, Number(order.weather?.packageQuantity || order.totalCnt || 1));
+  const isLockedMode = Boolean(
+    order.isActive ||
+    order.weather?.remoteRef ||
+    order.status === 'assigned' ||
+    order.status === 'completed' ||
+    (order.weather?.weathers || []).some(w => Number(w.completed_cnt || 0) > 0) ||
+    order.weather?.casting
+  );
+
+  // Build draft rows following HoanNguyen's exact split rule for partially completed weather lines
+  let seq = 1;
+  const draft = [];
+  for (const w of (order.weather?.weathers || [])) {
+    const qty = Math.max(1, Number(w.quantity || 1));
+    const done = Math.max(0, Number(w.completed_cnt || 0));
+    if (isLockedMode && done > 0 && done < qty) {
+      draft.push({ key: `d-${seq++}`, id: w.id || null, weather_type_id: w.weather_type_id, name: w.name, icon: w.icon, quantity: done, completed_cnt: done, locked: true });
+      draft.push({ key: `d-${seq++}`, id: null, weather_type_id: w.weather_type_id, name: w.name, icon: w.icon, quantity: qty - done, completed_cnt: 0, locked: false });
+    } else {
+      draft.push({ key: `d-${seq++}`, id: w.id || null, weather_type_id: w.weather_type_id, name: w.name, icon: w.icon, quantity: Math.max(qty, done), completed_cnt: done, locked: done > 0 });
+    }
+  }
+
+  let selectedTypeId = activeTypes[0].id;
+  let addQty = Math.max(1, pkgQty - draft.reduce((s, d) => s + d.quantity, 0));
+
+  const renderConfigBody = () => {
+    const totalUsed = draft.reduce((s, d) => s + Number(d.quantity || 0), 0);
+    const remaining = Math.max(0, pkgQty - totalUsed);
+    const isOver = totalUsed > pkgQty;
+    if (addQty > remaining && remaining > 0) addQty = remaining;
+
+    body.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 14px;border-radius:10px;background:${isOver ? 'rgba(239,68,68,0.16)' : 'rgba(16,185,129,0.12)'};border:1px solid ${isOver ? 'rgba(248,113,113,0.4)' : 'rgba(52,211,153,0.3)'};">
+        <div style="font-size:13px;color:#fff;">
+          Gói đã mua: <strong>${formatNum(pkgQty)} lần</strong> · Đã chọn: <strong style="color:${isOver ? '#fca5a5' : '#4ade80'};">${formatNum(totalUsed)}</strong> / ${formatNum(pkgQty)}
+        </div>
+        <div style="font-size:12px;color:${isOver ? '#fca5a5' : 'var(--color-moon-mist)'};">
+          ${isOver ? `Vượt gói ${formatNum(totalUsed - pkgQty)} lần!` : `Còn trống: ${formatNum(remaining)} lần`}
+        </div>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.03);padding:12px;border-radius:10px;display:flex;flex-direction:column;gap:10px;">
+        <div style="font-size:12px;color:var(--color-moon-mist);font-weight:600;">Thêm loại thời tiết vào danh sách chạy:</div>
+        <div style="display:grid;grid-template-columns:1fr 100px auto;gap:8px;align-items:center;">
+          <select id="wbTypeSelect" class="input-box">
+            ${activeTypes.map(t => `<option value="${t.id}" ${Number(t.id) === Number(selectedTypeId) ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
+          </select>
+          <input type="number" id="wbAddQtyInput" class="input-box" min="1" max="${Math.max(1, remaining)}" value="${Math.max(1, addQty)}" />
+          <button type="button" class="btn-violet" id="btnWbAddLine" ${remaining <= 0 ? 'disabled' : ''}>+ Thêm</button>
+        </div>
+        ${
+          remaining > 0
+            ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${[1, 5, 10, 50].filter(n => n <= remaining).map(n => `<button type="button" class="btn-frost" style="padding:3px 9px;font-size:11px;" data-wb-quick-qty="${n}">${n} lần</button>`).join('')}
+                <button type="button" class="btn-frost" style="padding:3px 9px;font-size:11px;color:#5eead4;" data-wb-quick-qty="${remaining}">Điền hết (${formatNum(remaining)} lần)</button>
+              </div>`
+            : ''
+        }
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px;max-height:240px;overflow-y:auto;">
+        ${
+          draft.length === 0
+            ? `<div style="text-align:center;padding:20px;color:var(--color-fog-veil);font-size:12.5px;">Chưa chọn loại thời tiết nào. Hãy chọn loại thời tiết và bấm <strong>+ Thêm</strong> ở trên.</div>`
+            : draft.map((line, idx) => `
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;background:rgba(255,255,255,0.04);border-radius:9px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  ${line.icon ? `<img src="${escapeHtml(line.icon)}" alt="" style="width:22px;height:22px;object-fit:contain;" />` : '<span>☁️</span>'}
+                  <div>
+                    <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(line.name)}</div>
+                    ${line.locked ? `<div style="font-size:11px;color:#4ade80;">Đã chạy ${formatNum(line.completed_cnt)} lần (Cố định)</div>` : ''}
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                  ${
+                    line.locked
+                      ? `<span class="badge-tag green">${formatNum(line.quantity)} lần</span>`
+                      : `
+                        <input type="number" class="input-box" style="width:82px;padding:5px 8px;text-align:center;" min="1" max="${pkgQty}" value="${line.quantity}" data-wb-line-qty="${idx}" />
+                        <button type="button" class="btn-frost" style="padding:4px 9px;font-size:11px;color:#fca5a5;" data-wb-line-del="${idx}">✕</button>
+                      `
+                  }
+                </div>
+              </div>
+            `).join('')
+        }
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:6px;">
+        <button type="button" class="btn-frost" id="btnWbCancelConfig">Hủy</button>
+        <button type="button" class="btn-violet" id="btnWbSaveConfig" ${draft.length === 0 || isOver ? 'disabled' : ''}>💾 Lưu cấu hình thời tiết</button>
+      </div>
+    `;
+
+    body.querySelector('#wbTypeSelect')?.addEventListener('change', (e) => {
+      selectedTypeId = Number(e.target.value);
+    });
+    body.querySelector('#wbAddQtyInput')?.addEventListener('input', (e) => {
+      addQty = Math.max(1, Math.floor(Number(e.target.value || 1)));
+    });
+    body.querySelectorAll('[data-wb-quick-qty]').forEach((b) => {
+      b.addEventListener('click', () => {
+        addQty = Number(b.dataset.wbQuickQty);
+        const inp = body.querySelector('#wbAddQtyInput');
+        if (inp) inp.value = String(addQty);
+      });
+    });
+    body.querySelector('#btnWbAddLine')?.addEventListener('click', () => {
+      const t = activeTypes.find(x => Number(x.id) === Number(selectedTypeId));
+      const qty = Math.max(1, Math.floor(Number(body.querySelector('#wbAddQtyInput')?.value || addQty || 1)));
+      if (!t || qty <= 0 || qty > remaining) {
+        showToast(`Số lượng thêm vượt mức còn trống (${remaining} lần).`);
+        return;
+      }
+      const existing = draft.find(d => !d.locked && Number(d.weather_type_id) === Number(t.id));
+      if (existing) {
+        existing.quantity += qty;
+      } else {
+        draft.push({ key: `d-${seq++}`, id: null, weather_type_id: t.id, name: t.name, icon: t.icon, quantity: qty, completed_cnt: 0, locked: false });
+      }
+      addQty = Math.max(1, pkgQty - draft.reduce((s, d) => s + d.quantity, 0));
+      renderConfigBody();
+    });
+    body.querySelectorAll('[data-wb-line-qty]').forEach((inp) => {
+      inp.addEventListener('change', (e) => {
+        const idx = Number(inp.dataset.wbLineQty);
+        if (!draft[idx] || draft[idx].locked) return;
+        draft[idx].quantity = Math.max(1, Math.floor(Number(e.target.value || 1)));
+        renderConfigBody();
+      });
+    });
+    body.querySelectorAll('[data-wb-line-del]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const idx = Number(b.dataset.wbLineDel);
+        if (!draft[idx] || draft[idx].locked) return;
+        draft.splice(idx, 1);
+        renderConfigBody();
+      });
+    });
+    body.querySelector('#btnWbCancelConfig')?.addEventListener('click', () => {
+      overlay.style.display = 'none';
+    });
+    body.querySelector('#btnWbSaveConfig')?.addEventListener('click', async () => {
+      const saveBtn = body.querySelector('#btnWbSaveConfig');
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳ Đang lưu...'; }
+      try {
+        const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/weathers`, 'PUT', {
+          weathers: draft.map(d => ({
+            id: d.id,
+            weather_type_id: Number(d.weather_type_id),
+            quantity: Number(d.quantity),
+          })),
+        });
+        showToast(res.message || 'Đã lưu cấu hình thời tiết!');
+        overlay.style.display = 'none';
+        await loadOrders(true);
+        renderCurrentView();
+      } catch (err) {
+        showToast(err.message);
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Lưu cấu hình thời tiết'; }
+      }
+    });
+  };
+
+  renderConfigBody();
 }
 
 // ============================================================================

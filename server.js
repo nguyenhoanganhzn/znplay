@@ -549,11 +549,93 @@ function rememberCustomer(userId, customer) {
   return customer;
 }
 
+function normalizeWeatherSlots(slots, customerCount = 1) {
+  const count = Math.max(1, Math.min(4, Number(customerCount) || 1));
+  const list = Array.isArray(slots) ? slots : [];
+  const byIdx = new Map();
+  for (const s of list) {
+    const idx = Number(s?.slot_index);
+    if (!Number.isSafeInteger(idx) || idx < 0 || idx >= count) continue;
+    byIdx.set(idx, {
+      slot_index: idx,
+      customer_id: s.customer_id ? Number(s.customer_id) : null,
+      customer: s.customer
+        ? {
+            id: Number(s.customer.id || s.customer_id || 0),
+            nickname: String(s.customer.nickname || ''),
+            suid: String(s.customer.suid || ''),
+          }
+        : null,
+    });
+  }
+  const result = [];
+  for (let i = 0; i < count; i++) {
+    result.push(byIdx.get(i) || { slot_index: i, customer_id: null, customer: null });
+  }
+  return result;
+}
+
+function normalizeWeatherLines(weathers) {
+  if (!Array.isArray(weathers)) return [];
+  return [...weathers]
+    .sort((a, b) => Number(a?.position || 0) - Number(b?.position || 0))
+    .map((w, idx) => ({
+      id: w?.id ? Number(w.id) : null,
+      weather_type_id: Number(w?.weather_type_id || w?.weather_type?.id || 0),
+      position: Number(w?.position ?? idx),
+      quantity: Math.max(0, Number(w?.quantity || 0)),
+      completed_cnt: Math.max(0, Number(w?.completed_cnt || 0)),
+      name: String(w?.weather_type?.name || w?.name || `Thời tiết #${w?.weather_type_id || idx + 1}`),
+      icon: w?.weather_type?.icon_path_and_name
+        ? `/assets/playtogether/images/${String(w.weather_type.icon_path_and_name).replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
+        : w?.icon || null,
+    }));
+}
+
+function normalizeWeatherMeta(rem, prev = null) {
+  const customerCount = Math.max(1, Math.min(4, Number(rem?.customer_count ?? prev?.customerCount ?? 1)));
+  const packageQuantity = Math.max(0, Number(rem?.package_quantity ?? prev?.packageQuantity ?? 0));
+  const pricePackageId = Number(rem?.price_package_id ?? prev?.pricePackageId ?? 0) || null;
+  const slots = rem?.slots !== undefined ? normalizeWeatherSlots(rem.slots, customerCount) : (prev?.slots || normalizeWeatherSlots([], customerCount));
+  const weathers = rem?.weathers !== undefined ? normalizeWeatherLines(rem.weathers) : (prev?.weathers || []);
+  const casting = rem?.casting
+    ? {
+        weather_id: Number(rem.casting.weather_id || 0) || null,
+        name: String(rem.casting.name || ''),
+        started_at: rem.casting.started_at || null,
+        duration_seconds: Number(rem.casting.duration_seconds || 300),
+      }
+    : null;
+  return {
+    pricePackageId,
+    packageQuantity,
+    customerCount,
+    remoteRef: rem?.remote_ref || prev?.remoteRef || null,
+    slots,
+    weathers,
+    casting,
+  };
+}
+
+function formatWeatherOrderSummary(weatherMeta, fallbackSummary = '') {
+  const pkgQty = Number(weatherMeta?.packageQuantity || 0);
+  const lines = Array.isArray(weatherMeta?.weathers) ? weatherMeta.weathers : [];
+  if (lines.length === 0) {
+    return pkgQty > 0 ? `Gói ${pkgQty.toLocaleString('vi-VN')} lần (Chưa chọn thời tiết)` : (fallbackSummary || 'Buff Thời Tiết');
+  }
+  const parts = lines.slice(0, 3).map(w => `${w.name} ×${Number(w.quantity || 0)}`);
+  if (lines.length > 3) parts.push(`+${lines.length - 3} loại`);
+  return `${parts.join(', ')}${pkgQty > 0 ? ` (${pkgQty.toLocaleString('vi-VN')} lần)` : ''}`;
+}
+
 function publicOrder(order, isAdmin) {
   if (isAdmin) return order;
   const safe = {};
   for (const key of ['id', 'remoteOrderId', 'category', 'categoryName', 'summary', 'customer', 'sellPrice', 'status',
     'isActive', 'totalCnt', 'sendingCnt', 'completedCnt', 'failedCnt', 'createdAt', 'cancelRequested', 'refundedAmount', 'refundPending', 'requiresReview']) safe[key] = order[key];
+  if (order.category === 'weather_buff' && order.weather) {
+    safe.weather = order.weather;
+  }
   return { ...safe, note: order.requiresReview ? 'Đang được admin đối soát.' : null };
 }
 
@@ -1527,10 +1609,24 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     const farmGifts = formatGiftList(raw.farmGifts, 'farm_gift');
     const mailGifts = formatGiftList(raw.mailGifts, 'mail_gift');
 
-    // 7. Weather Buff Packages
-    const weatherPackages = raw.weatherPackages.map((pkg) =>
-      buildPublicPackage(pkg, 'weather_buff', isAdmin, 0)
-    );
+    // 7. Weather Buff Packages & Active Weather Types
+    const weatherPackages = raw.weatherPackages
+      .filter((pkg) => enabled(pkg.is_active))
+      .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
+      .map((pkg) => buildPublicPackage(pkg, 'weather_buff', isAdmin, 0));
+
+    const weatherTypes = (raw.weatherTypes || [])
+      .filter((wt) => enabled(wt.is_active))
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+      .map((wt) => ({
+        id: Number(wt.id),
+        name: String(wt.name || `Thời tiết #${wt.id}`),
+        enum_key: String(wt.enum_key || ''),
+        diamond: Number(wt.diamond || 0),
+        icon: wt.icon_path_and_name
+          ? `/assets/playtogether/images/${String(wt.icon_path_and_name).replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
+          : null,
+      }));
 
     const payload = {
       success: true,
@@ -1556,6 +1652,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
         farm_gift: farmGifts,
         mail_gift: mailGifts,
         weather_buff: weatherPackages,
+        weather_buff_types: weatherTypes,
       },
     };
     if (catalogResponseCache.size > 8) catalogResponseCache.clear();
@@ -1847,15 +1944,19 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       confirm_duplicate_customer,
     } = req.body || {};
 
-    if (!Number.isSafeInteger(Number(customer_id)) || Number(customer_id) <= 0 || !Object.hasOwn(CATEGORY_METADATA, category)) {
+    if (!Object.hasOwn(CATEGORY_METADATA, category)) {
+      return res.status(400).json({ success: false, message: 'Danh mục đặt đơn không hợp lệ.' });
+    }
+    const isWeatherBuff = category === 'weather_buff';
+    if (!isWeatherBuff && (!Number.isSafeInteger(Number(customer_id)) || Number(customer_id) <= 0)) {
       return res.status(400).json({
         success: false,
         message: 'Vui lòng tìm và chọn nhân vật khách hàng trước khi tạo đơn.',
       });
     }
 
-    const selection = chosenCustomers.get(`${user.id}:${customer_id}`);
-    if (!isAdmin && (!selection || selection.until <= Date.now() ||
+    const selection = isWeatherBuff ? null : chosenCustomers.get(`${user.id}:${customer_id}`);
+    if (!isWeatherBuff && !isAdmin && (!selection || selection.until <= Date.now() ||
         Number(selection.customer.gameProfileId || 0) !== Number(game_profile_id || 0))) {
       return res.status(403).json({ success: false, message: 'Vui lòng tìm và chọn lại nhân vật bằng tài khoản của bạn trước khi đặt đơn.' });
     }
@@ -1864,7 +1965,11 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     // Check if the category is currently active on HoanNguyen
     const isSendTask = enabled(rawCatalog.hnSettings?.is_send_task);
     const settingKey = CATEGORY_METADATA[category]?.settingKey;
-    if (settingKey && (!isSendTask || !enabled(rawCatalog.hnSettings?.[settingKey]))) {
+    const weatherAllowed = rawCatalog.hnSettings?.is_send_weatherbufforder === undefined
+      ? true
+      : enabled(rawCatalog.hnSettings.is_send_weatherbufforder);
+    if ((settingKey && (!isSendTask || !enabled(rawCatalog.hnSettings?.[settingKey]))) ||
+        (isWeatherBuff && (!isSendTask || !weatherAllowed))) {
       return res.status(400).json({
         success: false,
         message: `Danh mục "${CATEGORY_METADATA[category]?.menuLabel || category}" hiện đang tạm ngưng hoạt động trên hệ thống máy chủ. Vui lòng quay lại sau!`,
@@ -1876,6 +1981,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     let costPrice = 0;
     let sellPrice = 0;
     let orderSummary = '';
+    let selectedWeatherPkg = null;
 
     if (category === 'fruit_coin') {
       apiPath = '/api/fruit-coin-orders';
@@ -2042,6 +2148,30 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         is_active: true,
         confirm_duplicate_customer: !!confirm_duplicate_customer,
       };
+    } else if (category === 'weather_buff') {
+      apiPath = '/api/weather-buff-orders';
+      const pkg = (rawCatalog.weatherPackages || []).find((p) => Number(p.id) === Number(price_package_id));
+      if (!pkg || !enabled(pkg.is_active)) {
+        return res.status(400).json({ success: false, message: 'Gói Buff Thời Tiết không hợp lệ hoặc đang tạm ngưng.' });
+      }
+      selectedWeatherPkg = pkg;
+      const { isOnSale, sale } = resolveActiveSale(pkg);
+      const useSale = expect_sale !== false && isOnSale && sale;
+      const rawBaseCost = Number(pkg.original_price ?? pkg.total_price ?? 0);
+      const rawEffectiveCost = Number(
+        useSale ? (pkg.effective_price ?? sale.sale_price ?? pkg.total_price) : pkg.total_price
+      );
+      const calc = getPackageSellingPrice('weather_buff', pkg.id, rawEffectiveCost, rawBaseCost, 0);
+      costPrice = calc.costEffective;
+      sellPrice = calc.sellEffective;
+      orderSummary = `Gói ${Number(pkg.quantity).toLocaleString('vi-VN')} lần (Chưa chọn thời tiết)${useSale ? ' [Sale]' : ''}`;
+
+      hnPayload = {
+        customer_count: 1,
+        price_package_id: Number(pkg.id),
+        expect_sale: !!useSale,
+        expect_package_sale_id: useSale ? Number(sale.id) : null,
+      };
     } else {
       return res.status(400).json({ success: false, message: 'Danh mục đặt đơn không hợp lệ.' });
     }
@@ -2074,8 +2204,8 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     }
 
     intent = { id: crypto.randomUUID(), requestKey, payloadHash, userId: user.id, userName: user.name,
-      category, customerId: Number(customer_id), expectedCost: costPrice, sellPrice,
-      customer: selection?.customer || { customerId: Number(customer_id) }, summary: orderSummary,
+      category, customerId: isWeatherBuff ? null : Number(customer_id), expectedCost: costPrice, sellPrice,
+      customer: isWeatherBuff ? { customerId: null, nickname: 'Chưa gán khách', suid: '' } : (selection?.customer || { customerId: Number(customer_id) }), summary: orderSummary,
       heldAmount: isAdmin ? 0 : sellPrice, status: 'processing', createdAt: new Date().toISOString() };
     if (!isAdmin) {
       user.balance -= sellPrice;
@@ -2118,6 +2248,17 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     if (validMoney(actualCost)) costPrice = actualCost;
 
     const profit = sellPrice - costPrice;
+    const weatherMeta = isWeatherBuff
+      ? normalizeWeatherMeta(
+          {
+            ...createdRemoteOrder,
+            price_package_id: createdRemoteOrder.price_package_id ?? hnPayload.price_package_id,
+            package_quantity: createdRemoteOrder.package_quantity ?? selectedWeatherPkg?.quantity ?? 0,
+            customer_count: createdRemoteOrder.customer_count ?? 1,
+          },
+          null
+        )
+      : undefined;
 
     const localOrder = {
       id: `ZNP-${crypto.randomUUID()}`,
@@ -2126,16 +2267,18 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       category,
       categoryName: CATEGORY_METADATA[category]?.menuLabel || category,
       apiOrderPath: apiPath,
-      summary: orderSummary,
-      customer: {
-        customerId: customer_id,
-        gameProfileId: game_profile_id || null,
-        nickname:
-          createdRemoteOrder.customer?.nickname ||
-          selection?.customer.nickname ||
-          `Khách #${customer_id}`,
-        suid: createdRemoteOrder.customer?.suid || selection?.customer.suid || '',
-      },
+      summary: isWeatherBuff ? formatWeatherOrderSummary(weatherMeta, orderSummary) : orderSummary,
+      customer: isWeatherBuff
+        ? { customerId: null, gameProfileId: null, nickname: 'Chưa gán khách', suid: '' }
+        : {
+            customerId: customer_id,
+            gameProfileId: game_profile_id || null,
+            nickname:
+              createdRemoteOrder.customer?.nickname ||
+              selection?.customer.nickname ||
+              `Khách #${customer_id}`,
+            suid: createdRemoteOrder.customer?.suid || selection?.customer.suid || '',
+          },
       costPrice,
       markupAmount: profit,
       sellPrice,
@@ -2146,12 +2289,13 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         role: user.role,
       },
       status: createdRemoteOrder.status || 'pending',
-      isActive: createdRemoteOrder.is_active ?? true,
-      totalCnt: createdRemoteOrder.total_cnt ?? hnPayload.total_cnt ?? 0,
+      isActive: createdRemoteOrder.is_active ?? (isWeatherBuff ? false : true),
+      totalCnt: createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? (selectedWeatherPkg?.quantity || 0),
       sendingCnt: createdRemoteOrder.sending_cnt ?? 0,
       completedCnt: createdRemoteOrder.completed_cnt ?? 0,
       failedCnt: createdRemoteOrder.failed_cnt ?? 0,
       note: createdRemoteOrder.price_adjustment_note || null,
+      weather: weatherMeta,
       requiresReview: needsReview,
       createdAt: new Date().toISOString(),
     };
@@ -2167,7 +2311,9 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     intent.requiresReview = needsReview;
     intent.response = {
       success: true,
-      message: 'Tạo đơn hàng thành công!',
+      message: isWeatherBuff
+        ? 'Tạo đơn Buff Thời Tiết thành công! Hãy gán khách hàng và chọn loại thời tiết để bật chạy.'
+        : 'Tạo đơn hàng thành công!',
       order: publicOrder(localOrder, isAdmin),
       userBalance: user.balance,
     };
@@ -2209,7 +2355,8 @@ const orderPaths = [
   '/api/guestbook-orders?page=1&per_page=25',
   '/api/farm-gift-orders?page=1&per_page=25',
   '/api/mail-gift-orders?page=1&per_page=25',
-  '/api/weather-buff-orders?page=1&per_page=25&status_group=active',
+  '/api/weather-buff-orders?page=1&per_page=25&status_group=active&include_summary=1',
+  '/api/weather-buff-orders?page=1&per_page=15&status_group=completed',
 ];
 
 const ORDER_FRESH_MS = 15000;
@@ -2268,6 +2415,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       farmGiftRes,
       mailGiftRes,
       weatherRes,
+      weatherCompRes,
     ] = remote.pages;
 
     const remoteMap = new Map();
@@ -2290,6 +2438,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     collectRemote(farmGiftRes, 'farm_gift');
     collectRemote(mailGiftRes, 'mail_gift');
     collectRemote(weatherRes, 'weather_buff');
+    collectRemote(weatherCompRes, 'weather_buff');
 
     const matchedRemoteKeys = new Set();
     for (const lo of db.localOrders) {
@@ -2304,7 +2453,19 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           lo.failedCnt = rem.failed_cnt ?? 0;
           lo.lastAssignedAt = rem.last_assigned_at || null;
           lo.note = rem.price_adjustment_note || rem.note || lo.note || null;
-          if (rem.customer) {
+          if (lo.category === 'weather_buff') {
+            lo.weather = normalizeWeatherMeta(rem, lo.weather);
+            lo.summary = formatWeatherOrderSummary(lo.weather, lo.summary);
+            const assignedCust = lo.weather.slots.find(s => s.customer)?.customer || null;
+            lo.customer = assignedCust
+              ? {
+                  customerId: assignedCust.id,
+                  gameProfileId: lo.customer?.gameProfileId || null,
+                  nickname: assignedCust.nickname || `Khách #${assignedCust.id}`,
+                  suid: assignedCust.suid || '',
+                }
+              : { customerId: null, gameProfileId: null, nickname: 'Chưa gán khách', suid: '' };
+          } else if (rem.customer) {
             lo.customer.nickname = rem.customer.nickname || lo.customer.nickname;
             lo.customer.suid = rem.customer.suid || lo.customer.suid;
           }
@@ -2334,7 +2495,16 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         completedCnt: lo.completedCnt || 0,
         failedCnt: lo.failedCnt || 0,
         lastAssignedAt: lo.lastAssignedAt || null,
-        note: isAdmin ? lo.note || null : lo.cancelRequested ? 'Đã gửi yêu cầu hủy cho admin.' : lo.requiresReview ? 'Đang được admin đối soát.' : null,
+        note: isAdmin
+          ? lo.note || null
+          : lo.cancelRequested
+          ? 'Đã gửi yêu cầu hủy cho admin.'
+          : lo.requiresReview
+          ? 'Đang được admin đối soát.'
+          : lo.category === 'weather_buff' && lo.note && !/hoannguyen|giá|price/i.test(lo.note)
+          ? lo.note
+          : null,
+        weather: lo.category === 'weather_buff' ? lo.weather || null : undefined,
         cancelRequested: !!lo.cancelRequested,
         requiresReview: !!lo.requiresReview,
         createdAt: lo.createdAt,
@@ -2352,6 +2522,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         let summary = '';
         let custNickname = rem.customer?.nickname || `Khách #${rem.customer_id || rem.id}`;
         let custSuid = rem.customer?.suid || '';
+        let weatherMeta;
 
         if (cat === 'fruit_coin') {
           summary = `Gói ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')} Xu`;
@@ -2366,13 +2537,16 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         } else if (cat === 'guestbook') {
           summary = `Bài viết: "${String(rem.guest_book_message || '').slice(0, 28)}"`;
         } else if (cat === 'weather_buff') {
-          const wName = rem.weathers?.[0]?.weather_type?.name || 'Thời tiết';
-          const slotCust = rem.slots?.find((s) => s.customer)?.customer;
+          weatherMeta = normalizeWeatherMeta(rem, null);
+          const slotCust = weatherMeta.slots.find((s) => s.customer)?.customer;
           if (slotCust) {
             custNickname = slotCust.nickname || custNickname;
             custSuid = slotCust.suid || custSuid;
+          } else {
+            custNickname = 'Chưa gán khách';
+            custSuid = '';
           }
-          summary = `${wName} (${rem.package_quantity || 0} lần)`;
+          summary = formatWeatherOrderSummary(weatherMeta, `Buff Thời Tiết (${rem.package_quantity || 0} lần)`);
         } else {
           summary = `${rem.gift?.item?.name || 'Quà'} × ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')}`;
         }
@@ -2384,7 +2558,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           categoryName: CATEGORY_METADATA[cat]?.menuLabel || cat,
           summary,
           customer: {
-            customerId: rem.customer_id,
+            customerId: cat === 'weather_buff' ? (weatherMeta?.slots.find(s => s.customer)?.customer_id ?? null) : rem.customer_id,
             gameProfileId: rem.game_profile_id,
             nickname: custNickname,
             suid: custSuid,
@@ -2405,6 +2579,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           failedCnt: rem.failed_cnt ?? 0,
           lastAssignedAt: rem.last_assigned_at || null,
           note: rem.price_adjustment_note || rem.note || null,
+          weather: cat === 'weather_buff' ? weatherMeta : undefined,
           createdAt: rem.created_at || new Date().toISOString(),
           source: 'hoannguyen_sync',
         });
@@ -2430,6 +2605,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
             fruit_coin: fruitActiveRes?.summary || fruitActiveRes?.data?.summary || null,
             buff_tim: timActiveRes?.summary || timActiveRes?.data?.summary || null,
             buff_sao: saoActiveRes?.summary || saoActiveRes?.data?.summary || null,
+            weather_buff: weatherRes?.summary || weatherRes?.data?.summary || null,
           }
         : undefined,
     });
@@ -2461,8 +2637,29 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
       return res.status(400).json({ success: false, message: 'Danh mục đơn không hợp lệ.' });
     }
     if (lo?.status === 'cancelled' || lo?.requiresReview) return res.status(409).json({ success: false, message: 'Đơn đã hủy hoặc đang chờ đối soát; không thể bật/tắt.' });
+    if (category === 'weather_buff' && lo && !lo.isActive && lo.weather) {
+      const hasCust = (lo.weather.slots || []).some(s => s.customer_id || s.customer);
+      const totalWeathers = (lo.weather.weathers || []).reduce((sum, w) => sum + Number(w.quantity || 0), 0);
+      if (!hasCust) {
+        return res.status(400).json({ success: false, message: 'Vui lòng gán khách hàng vào đơn Buff Thời Tiết trước khi bật chạy!' });
+      }
+      if (totalWeathers <= 0) {
+        return res.status(400).json({ success: false, message: 'Vui lòng chọn ít nhất 1 loại thời tiết trước khi bật chạy!' });
+      }
+      if (lo.weather.packageQuantity > 0 && totalWeathers > lo.weather.packageQuantity) {
+        return res.status(400).json({ success: false, message: 'Tổng số lần thời tiết đang vượt gói đã mua. Hãy chỉnh lại trước khi bật!' });
+      }
+    }
     const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}/toggle-active`, 'PUT');
     orderCache = {};
+    if (lo && r?.data) {
+      lo.isActive = r.data.is_active ?? !lo.isActive;
+      if (r.data.status) lo.status = r.data.status;
+      if (category === 'weather_buff') {
+        lo.weather = normalizeWeatherMeta(r.data, lo.weather);
+      }
+      req.needsSave = true;
+    }
     res.json({
       success: true,
       message: 'Đã cập nhật trạng thái bật/tắt đơn hàng.',
@@ -2471,10 +2668,206 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
   } catch (err) {
     res.status(400).json({
       success: false,
-      message: publicError(req, err, 'Không thể bật/tắt đơn hàng này.'),
+      message: publicError(req, err, 'Không thể bật/tắt đơn hàng này (kiểm tra đã gán khách và chọn đủ thời tiết chưa).'),
     });
   }
 });
+
+// ============================================================================
+// WEATHER BUFF ORDER CONFIGURATION (ASSIGN/CLEAR CUSTOMER SLOT + SET WEATHERS)
+// Strictly enforces ownership and locks price_package_id so paid price never drifts!
+// ============================================================================
+function resolveEditableWeatherOrder(req, res) {
+  const user = req.user;
+  const isAdmin = user.role === 'admin';
+  const remoteId = String(req.params.remoteId || '').trim();
+  if (!/^\d+$/.test(remoteId)) {
+    res.status(400).json({ success: false, message: 'Mã đơn Buff Thời Tiết không hợp lệ.' });
+    return null;
+  }
+  const lo = db.localOrders.find((o) => o.category === 'weather_buff' && String(o.remoteOrderId) === remoteId) || null;
+  if (!isAdmin && (!lo || lo.placedBy?.id !== user.id)) {
+    res.status(403).json({ success: false, message: 'Bạn chỉ có thể chỉnh sửa đơn Buff Thời Tiết do chính bạn tạo.' });
+    return null;
+  }
+  if (lo && (lo.status === 'cancelled' || lo.status === 'completed' || lo.requiresReview)) {
+    res.status(409).json({ success: false, message: 'Đơn đã hoàn thành, đã hủy hoặc đang chờ đối soát; không thể chỉnh sửa.' });
+    return null;
+  }
+  return { user, isAdmin, remoteId, lo };
+}
+
+function applyWeatherRemoteUpdate(lo, remoteData) {
+  if (!lo || !remoteData) return;
+  lo.status = remoteData.status || lo.status;
+  lo.isActive = remoteData.is_active ?? lo.isActive;
+  lo.totalCnt = remoteData.package_quantity ?? lo.totalCnt;
+  lo.completedCnt = remoteData.completed_cnt ?? lo.completedCnt;
+  lo.weather = normalizeWeatherMeta(remoteData, lo.weather);
+  lo.summary = formatWeatherOrderSummary(lo.weather, lo.summary);
+  const assignedCust = lo.weather.slots.find(s => s.customer)?.customer || null;
+  lo.customer = assignedCust
+    ? {
+        customerId: assignedCust.id,
+        gameProfileId: lo.customer?.gameProfileId || null,
+        nickname: assignedCust.nickname || `Khách #${assignedCust.id}`,
+        suid: assignedCust.suid || '',
+      }
+    : { customerId: null, gameProfileId: null, nickname: 'Chưa gán khách', suid: '' };
+}
+
+app.put('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+  try {
+    const ctx = resolveEditableWeatherOrder(req, res);
+    if (!ctx) return;
+    const slotIndex = Number(req.params.slotIndex);
+    const maxSlots = Math.max(1, Math.min(4, Number(ctx.lo?.weather?.customerCount || 1)));
+    if (!Number.isSafeInteger(slotIndex) || slotIndex < 0 || slotIndex >= maxSlots) {
+      return res.status(400).json({ success: false, message: 'Vị trí khách hàng (slot) không hợp lệ.' });
+    }
+    const customerId = Number(req.body?.customer_id);
+    if (!Number.isSafeInteger(customerId) || customerId <= 0) {
+      return res.status(400).json({ success: false, message: 'Vui lòng tìm và chọn khách hàng hợp lệ.' });
+    }
+    const selection = chosenCustomers.get(`${ctx.user.id}:${customerId}`);
+    if (!ctx.isAdmin && (!selection || selection.until <= Date.now())) {
+      return res.status(403).json({ success: false, message: 'Vui lòng tìm và chọn lại nhân vật khách hàng bằng tài khoản của bạn.' });
+    }
+    const r = await hnApiCall(`/api/weather-buff-orders/${encodeURIComponent(ctx.remoteId)}/slots/${slotIndex}`, 'PUT', {
+      customer_id: customerId,
+    });
+    if (!r?.success) {
+      return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể gán khách hàng vào đơn này.') });
+    }
+    orderCache = {};
+    if (ctx.lo) {
+      applyWeatherRemoteUpdate(ctx.lo, r.data);
+      req.needsSave = true;
+    }
+    req.auditDetails = { remoteOrderId: ctx.remoteId, slotIndex, customerId };
+    res.json({
+      success: true,
+      message: 'Đã gán khách hàng vào đơn Buff Thời Tiết thành công!',
+      order: ctx.lo ? publicOrder(ctx.lo, ctx.isAdmin) : undefined,
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      message: publicError(req, err, 'Không thể gán khách hàng vào đơn Buff Thời Tiết.'),
+    });
+  }
+}));
+
+app.delete('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+  try {
+    const ctx = resolveEditableWeatherOrder(req, res);
+    if (!ctx) return;
+    const slotIndex = Number(req.params.slotIndex);
+    const maxSlots = Math.max(1, Math.min(4, Number(ctx.lo?.weather?.customerCount || 1)));
+    if (!Number.isSafeInteger(slotIndex) || slotIndex < 0 || slotIndex >= maxSlots) {
+      return res.status(400).json({ success: false, message: 'Vị trí khách hàng (slot) không hợp lệ.' });
+    }
+    if (ctx.lo?.weather?.remoteRef) {
+      return res.status(400).json({ success: false, message: 'Đơn đã từng chạy — hãy dùng nút "Đổi khách" để thay trực tiếp khách mới.' });
+    }
+    const r = await hnApiCall(`/api/weather-buff-orders/${encodeURIComponent(ctx.remoteId)}/slots/${slotIndex}`, 'DELETE');
+    if (!r?.success) {
+      return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể gỡ khách hàng khỏi đơn này.') });
+    }
+    orderCache = {};
+    if (ctx.lo) {
+      applyWeatherRemoteUpdate(ctx.lo, r.data);
+      req.needsSave = true;
+    }
+    req.auditDetails = { remoteOrderId: ctx.remoteId, slotIndex, cleared: true };
+    res.json({
+      success: true,
+      message: 'Đã gỡ khách hàng khỏi đơn Buff Thời Tiết.',
+      order: ctx.lo ? publicOrder(ctx.lo, ctx.isAdmin) : undefined,
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      message: publicError(req, err, 'Không thể gỡ khách hàng khỏi đơn Buff Thời Tiết.'),
+    });
+  }
+}));
+
+app.put('/api/orders/weather_buff/:remoteId/weathers', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+  try {
+    const ctx = resolveEditableWeatherOrder(req, res);
+    if (!ctx) return;
+    const inputLines = req.body?.weathers;
+    if (!Array.isArray(inputLines) || inputLines.length === 0 || inputLines.length > 25) {
+      return res.status(400).json({ success: false, message: 'Vui lòng chọn ít nhất 1 loại thời tiết hợp lệ.' });
+    }
+
+    // Lock price_package_id to the originally paid package so CTV cannot change order cost after payment!
+    let fixedPackageId = Number(ctx.lo?.weather?.pricePackageId || 0);
+    let packageQty = Number(ctx.lo?.weather?.packageQuantity || ctx.lo?.totalCnt || 0);
+    if (!fixedPackageId) {
+      const remote = await loadRemoteOrders(false);
+      const wbList = [
+        ...(Array.isArray(remote?.pages?.[9]?.data?.data) ? remote.pages[9].data.data : []),
+        ...(Array.isArray(remote?.pages?.[10]?.data?.data) ? remote.pages[10].data.data : []),
+      ];
+      const match = wbList.find(o => String(o.id) === ctx.remoteId);
+      if (match) {
+        fixedPackageId = Number(match.price_package_id || 0);
+        packageQty = Number(match.package_quantity || packageQty || 0);
+      }
+    }
+    if (!fixedPackageId) {
+      return res.status(400).json({ success: false, message: 'Không xác định được gói gốc của đơn. Hãy làm mới danh sách đơn rồi thử lại.' });
+    }
+
+    const cleanLines = [];
+    let totalQty = 0;
+    for (const line of inputLines) {
+      const wtId = Number(line?.weather_type_id);
+      const qty = Number(line?.quantity);
+      const lineId = line?.id == null ? null : Number(line.id);
+      if (!Number.isSafeInteger(wtId) || wtId <= 0 || !Number.isSafeInteger(qty) || qty <= 0 || qty > 10000) {
+        return res.status(400).json({ success: false, message: 'Loại thời tiết hoặc số lượng không hợp lệ.' });
+      }
+      if (lineId !== null && (!Number.isSafeInteger(lineId) || lineId <= 0)) {
+        return res.status(400).json({ success: false, message: 'Mã dòng thời tiết không hợp lệ.' });
+      }
+      totalQty += qty;
+      cleanLines.push({ id: lineId, weather_type_id: wtId, quantity: qty });
+    }
+    if (packageQty > 0 && totalQty > packageQty) {
+      return res.status(400).json({
+        success: false,
+        message: `Tổng số lần thời tiết (${totalQty}) không được vượt quá gói đã mua (${packageQty} lần).`,
+      });
+    }
+
+    const r = await hnApiCall(`/api/weather-buff-orders/${encodeURIComponent(ctx.remoteId)}/weathers`, 'PUT', {
+      weathers: cleanLines,
+      price_package_id: fixedPackageId,
+    });
+    if (!r?.success) {
+      return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể lưu cấu hình thời tiết cho đơn này.') });
+    }
+    orderCache = {};
+    if (ctx.lo) {
+      applyWeatherRemoteUpdate(ctx.lo, r.data);
+      req.needsSave = true;
+    }
+    req.auditDetails = { remoteOrderId: ctx.remoteId, totalQty, lineCount: cleanLines.length };
+    res.json({
+      success: true,
+      message: 'Đã lưu cấu hình thời tiết thành công!',
+      order: ctx.lo ? publicOrder(ctx.lo, ctx.isAdmin) : undefined,
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      message: publicError(req, err, 'Không thể lưu cấu hình thời tiết (phần đã chạy xong không được giảm hoặc xóa).'),
+    });
+  }
+}));
 
 // Delete Unstarted / Completed Order (Strict ownership check for CTV + Auto Refund)
 app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {

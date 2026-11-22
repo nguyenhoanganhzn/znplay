@@ -248,7 +248,7 @@ test('empty CTV history skips source calls and concurrent admin reads share a pa
   const admin = (await server.login('owner', 'owner-test-password')).body.token;
   const reads = await Promise.all([1, 2].map(() => server.request('/api/orders', 'GET', admin)));
   assert.ok(reads.every(r => r.status === 200 && r.body.partial === true));
-  assert.equal(requests, 10);
+  assert.equal(requests, 11);
 });
 
 test('CTV navigation cannot render admin pages or preserve prior admin data', () => {
@@ -865,4 +865,166 @@ test('raw source files and dotfiles are blocked, minified bundle hides upstream 
     const r = await fetch(`${server.base}${badImg}`, { redirect: 'manual' });
     assert.equal(r.status, 404, `Expected 404 for ${badImg}`);
   }
+});
+
+test('weather_buff full workflow: Admin pricing, package-first order creation, slot assignment, weather config, package lock, and toggle validation', async t => {
+  const upstreamCalls = [];
+  let wbOrderState = null;
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options = {}) => {
+    const p = new URL(url).pathname;
+    const method = (options.method || 'GET').toUpperCase();
+    const body = options.body ? JSON.parse(options.body) : null;
+    if (p === '/api/weather-buff-price-packages') {
+      return { ok: true, status: 200, json: async () => ({ success: true, data: [
+        { id: 16, quantity: 10, total_price: 2000, original_price: 2000, effective_price: 2000, is_active: true, is_on_sale: false },
+        { id: 23, quantity: 200, total_price: 25000, original_price: 25000, effective_price: 25000, is_active: true, is_on_sale: false },
+      ] }) };
+    }
+    if (p === '/api/weather-buff-types') {
+      return { ok: true, status: 200, json: async () => ({ success: true, data: [
+        { id: 1, name: 'Mưa', enum_key: 'Rain', icon_path_and_name: 'Weather/icon_weather_Rain', diamond: 50, is_active: true, sort_order: 1 },
+        { id: 2, name: 'Bão', enum_key: 'Thunderstorm', icon_path_and_name: 'Weather/icon_weather_Thunderstorm', diamond: 60, is_active: true, sort_order: 2 },
+      ] }) };
+    }
+    if (p === '/api/weather-buff-orders' && method === 'POST') {
+      upstreamCalls.push({ p, method, body });
+      wbOrderState = {
+        id: 7701,
+        price_package_id: body.price_package_id,
+        package_quantity: body.price_package_id === 16 ? 10 : 200,
+        total_price: body.price_package_id === 16 ? 2000 : 25000,
+        customer_count: body.customer_count || 1,
+        is_active: false,
+        status: 'pending',
+        completed_cnt: 0,
+        slots: [{ slot_index: 0, customer_id: null, customer: null }],
+        weathers: [],
+      };
+      return { ok: true, status: 200, json: async () => ({ success: true, data: wbOrderState }) };
+    }
+    if (p === '/api/weather-buff-orders/7701/slots/0' && method === 'PUT') {
+      upstreamCalls.push({ p, method, body });
+      wbOrderState.slots = [{ slot_index: 0, customer_id: body.customer_id, customer: { id: body.customer_id, nickname: 'KhachWeather', suid: '99887766' } }];
+      return { ok: true, status: 200, json: async () => ({ success: true, data: wbOrderState }) };
+    }
+    if (p === '/api/weather-buff-orders/7701/weathers' && method === 'PUT') {
+      upstreamCalls.push({ p, method, body });
+      wbOrderState.weathers = body.weathers.map((w, idx) => ({
+        id: 900 + idx,
+        weather_type_id: w.weather_type_id,
+        position: idx,
+        quantity: w.quantity,
+        completed_cnt: 0,
+        weather_type: { id: w.weather_type_id, name: w.weather_type_id === 1 ? 'Mưa' : 'Bão', icon_path_and_name: 'Weather/icon_weather_Rain' },
+      }));
+      return { ok: true, status: 200, json: async () => ({ success: true, data: wbOrderState }) };
+    }
+    if (p === '/api/weather-buff-orders/7701/toggle-active' && method === 'PUT') {
+      upstreamCalls.push({ p, method });
+      wbOrderState.is_active = !wbOrderState.is_active;
+      wbOrderState.status = wbOrderState.is_active ? 'assigned' : 'pending';
+      return { ok: true, status: 200, json: async () => ({ success: true, data: wbOrderState }) };
+    }
+    if (p === '/api/weather-buff-orders' && method === 'GET') {
+      return { ok: true, status: 200, json: async () => ({ success: true, data: { data: wbOrderState ? [wbOrderState] : [] } }) };
+    }
+    if (p === '/api/customers/resolve-by-role-id' && method === 'POST') {
+      return { ok: true, status: 200, json: async () => ({ success: true, data: { id: 555, nickname: 'KhachWeather', suid: '99887766', role_id: body.role_id } }) };
+    }
+    return base(url, options);
+  }, {
+    seed(data) {
+      data.users.push({ id: 'seller2', username: 'seller2', password: 'seller2-test-password', role: 'ctv', name: 'Seller2', balance: 50000 });
+    },
+  });
+
+  const admin = await server.login('owner', 'owner-test-password');
+  const seller = await server.login('seller', 'seller-test-password');
+  const seller2 = await server.login('seller2', 'seller2-test-password');
+
+  // 1. Admin configures +3.000đ markup on weather_buff -> 10 lần (cost 2.000đ) sells for 5.000đ
+  const setRes = await server.request('/api/admin/settings', 'PUT', admin.body.token, {
+    categoryMarkups: { weather_buff: 3000 },
+    categoryMarkupModes: { weather_buff: 'fixed' },
+  });
+  assert.equal(setRes.status, 200);
+
+  const cat = await server.request('/api/catalog?refresh=1', 'GET', seller.body.token);
+  assert.equal(cat.status, 200);
+  assert.equal(cat.body.catalog.weather_buff[0].total_price, 5000);
+  assert.equal(cat.body.catalog.weather_buff[0]._admin, undefined);
+  assert.equal(cat.body.catalog.weather_buff_types.length, 2);
+  assert.match(cat.body.catalog.weather_buff_types[0].icon, /^\/assets\/playtogether\/images\//);
+
+  // 2. CTV places weather_buff package order WITHOUT selecting customer first
+  const place = await server.request('/api/orders/place', 'POST', seller.body.token, {
+    category: 'weather_buff',
+    price_package_id: 16,
+    expect_sale: true,
+    expected_price: 5000,
+    idempotency_key: 'wb_order_place_test_key_001',
+  });
+  assert.equal(place.status, 200);
+  assert.equal(place.body.success, true);
+  assert.equal(place.body.userBalance, 45000);
+  assert.equal(place.body.order.isActive, false);
+  assert.equal(place.body.order.remoteOrderId, 7701);
+  assert.deepEqual(upstreamCalls[0].body, {
+    customer_count: 1,
+    price_package_id: 16,
+    expect_sale: false,
+    expect_package_sale_id: null,
+  });
+
+  // 3. Cannot toggle ON before customer & weathers are configured
+  const toggleEarly = await server.request('/api/orders/weather_buff/7701/toggle-active', 'PUT', seller.body.token);
+  assert.equal(toggleEarly.status, 400);
+  assert.match(toggleEarly.body.message, /gán khách/i);
+
+  // 4. Cannot assign an unselected customer ID (403) or edit another CTV's order (403)
+  const badSlot = await server.request('/api/orders/weather_buff/7701/slots/0', 'PUT', seller.body.token, { customer_id: 555 });
+  assert.equal(badSlot.status, 403);
+  const otherCtvSlot = await server.request('/api/orders/weather_buff/7701/slots/0', 'PUT', seller2.body.token, { customer_id: 555 });
+  assert.equal(otherCtvSlot.status, 403);
+
+  // 5. Select customer via Role ID and assign to slot 0
+  const resolved = await server.request('/api/customer/resolve-role-id', 'POST', seller.body.token, { role_id: 'ABCD-1234' });
+  assert.equal(resolved.status, 200);
+  const assignSlot = await server.request('/api/orders/weather_buff/7701/slots/0', 'PUT', seller.body.token, { customer_id: 555 });
+  assert.equal(assignSlot.status, 200);
+  assert.equal(assignSlot.body.order.customer.nickname, 'KhachWeather');
+
+  // 6. Still cannot toggle ON before choosing weathers
+  const toggleNoWeather = await server.request('/api/orders/weather_buff/7701/toggle-active', 'PUT', seller.body.token);
+  assert.equal(toggleNoWeather.status, 400);
+  assert.match(toggleNoWeather.body.message, /thời tiết/i);
+
+  // 7. Reject weather lines exceeding package quantity (11 > 10)
+  const overQty = await server.request('/api/orders/weather_buff/7701/weathers', 'PUT', seller.body.token, {
+    weathers: [{ id: null, weather_type_id: 1, quantity: 11 }],
+  });
+  assert.equal(overQty.status, 400);
+
+  // 8. Save valid weather lines (even if client tries passing price_package_id: 23, server locks to paid 16!)
+  const saveW = await server.request('/api/orders/weather_buff/7701/weathers', 'PUT', seller.body.token, {
+    price_package_id: 23,
+    weathers: [
+      { id: null, weather_type_id: 1, quantity: 6 },
+      { id: null, weather_type_id: 2, quantity: 4 },
+    ],
+  });
+  assert.equal(saveW.status, 200);
+  const weatherCall = upstreamCalls.find(c => c.p === '/api/weather-buff-orders/7701/weathers');
+  assert.equal(weatherCall.body.price_package_id, 16);
+  assert.equal(weatherCall.body.weathers.length, 2);
+
+  // 9. Toggle ON now succeeds
+  const toggleOk = await server.request('/api/orders/weather_buff/7701/toggle-active', 'PUT', seller.body.token);
+  assert.equal(toggleOk.status, 200);
+  const listRes = await server.request('/api/orders?category=weather_buff&refresh=1', 'GET', seller.body.token);
+  assert.equal(listRes.body.orders.length, 1);
+  assert.equal(listRes.body.orders[0].isActive, true);
+  assert.equal(listRes.body.orders[0].customer.nickname, 'KhachWeather');
+  assert.equal(listRes.body.orders[0].weather.weathers.length, 2);
 });

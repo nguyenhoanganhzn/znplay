@@ -443,9 +443,9 @@ test('order IDs are scoped by category; CTV cancellation never deletes source or
   const seller = await server.login('seller', 'seller-test-password');
   assert.equal((await server.request('/api/orders/buff_sao/42', 'DELETE', seller.body.token)).status, 403);
   assert.equal((await server.request('/api/orders/buff_sao/42/toggle-active', 'PUT', seller.body.token)).status, 403);
-  assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', seller.body.token)).status, 200);
+  assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', seller.body.token)).status, 403);
   assert.equal(deletes, 0);
-  assert.equal(server.db.localOrders[0].cancelRequested, true);
+  assert.equal(server.db.localOrders[0].cancelRequested, undefined);
   assert.equal(server.db.users.find(u => u.id === 'seller').balance, 50000);
   const admin = await server.login('owner', 'owner-test-password');
   assert.equal((await server.request('/api/orders/buff_tim/42', 'DELETE', admin.body.token)).status, 200);
@@ -898,10 +898,14 @@ test('weather_buff full workflow: Admin pricing, package-first order creation, s
         is_active: false,
         status: 'pending',
         completed_cnt: 0,
+        public_token: 'tok123abc987def',
         slots: [{ slot_index: 0, customer_id: null, customer: null }],
         weathers: [],
       };
       return { ok: true, status: 200, json: async () => ({ success: true, data: wbOrderState }) };
+    }
+    if (p === '/api/weather-buff-orders/7701/share-link' && method === 'POST') {
+      return { ok: true, status: 200, json: async () => ({ success: true, data: { token: 'tok123abc987def', path: '/track/weather/tok123abc987def', url: 'https://thoitietplay.us/track/weather/tok123abc987def' } }) };
     }
     if (p === '/api/weather-buff-orders/7701/slots/0' && method === 'PUT') {
       upstreamCalls.push({ p, method, body });
@@ -1027,4 +1031,14 @@ test('weather_buff full workflow: Admin pricing, package-first order creation, s
   assert.equal(listRes.body.orders[0].isActive, true);
   assert.equal(listRes.body.orders[0].customer.nickname, 'KhachWeather');
   assert.equal(listRes.body.orders[0].weather.weathers.length, 2);
+  assert.equal(listRes.body.orders[0].weather.trackUrl, 'https://thoitietplay.us/track/weather/tok123abc987def');
+
+  // 10. Share-link endpoint enforces ownership and CTV cannot delete/cancel weather order
+  const linkOwn = await server.request('/api/orders/weather_buff/7701/share-link', 'POST', seller.body.token);
+  assert.equal(linkOwn.status, 200);
+  assert.equal(linkOwn.body.url, 'https://thoitietplay.us/track/weather/tok123abc987def');
+  const linkOther = await server.request('/api/orders/weather_buff/7701/share-link', 'POST', seller2.body.token);
+  assert.equal(linkOther.status, 403);
+  const delCtv = await server.request('/api/orders/weather_buff/7701', 'DELETE', seller.body.token);
+  assert.equal(delCtv.status, 403);
 });

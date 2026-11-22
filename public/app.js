@@ -778,7 +778,7 @@ function renderOrderCategoryPageHtml(catKey) {
         <div style="font-size:13px;font-weight:700;color:#c4b5fd;margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
         <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--color-moon-mist);line-height:1.7;">
           <li><strong>Bước 1:</strong> Bấm <strong>+ Thêm Đơn Hàng</strong> để mua gói số lần thời tiết trước (chưa cần chọn khách khi tạo gói).</li>
-          <li><strong>Bước 2:</strong> Sau khi tạo đơn, bấm <strong>👤 Gán khách</strong> và <strong>☁️ Chọn thời tiết</strong> (ít nhất 1 loại, tổng số lần không vượt gói) rồi bật công tắc <strong>Bật/Tắt</strong> để chạy.</li>
+          <li><strong>Bước 2:</strong> Sau khi tạo đơn, hệ thống tự trả <strong>Link theo dõi công khai</strong> ở cột <strong>LINK</strong> — bấm <strong>📋 Copy link</strong> gửi cho khách tự xem & chỉnh, hoặc bấm <strong>👤 Gán khách</strong> + <strong>☁️ Chọn thời tiết</strong> trực tiếp trên bảng rồi bật công tắc chạy.</li>
           <li>Sau khi bật đơn vẫn có thể <strong>Đổi khách</strong> — khách mới sẽ nhận phần thời tiết còn lại. Phần thời tiết đã chạy xong sẽ cố định không đổi được.</li>
         </ul>
       </div>
@@ -820,24 +820,29 @@ function renderOrderCategoryPageHtml(catKey) {
         </div>
       </div>
 
-      <!-- Data Table -->
       <div class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
               <th>KHÁCH HÀNG</th>
-              <th>GÓI / VẬT PHẨM</th>
+              <th>${catKey === 'weather_buff' ? 'GÓI / THỜI TIẾT' : 'GÓI / VẬT PHẨM'}</th>
               <th>SỐ LƯỢNG</th>
               <th>GIÁ</th>
-              <th>ĐANG GỬI</th>
-              <th>HOÀN THÀNH</th>
-              <th>THẤT BẠI</th>
-              <th>TIẾN ĐỘ</th>
+              ${
+                catKey === 'weather_buff'
+                  ? ''
+                  : `
+                    <th>ĐANG GỬI</th>
+                    <th>HOÀN THÀNH</th>
+                    <th>THẤT BẠI</th>
+                    <th>TIẾN ĐỘ</th>
+                  `
+              }
               <th>TRẠNG THÁI</th>
               <th>BẬT/TẮT</th>
               <th>GHI CHÚ</th>
               <th>TẠO LÚC</th>
-              <th>THAO TÁC</th>
+              ${catKey === 'weather_buff' ? '<th>LINK</th>' : state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
             </tr>
           </thead>
           <tbody id="catOrdersTbody">
@@ -865,7 +870,8 @@ function getFilteredCatOrders(catKey) {
       const matchName = String(o.customer?.nickname || '').toLowerCase().includes(q);
       const matchSuid = String(o.customer?.suid || '').toLowerCase().includes(q);
       const matchId = String(o.remoteOrderId || o.id).toLowerCase().includes(q);
-      if (!matchName && !matchSuid && !matchId) return false;
+      const matchLink = String(o.weather?.trackUrl || '').toLowerCase().includes(q);
+      if (!matchName && !matchSuid && !matchId && !matchLink) return false;
     }
     return true;
   });
@@ -873,10 +879,11 @@ function getFilteredCatOrders(catKey) {
 
 function renderCatOrdersTbodyHtml(catKey) {
   const filteredOrders = getFilteredCatOrders(catKey);
+  const colSpan = catKey === 'weather_buff' ? 9 : state.user?.role === 'admin' ? 13 : 12;
   if (filteredOrders.length === 0) {
     return `
       <tr>
-        <td colspan="13" style="text-align:center;padding:32px;color:var(--color-fog-veil);">
+        <td colspan="${colSpan}" style="text-align:center;padding:32px;color:var(--color-fog-veil);">
           ${state.loadingOrders ? '<span class="loading-inline"><span class="loading-dot"></span>Đang đồng bộ danh sách đơn hàng...</span>' : 'Không có dữ liệu'}
         </td>
       </tr>
@@ -964,6 +971,52 @@ function renderOrderTableRowHtml(o) {
     `
     : `<span class="badge-tag">${escapeHtml(o.summary)}</span>`;
 
+  const wbTrackUrl = isWeather ? String(o.weather?.trackUrl || '') : '';
+  const lastCellHtml = isWeather
+    ? `
+      <td>
+        <div style="display:flex;flex-direction:column;gap:5px;min-width:128px;">
+          ${
+            o.remoteOrderId && o.status !== 'cancelled'
+              ? `
+                <div style="display:flex;align-items:center;gap:5px;">
+                  <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;white-space:nowrap;" data-copy-weather-link="${escapeHtml(o.remoteOrderId)}" data-track-url="${escapeHtml(wbTrackUrl)}">
+                    📋 Copy link
+                  </button>
+                  ${
+                    wbTrackUrl
+                      ? `<a href="${escapeHtml(wbTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="padding:5px 8px;font-size:11px;text-decoration:none;" title="Mở link theo dõi">↗</a>`
+                      : ''
+                  }
+                </div>
+                ${
+                  wbTrackUrl
+                    ? `<div style="font-size:10px;color:var(--color-fog-veil);max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(wbTrackUrl)}">${escapeHtml(wbTrackUrl.replace(/^https?:\/\//, ''))}</div>`
+                    : ''
+                }
+              `
+              : '—'
+          }
+          ${
+            isAdmin && o.remoteOrderId && o.status !== 'cancelled'
+              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">Hủy tại nguồn</button></div>`
+              : ''
+          }
+        </div>
+      </td>
+    `
+    : isAdmin
+    ? `
+      <td>
+        ${
+          o.remoteOrderId && o.status !== 'cancelled'
+            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
+            : '—'
+        }
+      </td>
+    `
+    : '';
+
   return `
     <tr>
       <td>${customerCellHtml}</td>
@@ -973,12 +1026,18 @@ function renderOrderTableRowHtml(o) {
         <div style="font-weight:600;color:#fbbf24;">${formatVnd(o.sellPrice)}</div>
         ${adminNote}
       </td>
-      <td>${formatNum(o.sendingCnt || 0)}</td>
-      <td style="color:#4ade80;font-weight:600;">${formatNum(o.completedCnt || 0)}</td>
-      <td style="color:#f87171;">${formatNum(o.failedCnt || 0)}</td>
-      <td>
-        <div style="font-size:12px;font-weight:600;">${pct}%</div>
-      </td>
+      ${
+        isWeather
+          ? ''
+          : `
+            <td>${formatNum(o.sendingCnt || 0)}</td>
+            <td style="color:#4ade80;font-weight:600;">${formatNum(o.completedCnt || 0)}</td>
+            <td style="color:#f87171;">${formatNum(o.failedCnt || 0)}</td>
+            <td>
+              <div style="font-size:12px;font-weight:600;">${pct}%</div>
+            </td>
+          `
+      }
       <td>${statusBadge}</td>
       <td>
         ${
@@ -993,13 +1052,7 @@ function renderOrderTableRowHtml(o) {
       <td style="font-size:12px;color:var(--color-fog-veil);white-space:nowrap;">
         ${formatDateVi(o.createdAt)}
       </td>
-      <td>
-        ${
-          o.remoteOrderId && o.status !== 'cancelled' && (!o.cancelRequested || isAdmin)
-            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">${isAdmin ? 'Hủy tại nguồn' : 'Yêu cầu hủy'}</button>`
-            : '—'
-        }
-      </td>
+      ${lastCellHtml}
     </tr>
   `;
 }
@@ -1051,6 +1104,25 @@ function bindOrderCategoryPageEvents(catKey) {
   bindOrderRowActionButtons();
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  ta.remove();
+  return ok;
+}
+
 function bindOrderRowActionButtons() {
   document.querySelectorAll('[data-toggle-order]').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -1085,25 +1157,63 @@ function bindOrderRowActionButtons() {
     });
   });
 
-  document.querySelectorAll('[data-delete-order]').forEach((btn) => {
+  document.querySelectorAll('[data-copy-weather-link]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const remId = btn.dataset.deleteOrder;
-      const cat = btn.dataset.orderCat;
-      if (!confirm(state.user.role === 'admin' ? `Hủy đơn #${remId} tại nguồn? Tiền ví sẽ chỉ được hoàn sau khi đối soát.` : `Gửi yêu cầu hủy đơn #${remId} cho admin? Nguồn có thể vẫn chạy đến khi admin xử lý; chưa tự động hoàn tiền.`)) return;
+      const remId = btn.dataset.copyWeatherLink;
+      let url = String(btn.dataset.trackUrl || '').trim();
+      const origLabel = btn.textContent;
       btn.disabled = true;
       try {
-        const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
-          deletion_note: 'Xóa đơn từ ZnStudio',
-        });
-        showToast(res.message || 'Đã xóa đơn hàng');
-        await Promise.all([loadOrders(), initAuth()]);
-        renderCurrentView();
+        if (!url) {
+          btn.textContent = '⏳ Đang lấy link...';
+          const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/share-link`, 'POST');
+          url = String(res?.url || '').trim();
+          if (!url) throw new Error('Không lấy được link theo dõi.');
+          btn.dataset.trackUrl = url;
+          const ord = state.orders.find((o) => o.category === 'weather_buff' && String(o.remoteOrderId) === String(remId));
+          if (ord) {
+            ord.weather = { ...(ord.weather || {}), trackUrl: url };
+          }
+        }
+        const copied = await copyTextToClipboard(url);
+        if (copied) {
+          showToast('Đã copy link theo dõi thời tiết!');
+          btn.textContent = '✓ Đã copy';
+          setTimeout(() => { btn.textContent = origLabel; btn.disabled = false; }, 1600);
+        } else {
+          window.prompt('Copy link theo dõi thời tiết:', url);
+          btn.textContent = origLabel;
+          btn.disabled = false;
+        }
       } catch (err) {
-        showToast(`Không thể xóa: ${err.message}`);
+        showToast(err.message || 'Không copy được link.');
+        btn.textContent = origLabel;
         btn.disabled = false;
       }
     });
   });
+
+  if (state.user?.role === 'admin') {
+    document.querySelectorAll('[data-delete-order]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const remId = btn.dataset.deleteOrder;
+        const cat = btn.dataset.orderCat;
+        if (!confirm(`Hủy đơn #${remId} tại nguồn? Tiền ví sẽ chỉ được hoàn sau khi đối soát.`)) return;
+        btn.disabled = true;
+        try {
+          const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
+            deletion_note: 'Xóa đơn từ ZnStudio',
+          });
+          showToast(res.message || 'Đã xóa đơn hàng');
+          await Promise.all([loadOrders(true), initAuth()]);
+          renderCurrentView();
+        } catch (err) {
+          showToast(`Không thể xóa: ${err.message}`);
+          btn.disabled = false;
+        }
+      });
+    });
+  }
 }
 
 function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ Zn...', sub = 'Đang đồng bộ trạng thái hoạt động và giá gốc mới nhất từ hệ thống để đảm bảo chính xác tuyệt đối.') {
@@ -1881,10 +1991,44 @@ async function submitModalOrder(confirmDuplicate = false) {
 
     if (r.success) {
       showToast(r.message || 'Tạo đơn hàng thành công!');
-      document.getElementById('appModalOverlay').style.display = 'none';
       if (r.userBalance !== undefined && state.user) {
         state.user.balance = r.userBalance;
         updateShellAuthUI();
+      }
+      const wbUrl = isWeather ? r.order?.weather?.trackUrl : '';
+      if (isWeather && wbUrl) {
+        const title = document.getElementById('appModalTitle');
+        const body = document.getElementById('appModalBody');
+        if (title) title.textContent = `✓ Đã tạo đơn Buff Thời Tiết #${r.order?.remoteOrderId || ''}`;
+        if (body) {
+          body.innerHTML = `
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div style="font-size:13px;color:var(--color-moon-mist);line-height:1.6;">
+                Đơn gói <strong>${formatNum(r.order?.totalCnt || 0)} lần</strong> đã tạo thành công! Gửi link theo dõi bên dưới cho khách tự chọn nhân vật & thời tiết, hoặc chỉnh trực tiếp trên bảng đơn:
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <input type="text" class="input-box" id="createdWbLinkInput" readonly value="${escapeHtml(wbUrl)}" />
+                <button type="button" class="btn-violet" id="btnCopyCreatedWbLink" style="white-space:nowrap;">📋 Copy link</button>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;">
+                <a href="${escapeHtml(wbUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="text-decoration:none;">↗ Mở link</a>
+                <button type="button" class="btn-violet" id="btnDoneCreatedWb">Xong</button>
+              </div>
+            </div>
+          `;
+          body.querySelector('#btnCopyCreatedWbLink')?.addEventListener('click', async (ev) => {
+            const ok = await copyTextToClipboard(wbUrl);
+            if (ok) {
+              showToast('Đã copy link theo dõi thời tiết!');
+              ev.currentTarget.textContent = '✓ Đã copy';
+            }
+          });
+          body.querySelector('#btnDoneCreatedWb')?.addEventListener('click', () => {
+            document.getElementById('appModalOverlay').style.display = 'none';
+          });
+        }
+      } else {
+        document.getElementById('appModalOverlay').style.display = 'none';
       }
       await loadOrders(true);
       renderCurrentView();

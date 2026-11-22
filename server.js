@@ -592,12 +592,25 @@ function normalizeWeatherLines(weathers) {
     }));
 }
 
+function buildSafeWeatherTrackUrl(url, publicToken) {
+  const cleanUrl = typeof url === 'string' && /^https:\/\/[A-Za-z0-9.-]+\/track\/weather\/[A-Za-z0-9_-]+$/.test(url.trim()) && !/hoannguyen/i.test(url)
+    ? url.trim()
+    : null;
+  if (cleanUrl) return cleanUrl;
+  const tok = typeof publicToken === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(publicToken.trim()) ? publicToken.trim() : null;
+  return tok ? `https://thoitietplay.us/track/weather/${tok}` : null;
+}
+
 function normalizeWeatherMeta(rem, prev = null) {
   const customerCount = Math.max(1, Math.min(4, Number(rem?.customer_count ?? prev?.customerCount ?? 1)));
   const packageQuantity = Math.max(0, Number(rem?.package_quantity ?? prev?.packageQuantity ?? 0));
   const pricePackageId = Number(rem?.price_package_id ?? prev?.pricePackageId ?? 0) || null;
   const slots = rem?.slots !== undefined ? normalizeWeatherSlots(rem.slots, customerCount) : (prev?.slots || normalizeWeatherSlots([], customerCount));
   const weathers = rem?.weathers !== undefined ? normalizeWeatherLines(rem.weathers) : (prev?.weathers || []);
+  const publicToken = (typeof rem?.public_token === 'string' && rem.public_token.trim())
+    ? rem.public_token.trim()
+    : (prev?.publicToken || null);
+  const trackUrl = buildSafeWeatherTrackUrl(rem?.track_url || rem?.url || prev?.trackUrl, publicToken);
   const casting = rem?.casting
     ? {
         weather_id: Number(rem.casting.weather_id || 0) || null,
@@ -611,6 +624,8 @@ function normalizeWeatherMeta(rem, prev = null) {
     packageQuantity,
     customerCount,
     remoteRef: rem?.remote_ref || prev?.remoteRef || null,
+    publicToken,
+    trackUrl,
     slots,
     weathers,
     casting,
@@ -2248,6 +2263,12 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     if (validMoney(actualCost)) costPrice = actualCost;
 
     const profit = sellPrice - costPrice;
+    let weatherShareData = null;
+    if (isWeatherBuff) {
+      weatherShareData = await hnApiCall(`/api/weather-buff-orders/${encodeURIComponent(remoteOrderId)}/share-link`, 'POST')
+        .then((r) => (r?.success ? r.data : null))
+        .catch(() => null);
+    }
     const weatherMeta = isWeatherBuff
       ? normalizeWeatherMeta(
           {
@@ -2255,6 +2276,8 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
             price_package_id: createdRemoteOrder.price_package_id ?? hnPayload.price_package_id,
             package_quantity: createdRemoteOrder.package_quantity ?? selectedWeatherPkg?.quantity ?? 0,
             customer_count: createdRemoteOrder.customer_count ?? 1,
+            public_token: weatherShareData?.token || createdRemoteOrder.public_token || null,
+            track_url: weatherShareData?.url || null,
           },
           null
         )
@@ -2869,33 +2892,59 @@ app.put('/api/orders/weather_buff/:remoteId/weathers', requireAuth, financialGua
   }
 }));
 
-// Delete Unstarted / Completed Order (Strict ownership check for CTV + Auto Refund)
+// Share / Tracking Link for Weather Buff Order (White-label public link)
+app.post('/api/orders/weather_buff/:remoteId/share-link', requireAuth, limitInteractive, asyncRoute(async (req, res) => {
+  try {
+    const user = req.user;
+    const isAdmin = user.role === 'admin';
+    const remoteId = String(req.params.remoteId || '').trim();
+    if (!/^\d+$/.test(remoteId)) {
+      return res.status(400).json({ success: false, message: 'Mã đơn Buff Thời Tiết không hợp lệ.' });
+    }
+    const lo = db.localOrders.find((o) => o.category === 'weather_buff' && String(o.remoteOrderId) === remoteId) || null;
+    if (!isAdmin && (!lo || lo.placedBy?.id !== user.id)) {
+      return res.status(403).json({ success: false, message: 'Bạn chỉ có thể lấy link theo dõi cho đơn do chính bạn tạo.' });
+    }
+    if (lo?.status === 'cancelled') {
+      return res.status(409).json({ success: false, message: 'Đơn đã hủy; không thể tạo link theo dõi.' });
+    }
+    const r = await hnApiCall(`/api/weather-buff-orders/${encodeURIComponent(remoteId)}/share-link`, 'POST');
+    const url = buildSafeWeatherTrackUrl(r?.data?.url, r?.data?.token || lo?.weather?.publicToken);
+    if (!r?.success || !url) {
+      return res.status(400).json({ success: false, message: 'Không thể tạo link theo dõi cho đơn này.' });
+    }
+    if (lo) {
+      lo.weather = normalizeWeatherMeta({ public_token: r.data?.token, track_url: url }, lo.weather);
+      req.needsSave = true;
+    }
+    res.json({ success: true, url, token: r.data?.token || lo?.weather?.publicToken || null });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      message: publicError(req, err, 'Không thể lấy link theo dõi cho đơn Buff Thời Tiết.'),
+    });
+  }
+}));
+
+// Delete Unstarted / Completed Order (ADMIN ONLY — CTV cannot delete or cancel orders in ANY category!)
 app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
-    const { category, remoteId } = req.params;
-
-    const idx = db.localOrders.findIndex((o) => o.category === category && String(o.remoteOrderId) === String(remoteId));
-    if (!isAdmin && (idx < 0 || db.localOrders[idx].placedBy?.id !== user.id)) {
+    if (!isAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Bạn chỉ có thể xóa đơn hàng do chính tài khoản của bạn tạo.',
+        message: 'CTV không có quyền xóa hoặc hủy đơn hàng. Vui lòng liên hệ Admin nếu cần hỗ trợ.',
       });
     }
+    const { category, remoteId } = req.params;
+    const idx = db.localOrders.findIndex((o) => o.category === category && String(o.remoteOrderId) === String(remoteId));
 
     const meta = CATEGORY_METADATA[category];
     if (!Object.hasOwn(CATEGORY_METADATA, category)) {
       return res.status(400).json({ success: false, message: 'Danh mục đơn không hợp lệ.' });
     }
     const lo = db.localOrders[idx];
-    if (!isAdmin) {
-      if (lo.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã được hủy.' });
-      lo.cancelRequested = true;
-      lo.cancelRequestedAt = lo.cancelRequestedAt || new Date().toISOString();
-      req.needsSave = true;
-      return res.json({ success: true, message: 'Đã gửi yêu cầu hủy tới admin. Đơn tại nguồn vẫn có thể đang chạy; tiền chưa tự động hoàn.' });
-    }
     if (lo?.status === 'cancelled') return res.json({ success: true, message: 'Đơn đã hủy; lịch sử được giữ lại.' });
     const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}`, 'DELETE', {
       deletion_note: req.body?.deletion_note || 'Xóa đơn từ ZnStudio',

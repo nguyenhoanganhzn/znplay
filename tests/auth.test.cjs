@@ -1203,3 +1203,54 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
   assert.ok(notifyRes.body.updateVersion > beforeVer);
   assert.equal((await server.request('/api/ping')).body.updateVersion, notifyRes.body.updateVersion);
 });
+
+test('scoped catalog refresh calls only target category endpoints, omits seller-settlements for CTV, and returns compact fruit mutations', async t => {
+  const hitPaths = [];
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options = {}) => {
+    hitPaths.push(new URL(url).pathname);
+    return base(url, options);
+  });
+  const seller = await server.login('seller', 'seller-test-password');
+
+  // 1. Scoped buff_tim refresh calls ONLY /api/settings + /api/buff-tim-price-packages (2 calls, zero fruit-items or settlements!)
+  hitPaths.length = 0;
+  const timRes = await server.request('/api/catalog?refresh=1&scope=buff_tim&compact=1', 'GET', seller.body.token);
+  assert.equal(timRes.status, 200);
+  assert.equal(timRes.body.partialScope, 'buff_tim');
+  assert.equal(timRes.body.catalog.buff_tim.length, 1);
+  assert.equal(timRes.body.catalog.fruit_by_fruit, undefined);
+  assert.deepEqual([...new Set(hitPaths)].sort(), ['/api/buff-tim-price-packages', '/api/settings']);
+
+  // 2. Scoped fruit_by_fruit refresh with compact=1 calls ONLY 3 fruit endpoints and returns compact mp tuples (no _admin)
+  hitPaths.length = 0;
+  const fruitRes = await server.request('/api/catalog?refresh=1&scope=fruit_by_fruit&compact=1', 'GET', seller.body.token);
+  assert.equal(fruitRes.status, 200);
+  assert.equal(fruitRes.body.partialScope, 'fruit_by_fruit');
+  assert.deepEqual([...new Set(hitPaths)].sort(), ['/api/fruit-items', '/api/fruit-stock', '/api/settings']);
+  const firstFruit = fruitRes.body.catalog.fruit_by_fruit[0];
+  assert.ok(Array.isArray(firstFruit.mp));
+  assert.equal(firstFruit.mutation_prices, undefined);
+  assert.equal(firstFruit._admin, undefined);
+
+  // 3. Full CTV catalog load skips /api/seller-settlements (Admin-only!)
+  hitPaths.length = 0;
+  const fullCtv = await server.request('/api/catalog?refresh=1&compact=1', 'GET', seller.body.token);
+  assert.equal(fullCtv.status, 200);
+  assert.equal(hitPaths.includes('/api/seller-settlements'), false);
+  assert.equal(fullCtv.body.weeklyLimit, undefined);
+
+  // 4. Order placement uses scoped refresh (for buff_tim, never pulls 586KB fruit-items!)
+  await server.request('/api/customer/resolve-role-id', 'POST', seller.body.token, { role_id: 'FAST-123' });
+  hitPaths.length = 0;
+  const place = await server.request('/api/orders/place', 'POST', seller.body.token, {
+    category: 'buff_tim',
+    customer_id: 101,
+    price_package_id: 7,
+    expected_price: 15000,
+    idempotency_key: 'fast_scoped_order_key_001',
+  });
+  assert.equal(place.status, 200);
+  assert.equal(hitPaths.includes('/api/fruit-items'), false);
+  assert.equal(hitPaths.includes('/api/seller-settlements'), false);
+});

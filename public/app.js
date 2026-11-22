@@ -155,7 +155,7 @@ function showToast(message, duration = 4000) {
   }, duration);
 }
 
-async function apiFetch(url, method = 'GET', body = null) {
+async function apiFetch(url, method = 'GET', body = null, timeoutMs = 0) {
   const requestToken = state.token;
   const headers = { 'Accept': 'application/json' };
   if (state.token) {
@@ -166,7 +166,24 @@ async function apiFetch(url, method = 'GET', body = null) {
     headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(url, opts);
+  let controller = null;
+  let timer = null;
+  if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
+    controller = new AbortController();
+    opts.signal = controller.signal;
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  }
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw Object.assign(new Error('Đồng bộ bảng giá quá thời gian (quá 6.5 giây). Vui lòng bấm Thử lại.'), { code: 'TIMEOUT', status: 504 });
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const data = await res.json().catch(() => null);
   if (requestToken && state.token !== requestToken) {
     throw new Error('Phiên đăng nhập đã thay đổi. Vui lòng thử lại.');
@@ -276,6 +293,7 @@ function clearAuthState() {
   state.loadingOrders = false;
   state.lastOrdersSig = '';
   state.lastCatalogSig = '';
+  state.lastScopeSyncAt = {};
   state.remoteSummaries = {};
   state.orders = [];
   state.adminOverview = null;
@@ -474,36 +492,90 @@ function applyCatalogSideEffects(r) {
   updateShellAuthUI();
 }
 
-async function loadCatalog(forceRefresh = false) {
+function expandCompactFruitMutations(data, fallbackMutations = null) {
+  const fruits = data?.catalog?.fruit_by_fruit;
+  const mutMeta = data?.mutations || fallbackMutations || {};
+  if (!Array.isArray(fruits)) return;
+  for (const f of fruits) {
+    if (Array.isArray(f.mp) && !Array.isArray(f.mutation_prices)) {
+      f.mutation_prices = f.mp.map(([mk, price]) => {
+        const meta = mutMeta[mk] || mutMeta[String(mk)] || {};
+        return {
+          mutation_key: Number(mk),
+          mutation_name: meta.name || `Đột biến #${mk}`,
+          mutation_abbr: meta.abbr || '',
+          mutation_color: meta.color || '#a78bfa',
+          unit_price: Number(price || 0),
+        };
+      });
+      delete f.mp;
+    }
+  }
+}
+
+async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
   if (!state.user) return false;
   const requestToken = state.token;
   state.loadingCatalog = true;
   try {
-    const r = await apiFetch(`/api/catalog${forceRefresh ? '?refresh=1' : ''}`);
+    const qs = new URLSearchParams();
+    if (forceRefresh) qs.set('refresh', '1');
+    if (scope) qs.set('scope', scope);
+    if (state.user.role !== 'admin') qs.set('compact', '1');
+    const url = `/api/catalog${qs.toString() ? `?${qs.toString()}` : ''}`;
+    const r = await apiFetch(url, 'GET', null, timeoutMs);
     if (!r.success || state.token !== requestToken) return false;
+
+    const prev = state.catalogData;
+    const merged = r.partialScope && prev
+      ? {
+          ...prev,
+          syncedAt: r.syncedAt || prev.syncedAt,
+          pricingVersion: r.pricingVersion ?? prev.pricingVersion,
+          systemStatus: r.systemStatus || prev.systemStatus,
+          hnSettings: r.hnSettings || prev.hnSettings,
+          coinStock: r.coinStock !== undefined ? r.coinStock : prev.coinStock,
+          coinTiers: r.coinTiers !== undefined ? r.coinTiers : prev.coinTiers,
+          mutations: r.mutations || prev.mutations,
+          catalog: {
+            ...(prev.catalog || {}),
+            ...(r.catalog || {}),
+          },
+        }
+      : r;
+
+    expandCompactFruitMutations(merged, prev?.mutations);
+
     const sig = JSON.stringify({
-      pv: r.pricingVersion,
-      s: r.systemStatus,
-      wl: r.weeklyLimit,
-      fc: (r.catalog?.fruit_coin || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
-      fb: (r.catalog?.fruit_by_fruit || []).map(f => [f.id, f.unit_price, f.stock_quantity]),
-      bt: (r.catalog?.buff_tim || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
-      bs: (r.catalog?.buff_sao || []).map(p => [p.id, p.total_price]),
-      gb: (r.catalog?.guestbook || []).map(p => [p.id, p.total_price]),
-      wb: (r.catalog?.weather_buff || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
-      fg: (r.catalog?.farm_gift || []).map(g => [g.id, (g.packages || []).map(p => [p.id, p.total_price])]),
-      mg: (r.catalog?.mail_gift || []).map(g => [g.id, (g.packages || []).map(p => [p.id, p.total_price])]),
-      cs: r.coinStock?.quantity,
+      pv: merged.pricingVersion,
+      s: merged.systemStatus,
+      wl: merged.weeklyLimit,
+      fc: (merged.catalog?.fruit_coin || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      fb: (merged.catalog?.fruit_by_fruit || []).map(f => [f.id, f.unit_price, f.stock_quantity]),
+      bt: (merged.catalog?.buff_tim || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      bs: (merged.catalog?.buff_sao || []).map(p => [p.id, p.total_price]),
+      gb: (merged.catalog?.guestbook || []).map(p => [p.id, p.total_price]),
+      wb: (merged.catalog?.weather_buff || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      fg: (merged.catalog?.farm_gift || []).map(g => [g.id, (g.packages || []).map(p => [p.id, p.total_price])]),
+      mg: (merged.catalog?.mail_gift || []).map(g => [g.id, (g.packages || []).map(p => [p.id, p.total_price])]),
+      cs: merged.coinStock?.quantity,
     });
     const changed = sig !== state.lastCatalogSig || !state.catalogData;
     state.lastCatalogSig = sig;
-    state.catalogData = r;
+    state.catalogData = merged;
     state.catalogWarning = '';
-    saveCachedCatalog(r);
-    applyCatalogSideEffects(r);
+    if (!state.lastScopeSyncAt) state.lastScopeSyncAt = {};
+    if (scope) state.lastScopeSyncAt[scope] = Date.now();
+    else state.lastScopeSyncAt.all = Date.now();
+    saveCachedCatalog(merged);
+    applyCatalogSideEffects(merged);
     return changed;
   } catch (err) {
-    if (state.token === requestToken) state.catalogWarning = 'Chưa đồng bộ được bảng giá nguồn. Bấm Làm mới dữ liệu để thử lại.';
+    if (state.token === requestToken) {
+      state.catalogWarning = err?.code === 'TIMEOUT'
+        ? err.message
+        : 'Chưa đồng bộ được bảng giá nguồn. Bấm Làm mới dữ liệu để thử lại.';
+    }
     return false;
   } finally {
     if (state.token === requestToken) state.loadingCatalog = false;
@@ -1305,8 +1377,12 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
   overlay.style.display = 'flex';
 
-  // ALWAYS sync fresh live status & prices from HoanNguyen + ZnStudio Admin BEFORE letting user configure/place order!
-  await loadCatalog(true);
+  // ALWAYS sync ONLY the exact category being opened (2-3 tiny API calls, < 2s typical, hard 6.5s ceiling < 7s!)
+  const targetScope =
+    presetOptions?.category === 'fruit_by_fruit' || presetOptions?.fruitOrderType === 'by_fruit'
+      ? 'fruit_by_fruit'
+      : catKey;
+  await loadCatalog(true, targetScope, 6500);
   if (mySeq !== createOrderModalSeq || overlay.style.display === 'none' || !state.user) return;
 
   const r = state.catalogData;
@@ -1702,9 +1778,17 @@ function bindCreateOrderModalEvents() {
     state.modalOrder.category = 'fruit_coin';
     renderCreateOrderModalBody();
   });
-  body.querySelector('#modalTabByFruit')?.addEventListener('click', () => {
+  body.querySelector('#modalTabByFruit')?.addEventListener('click', async () => {
     state.modalOrder.fruitOrderType = 'by_fruit';
     state.modalOrder.category = 'fruit_by_fruit';
+    const lastFruitSync = state.lastScopeSyncAt?.fruit_by_fruit || 0;
+    const hasFruits = (state.catalogData?.catalog?.fruit_by_fruit || []).length > 0;
+    if (!hasFruits || Date.now() - lastFruitSync > 30000) {
+      body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
+      await loadCatalog(true, 'fruit_by_fruit', 6500);
+      const overlay = document.getElementById('appModalOverlay');
+      if (!overlay || overlay.style.display === 'none') return;
+    }
     renderCreateOrderModalBody();
     triggerModalFruitPreview();
   });
@@ -2092,7 +2176,7 @@ async function submitModalOrder(confirmDuplicate = false) {
   } catch (err) {
     showToast(err.message);
     if (err.code === 'PRICE_CHANGED') {
-      await loadCatalog(true);
+      await loadCatalog(true, m.category, 6500);
       if (m.category === 'fruit_by_fruit') triggerModalFruitPreview();
       else renderCreateOrderModalBody();
     }
@@ -2296,7 +2380,7 @@ async function openWeatherConfigModal(order) {
 
   if (!Array.isArray(state.catalogData?.catalog?.weather_buff_types) || state.catalogData.catalog.weather_buff_types.length === 0) {
     body.innerHTML = renderSyncLoadingHtml('Đang tải danh sách thời tiết từ Zn...', 'Đang đồng bộ các loại thời tiết đang hỗ trợ.');
-    await loadCatalog(true);
+    await loadCatalog(true, 'weather_buff', 6500);
     if (overlay.style.display === 'none') return;
   }
 
@@ -2490,7 +2574,7 @@ async function openFruitWarehouseModal() {
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
-  await loadCatalog(true);
+  await loadCatalog(true, 'fruit_by_fruit', 6500);
   if (overlay.style.display === 'none' || !state.catalogData) return;
 
   const fruits = (state.catalogData.catalog?.fruit_by_fruit || [])
@@ -2555,7 +2639,7 @@ async function openCoinWarehouseModal() {
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
-  await loadCatalog(true);
+  await loadCatalog(true, 'fruit_coin', 6500);
   if (overlay.style.display === 'none' || !state.catalogData) return;
 
   const coin = state.catalogData.coinStock || {};
@@ -2606,7 +2690,7 @@ async function openCategoryPriceListModal(catKey) {
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
   overlay.style.display = 'flex';
 
-  await loadCatalog(true);
+  await loadCatalog(true, catKey, 6500);
   if (overlay.style.display === 'none' || !state.catalogData) return;
 
   const items = state.catalogData.catalog?.[catKey] || [];

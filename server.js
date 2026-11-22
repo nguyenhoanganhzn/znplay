@@ -930,9 +930,9 @@ function upstreamSuccess() {
   Object.assign(upstreamStatus, { connected: true, lastCheckedAt: new Date().toISOString(), lastError: '' });
 }
 
-async function fetchHoanNguyen(url, options = {}) {
+async function fetchHoanNguyen(url, options = {}, timeoutMs = 15000) {
   try {
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(15000) });
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
   } catch (error) {
     throw upstreamFailure(error);
   }
@@ -980,7 +980,7 @@ async function loginToHoanNguyen(force = false) {
   return loginPromise;
 }
 
-async function hnApiCall(apiPath, method = 'GET', body = null, retry = true) {
+async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, timeoutMs = 15000) {
   const hn = db.settings.hoanNguyen;
   const token = await loginToHoanNguyen(false);
 
@@ -996,10 +996,10 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true) {
     options.body = JSON.stringify(body);
   }
 
-  const res = await fetchHoanNguyen(`${hn.baseUrl}${apiPath}`, options);
+  const res = await fetchHoanNguyen(`${hn.baseUrl}${apiPath}`, options, timeoutMs);
   if (res.status === 401 && retry) {
     if (db.settings.hoanNguyen.token === token) await loginToHoanNguyen(true);
-    return hnApiCall(apiPath, method, body, false);
+    return hnApiCall(apiPath, method, body, false, timeoutMs);
   }
 
   let data;
@@ -1375,21 +1375,152 @@ function getCurrentMondayStr() {
   return `${y}-${m}-${d}`;
 }
 
+const SETTINGS_KEYS_PATH =
+  '/api/settings?keys=is_send_task,is_send_fruitorder,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity';
+
+const VALID_CATALOG_SCOPES = new Set([
+  'fruit_coin',
+  'fruit_by_fruit',
+  'fruit_all',
+  'buff_tim',
+  'buff_sao',
+  'guestbook',
+  'farm_gift',
+  'mail_gift',
+  'weather_buff',
+]);
+
+const catalogScopeTimestamps = new Map();
+const scopedCatalogPromises = new Map();
+
+function ensureRawCatalogShell() {
+  if (!catalogCache.raw) {
+    catalogCache.raw = {
+      fruitCoinPackages: [],
+      fruitItems: [],
+      fruitStock: [],
+      fruitStockMeta: {},
+      buffTimPackages: [],
+      buffSaoPackages: [],
+      guestbookPackages: [],
+      farmGifts: [],
+      mailGifts: [],
+      weatherPackages: [],
+      weatherTypes: [],
+      hnSettings: {},
+      processingRates: {},
+      weeklyLimit: null,
+      syncedAt: new Date().toISOString(),
+    };
+  }
+  return catalogCache.raw;
+}
+
+// Fast targeted sync for a SINGLE category (only 2-3 tiny upstream requests instead of all 13!)
+async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs = CTV_CATALOG_FRESH_MS, timeoutMs = 5500 } = {}) {
+  if (!VALID_CATALOG_SCOPES.has(scope)) {
+    return fetchRawCatalogFromHoanNguyen(force, maxAgeMs, { includeAdminWeeklyLimit: false, timeoutMs });
+  }
+  const now = Date.now();
+  const lastScopeTs = Math.max(catalogScopeTimestamps.get(scope) || 0, catalogCache.timestamp || 0);
+  if (!force && catalogCache.raw && now - lastScopeTs < maxAgeMs) {
+    return catalogCache.raw;
+  }
+  const inflight = scopedCatalogPromises.get(scope);
+  if (inflight) return inflight;
+
+  const job = (async () => {
+    const reqs = {
+      settings: hnApiCall(SETTINGS_KEYS_PATH, 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
+    };
+    if (scope === 'fruit_coin' || scope === 'fruit_all') {
+      reqs.fruitCoin = hnApiCall('/api/fruit-coin-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+      reqs.fruitStock = hnApiCall('/api/fruit-stock', 'GET', null, true, timeoutMs).catch(() => ({ data: [], meta: {} }));
+    }
+    if (scope === 'fruit_by_fruit' || scope === 'fruit_all') {
+      reqs.fruitItems = hnApiCall('/api/fruit-items?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+      if (!reqs.fruitStock) {
+        reqs.fruitStock = hnApiCall('/api/fruit-stock', 'GET', null, true, timeoutMs).catch(() => ({ data: [], meta: {} }));
+      }
+    }
+    if (scope === 'buff_tim') {
+      reqs.buffTim = hnApiCall('/api/buff-tim-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+    }
+    if (scope === 'buff_sao') {
+      reqs.buffSao = hnApiCall('/api/buff-sao-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+    }
+    if (scope === 'guestbook') {
+      reqs.guestbook = hnApiCall('/api/guestbook-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+    }
+    if (scope === 'farm_gift') {
+      reqs.farmGifts = hnApiCall('/api/gifts?type=farm&active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+    }
+    if (scope === 'mail_gift') {
+      reqs.mailGifts = hnApiCall('/api/gifts?type=mail&active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+    }
+    if (scope === 'weather_buff') {
+      reqs.weatherPkg = hnApiCall('/api/weather-buff-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+      reqs.weatherTypes = hnApiCall('/api/weather-buff-types?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] }));
+    }
+
+    const keys = Object.keys(reqs);
+    const values = await Promise.all(keys.map(k => reqs[k]));
+    const results = Object.fromEntries(keys.map((k, i) => [k, values[i]]));
+
+    const failed = keys.map(k => results[k]).find(r => r && r.upstreamError);
+    if (failed) throw upstreamFailure(failed.upstreamError);
+    upstreamSuccess();
+
+    const raw = ensureRawCatalogShell();
+    raw.hnSettings = results.settings?.data || raw.hnSettings || {};
+    if (results.fruitCoin) raw.fruitCoinPackages = Array.isArray(results.fruitCoin.data) ? results.fruitCoin.data : [];
+    if (results.fruitItems) raw.fruitItems = Array.isArray(results.fruitItems.data) ? results.fruitItems.data : [];
+    if (results.fruitStock) {
+      raw.fruitStock = Array.isArray(results.fruitStock.data) ? results.fruitStock.data : raw.fruitStock;
+      raw.fruitStockMeta = results.fruitStock.meta || raw.fruitStockMeta || {};
+    }
+    if (results.buffTim) raw.buffTimPackages = Array.isArray(results.buffTim.data) ? results.buffTim.data : [];
+    if (results.buffSao) raw.buffSaoPackages = Array.isArray(results.buffSao.data) ? results.buffSao.data : [];
+    if (results.guestbook) raw.guestbookPackages = Array.isArray(results.guestbook.data) ? results.guestbook.data : [];
+    if (results.farmGifts) raw.farmGifts = Array.isArray(results.farmGifts.data) ? results.farmGifts.data : [];
+    if (results.mailGifts) raw.mailGifts = Array.isArray(results.mailGifts.data) ? results.mailGifts.data : [];
+    if (results.weatherPkg) raw.weatherPackages = Array.isArray(results.weatherPkg.data) ? results.weatherPkg.data : [];
+    if (results.weatherTypes && Array.isArray(results.weatherTypes.data)) raw.weatherTypes = results.weatherTypes.data;
+
+    const finishedAt = Date.now();
+    raw.syncedAt = new Date(finishedAt).toISOString();
+    catalogScopeTimestamps.set(scope, finishedAt);
+    if (scope === 'fruit_all') {
+      catalogScopeTimestamps.set('fruit_coin', finishedAt);
+      catalogScopeTimestamps.set('fruit_by_fruit', finishedAt);
+    }
+    catalogResponseCache.clear();
+    return raw;
+  })();
+
+  scopedCatalogPromises.set(scope, job);
+  try { return await job; }
+  finally { scopedCatalogPromises.delete(scope); }
+}
+
 let catalogPromise = null;
-async function fetchRawCatalogFromHoanNguyen(force = false, maxAgeMs = CTV_CATALOG_FRESH_MS) {
+async function fetchRawCatalogFromHoanNguyen(force = false, maxAgeMs = CTV_CATALOG_FRESH_MS, opts = {}) {
   const age = Date.now() - catalogCache.timestamp;
-  if (!force && catalogCache.raw && age < maxAgeMs) {
+  const includeAdminWeeklyLimit = opts.includeAdminWeeklyLimit !== false;
+  if (!force && catalogCache.raw && age < maxAgeMs && (!includeAdminWeeklyLimit || catalogCache.hasWeeklyLimit)) {
     return catalogCache.raw;
   }
   if (catalogPromise) return catalogPromise;
-  catalogPromise = buildRawCatalogFromHoanNguyen(true);
+  catalogPromise = buildRawCatalogFromHoanNguyen(true, opts);
   try { return await catalogPromise; }
   finally { catalogPromise = null; }
 }
 
-async function buildRawCatalogFromHoanNguyen(force = false) {
+async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
   const now = Date.now();
-  if (!force && catalogCache.raw && now - catalogCache.timestamp < ADMIN_CATALOG_FRESH_MS) {
+  const includeAdminWeeklyLimit = opts.includeAdminWeeklyLimit !== false;
+  const timeoutMs = opts.timeoutMs || 15000;
+  if (!force && catalogCache.raw && now - catalogCache.timestamp < ADMIN_CATALOG_FRESH_MS && (!includeAdminWeeklyLimit || catalogCache.hasWeeklyLimit)) {
     return catalogCache.raw;
   }
 
@@ -1410,22 +1541,22 @@ async function buildRawCatalogFromHoanNguyen(force = false) {
     ratesRes,
     settlementRes,
   ] = await Promise.all([
-    hnApiCall('/api/fruit-coin-price-packages?active=1').catch(error => ({ upstreamError: error })),
-    hnApiCall('/api/fruit-items?active=1').catch(error => ({ upstreamError: error })),
-    hnApiCall('/api/fruit-stock').catch(() => ({ data: [], meta: {} })),
-    hnApiCall('/api/buff-tim-price-packages?active=1').catch(() => ({ data: [] })),
-    hnApiCall('/api/buff-sao-price-packages?active=1').catch(() => ({ data: [] })),
-    hnApiCall('/api/guestbook-price-packages?active=1').catch(() => ({ data: [] })),
+    hnApiCall('/api/fruit-coin-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
+    hnApiCall('/api/fruit-items?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
+    hnApiCall('/api/fruit-stock', 'GET', null, true, timeoutMs).catch(() => ({ data: [], meta: {} })),
+    hnApiCall('/api/buff-tim-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall('/api/buff-sao-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall('/api/guestbook-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
     // IMPORTANT: Only fetch active=1 gifts for seller order creation, matching HoanNguyen exactly!
-    hnApiCall('/api/gifts?type=farm&active=1').catch(() => ({ data: [] })),
-    hnApiCall('/api/gifts?type=mail&active=1').catch(() => ({ data: [] })),
-    hnApiCall('/api/weather-buff-price-packages?active=1').catch(() => ({ data: [] })),
-    hnApiCall('/api/weather-buff-types?active=1').catch(() => ({ data: [] })),
-    hnApiCall(
-      '/api/settings?keys=is_send_task,is_send_fruitorder,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity'
-    ).catch(error => ({ upstreamError: error })),
-    hnApiCall('/api/tasks/processing-rate').catch(() => ({ data: {} })),
-    hnApiCall(`/api/seller-settlements?week_start=${weekStart}`).catch(() => ({ data: null })),
+    hnApiCall('/api/gifts?type=farm&active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall('/api/gifts?type=mail&active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall('/api/weather-buff-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall('/api/weather-buff-types?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall(SETTINGS_KEYS_PATH, 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
+    hnApiCall('/api/tasks/processing-rate', 'GET', null, true, timeoutMs).catch(() => ({ data: {} })),
+    includeAdminWeeklyLimit
+      ? hnApiCall(`/api/seller-settlements?week_start=${weekStart}`, 'GET', null, true, timeoutMs).catch(() => ({ data: null }))
+      : Promise.resolve({ data: null }),
   ]);
 
   // Wait for every request before recording failure; late successes must not
@@ -1448,11 +1579,13 @@ async function buildRawCatalogFromHoanNguyen(force = false) {
     weatherTypes: Array.isArray(weatherTypesRes?.data) ? weatherTypesRes.data : [],
     hnSettings: settingsRes?.data || {},
     processingRates: ratesRes?.data || {},
-    weeklyLimit: settlementRes?.data?.weekly_limit || null,
+    weeklyLimit: includeAdminWeeklyLimit ? (settlementRes?.data?.weekly_limit || null) : (catalogCache.raw?.weeklyLimit || null),
     syncedAt: new Date().toISOString(),
   };
 
-  catalogCache = { timestamp: Date.now(), raw };
+  const ts = Date.now();
+  catalogCache = { timestamp: ts, hasWeeklyLimit: includeAdminWeeklyLimit || Boolean(catalogCache.hasWeeklyLimit), raw };
+  for (const s of VALID_CATALOG_SCOPES) catalogScopeTimestamps.set(s, ts);
   return raw;
 }
 
@@ -1520,6 +1653,34 @@ function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent = 0) {
   return result;
 }
 
+function packCatalogCacheEntry(payload) {
+  const rawBuf = Buffer.from(JSON.stringify(payload), 'utf8');
+  if (!HAS_ZLIB || rawBuf.length < 1024) {
+    return { rawBuf, br: null, gzip: null };
+  }
+  const br = typeof zlib.brotliCompressSync === 'function'
+    ? zlib.brotliCompressSync(rawBuf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } })
+    : null;
+  const gzip = zlib.gzipSync(rawBuf, { level: 6 });
+  return { rawBuf, br, gzip };
+}
+
+function sendPackedCatalog(req, res, packed) {
+  const accept = String(req.headers['accept-encoding'] || '');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  if (packed.br && accept.includes('br')) {
+    res.setHeader('Vary', 'Accept-Encoding');
+    res.setHeader('Content-Encoding', 'br');
+    return res.send(packed.br);
+  }
+  if (packed.gzip && accept.includes('gzip')) {
+    res.setHeader('Vary', 'Accept-Encoding');
+    res.setHeader('Content-Encoding', 'gzip');
+    return res.send(packed.gzip);
+  }
+  return res.send(packed.rawBuf);
+}
+
 app.get('/api/catalog', requireAuth, async (req, res) => {
   try {
     const user = req.user;
@@ -1528,15 +1689,26 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     if (isAdmin) lastAdminActivityAt = now;
     else lastCtvActivityAt = now;
 
-    // Pre-order / manual refresh (?refresh=1): ALWAYS fetch live from HoanNguyen (deduplicated via catalogPromise, 1.5s burst guard for CTV).
-    const force = req.query.refresh === '1' && (isAdmin || now - catalogCache.timestamp > 1500);
+    const rawScope = typeof req.query.scope === 'string' ? req.query.scope.trim() : '';
+    const scope = VALID_CATALOG_SCOPES.has(rawScope) ? rawScope : '';
+    const compact = req.query.compact === '1' && !isAdmin;
     const maxAgeMs = isAdmin ? ADMIN_CATALOG_FRESH_MS : CTV_CATALOG_FRESH_MS;
+    const lastScopeTs = scope
+      ? Math.max(catalogScopeTimestamps.get(scope) || 0, catalogCache.timestamp || 0)
+      : catalogCache.timestamp;
 
-    const raw = await fetchRawCatalogFromHoanNguyen(force, maxAgeMs);
-    const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${settingsVersion}:${raw.syncedAt}`;
+    // Pre-order / manual refresh (?refresh=1): ALWAYS fetch live from HoanNguyen (deduplicated, 1.5s burst guard for CTV, hard 5.5s deadline for fast CTV UX!).
+    const force = req.query.refresh === '1' && (isAdmin || now - lastScopeTs > 1500);
+    const timeoutMs = !isAdmin && req.query.refresh === '1' ? 5500 : 12000;
+
+    const raw = scope
+      ? await fetchScopedCatalogFromHoanNguyen(scope, { force, maxAgeMs, timeoutMs })
+      : await fetchRawCatalogFromHoanNguyen(force, maxAgeMs, { includeAdminWeeklyLimit: isAdmin, timeoutMs });
+
+    const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${scope || 'all'}:${compact ? 'c' : 'f'}:${settingsVersion}:${raw.syncedAt}`;
     const memoized = catalogResponseCache.get(cacheKey);
     if (memoized) {
-      return res.json(memoized);
+      return sendPackedCatalog(req, res, memoized);
     }
 
     const coinTiers = Array.isArray(raw.fruitStockMeta?.coin_tiers)
@@ -1560,89 +1732,96 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       fruit_by_fruit: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
     };
 
-    // 1. Fruit Coin Packages
-    const fruitCoinPackages = raw.fruitCoinPackages.map((pkg) => {
-      const basePkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, 0);
-      const pricesByTier = {};
-      for (const tier of coinTiers) {
-        const tPkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, Number(tier.markup_percent || 0));
-        pricesByTier[tier.min_coin] = {
-          min_coin: tier.min_coin,
-          markup_percent: tier.markup_percent,
-          total_price: tPkg.total_price,
-          original_price: tPkg.original_price,
-          _admin: isAdmin ? tPkg._admin : undefined,
-        };
-      }
-      return {
-        ...basePkg,
-        prices_by_tier: pricesByTier,
-      };
-    });
+    const want = (k) => !scope || scope === k || (scope === 'fruit_all' && (k === 'fruit_coin' || k === 'fruit_by_fruit'));
+    const catalog = {};
 
-    // 2. Fruit Items (154 fruits + 19 mutations)
-    const stockMap = new Map();
-    for (const s of raw.fruitStock) {
-      stockMap.set(Number(s.fruit_item_id), s);
+    // 1. Fruit Coin Packages
+    if (want('fruit_coin')) {
+      catalog.fruit_coin = raw.fruitCoinPackages.map((pkg) => {
+        const basePkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, 0);
+        const pricesByTier = {};
+        for (const tier of coinTiers) {
+          const tPkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, Number(tier.markup_percent || 0));
+          pricesByTier[tier.min_coin] = {
+            min_coin: tier.min_coin,
+            markup_percent: tier.markup_percent,
+            total_price: tPkg.total_price,
+            original_price: tPkg.original_price,
+            _admin: isAdmin ? tPkg._admin : undefined,
+          };
+        }
+        return {
+          ...basePkg,
+          prices_by_tier: pricesByTier,
+        };
+      });
     }
 
-    const fruitItems = raw.fruitItems.map((fi) => {
-      const st = stockMap.get(Number(fi.id));
-      const iconPath = fi.item?.icon_path_and_name
-        ? `/assets/playtogether/images/${fi.item.icon_path_and_name.replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
-        : null;
-      const fPricing = getFruitUnitPricing(fi);
-
-      const itemObj = {
-        id: fi.id,
-        item_id: fi.item_id,
-        name: fi.item?.name || `Trái #${fi.id}`,
-        grade: fi.item?.grade || 1,
-        icon: iconPath,
-        // CTV only sees sellBase as the official unit_price!
-        unit_price: fPricing.sellBase,
-        stock_quantity: st ? Number(st.total_quantity || 0) : 0,
-        priority: fi.priority ?? st?.priority ?? 0,
-        mutation_prices: fPricing.mutations.map((m) => ({
-          mutation_key: m.mutation_key,
-          mutation_name: m.mutation_name,
-          mutation_abbr: m.mutation_abbr,
-          mutation_color: m.mutation_color,
-          unit_price: m.sell_unit_price,
-          _admin: isAdmin
-            ? {
-                cost_unit_price: m.cost_unit_price,
-                profit: m.sell_unit_price - m.cost_unit_price,
-                has_custom_override: m.has_custom_override,
-              }
-            : undefined,
-        })),
-      };
-
-      if (isAdmin) {
-        itemObj._admin = {
-          cost_unit_price: fPricing.costBase,
-          profit_per_fruit: fPricing.profitPerFruit,
-          has_custom_override: fPricing.hasCustomOverride,
-        };
+    // 2. Fruit Items (154 fruits + 19 mutations — compact mp tuples for CTV cut payload ~10x!)
+    if (want('fruit_by_fruit')) {
+      const stockMap = new Map();
+      for (const s of raw.fruitStock) {
+        stockMap.set(Number(s.fruit_item_id), s);
       }
-      return itemObj;
-    });
 
-    // 3. Buff Tim Packages
-    const buffTimPackages = raw.buffTimPackages.map((pkg) =>
-      buildPublicPackage(pkg, 'buff_tim', isAdmin, 0)
-    );
+      catalog.fruit_by_fruit = raw.fruitItems.map((fi) => {
+        const st = stockMap.get(Number(fi.id));
+        const iconPath = fi.item?.icon_path_and_name
+          ? `/assets/playtogether/images/${fi.item.icon_path_and_name.replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
+          : null;
+        const fPricing = getFruitUnitPricing(fi);
 
-    // 4. Buff Sao Packages
-    const buffSaoPackages = raw.buffSaoPackages.map((pkg) =>
-      buildPublicPackage(pkg, 'buff_sao', isAdmin, 0)
-    );
+        const itemObj = {
+          id: fi.id,
+          item_id: fi.item_id,
+          name: fi.item?.name || `Trái #${fi.id}`,
+          grade: fi.item?.grade || 1,
+          icon: iconPath,
+          unit_price: fPricing.sellBase,
+          stock_quantity: st ? Number(st.total_quantity || 0) : 0,
+          priority: fi.priority ?? st?.priority ?? 0,
+        };
 
-    // 5. Guestbook Packages
-    const guestbookPackages = raw.guestbookPackages.map((pkg) =>
-      buildPublicPackage(pkg, 'guestbook', isAdmin, 0)
-    );
+        if (compact) {
+          itemObj.mp = fPricing.mutations.map((m) => [m.mutation_key, m.sell_unit_price]);
+        } else {
+          itemObj.mutation_prices = fPricing.mutations.map((m) => ({
+            mutation_key: m.mutation_key,
+            mutation_name: m.mutation_name,
+            mutation_abbr: m.mutation_abbr,
+            mutation_color: m.mutation_color,
+            unit_price: m.sell_unit_price,
+            _admin: isAdmin
+              ? {
+                  cost_unit_price: m.cost_unit_price,
+                  profit: m.sell_unit_price - m.cost_unit_price,
+                  has_custom_override: m.has_custom_override,
+                }
+              : undefined,
+          }));
+        }
+
+        if (isAdmin) {
+          itemObj._admin = {
+            cost_unit_price: fPricing.costBase,
+            profit_per_fruit: fPricing.profitPerFruit,
+            has_custom_override: fPricing.hasCustomOverride,
+          };
+        }
+        return itemObj;
+      });
+    }
+
+    // 3-5. Buff Tim, Buff Sao, Guestbook
+    if (want('buff_tim')) {
+      catalog.buff_tim = raw.buffTimPackages.map((pkg) => buildPublicPackage(pkg, 'buff_tim', isAdmin, 0));
+    }
+    if (want('buff_sao')) {
+      catalog.buff_sao = raw.buffSaoPackages.map((pkg) => buildPublicPackage(pkg, 'buff_sao', isAdmin, 0));
+    }
+    if (want('guestbook')) {
+      catalog.guestbook = raw.guestbookPackages.map((pkg) => buildPublicPackage(pkg, 'guestbook', isAdmin, 0));
+    }
 
     // 6. Active Farm Gifts & Mail Gifts (Exact match with HoanNguyen active=1)
     const formatGiftList = (giftArr, catKey) =>
@@ -1666,63 +1845,61 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
         })
         .filter((g) => g.packages.length > 0);
 
-    const farmGifts = formatGiftList(raw.farmGifts, 'farm_gift');
-    const mailGifts = formatGiftList(raw.mailGifts, 'mail_gift');
+    if (want('farm_gift')) catalog.farm_gift = formatGiftList(raw.farmGifts, 'farm_gift');
+    if (want('mail_gift')) catalog.mail_gift = formatGiftList(raw.mailGifts, 'mail_gift');
 
     // 7. Weather Buff Packages & Active Weather Types
-    const weatherPackages = raw.weatherPackages
-      .filter((pkg) => enabled(pkg.is_active))
-      .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
-      .map((pkg) => buildPublicPackage(pkg, 'weather_buff', isAdmin, 0));
+    if (want('weather_buff')) {
+      catalog.weather_buff = raw.weatherPackages
+        .filter((pkg) => enabled(pkg.is_active))
+        .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
+        .map((pkg) => buildPublicPackage(pkg, 'weather_buff', isAdmin, 0));
 
-    const weatherTypes = (raw.weatherTypes || [])
-      .filter((wt) => enabled(wt.is_active))
-      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
-      .map((wt) => ({
-        id: Number(wt.id),
-        name: String(wt.name || `Thời tiết #${wt.id}`),
-        enum_key: String(wt.enum_key || ''),
-        diamond: Number(wt.diamond || 0),
-        icon: wt.icon_path_and_name
-          ? `/assets/playtogether/images/${String(wt.icon_path_and_name).replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
-          : null,
-      }));
+      catalog.weather_buff_types = (raw.weatherTypes || [])
+        .filter((wt) => enabled(wt.is_active))
+        .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+        .map((wt) => ({
+          id: Number(wt.id),
+          name: String(wt.name || `Thời tiết #${wt.id}`),
+          enum_key: String(wt.enum_key || ''),
+          diamond: Number(wt.diamond || 0),
+          icon: wt.icon_path_and_name
+            ? `/assets/playtogether/images/${String(wt.icon_path_and_name).replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
+            : null,
+        }));
+    }
 
     const payload = {
       success: true,
+      partialScope: scope || undefined,
       syncedAt: raw.syncedAt,
       pricingVersion: settingsVersion,
       systemStatus,
-      processingRates: raw.processingRates,
+      processingRates: scope ? undefined : raw.processingRates,
       hnSettings: {
         min_coin_per_fruit: raw.hnSettings?.min_coin_per_fruit ?? 400000,
         max_coin_for_fruit_order: raw.hnSettings?.max_coin_for_fruit_order ?? 600000,
         max_fruits_per_customer_per_day: raw.hnSettings?.max_fruits_per_customer_per_day ?? 30,
       },
-      weeklyLimit: isAdmin ? raw.weeklyLimit : undefined,
-      coinStock: raw.fruitStockMeta?.coin ? { quantity: Number(raw.fruitStockMeta.coin.quantity) || 0, estimated_per_hour: Number(raw.fruitStockMeta.coin.estimated_per_hour) || 0 } : null,
-      coinTiers: coinTiers.map(t => ({ min_coin: Number(t.min_coin), markup_percent: Number(t.markup_percent) || 0, quantity: Number(t.quantity) || 0, is_default: enabled(t.is_default) })),
-      mutations: FRUIT_MUTATIONS,
-      catalog: {
-        fruit_coin: fruitCoinPackages,
-        fruit_by_fruit: fruitItems,
-        buff_tim: buffTimPackages,
-        buff_sao: buffSaoPackages,
-        guestbook: guestbookPackages,
-        farm_gift: farmGifts,
-        mail_gift: mailGifts,
-        weather_buff: weatherPackages,
-        weather_buff_types: weatherTypes,
-      },
+      weeklyLimit: isAdmin && !scope ? raw.weeklyLimit : undefined,
+      coinStock: (!scope || scope === 'fruit_coin' || scope === 'fruit_by_fruit' || scope === 'fruit_all')
+        ? (raw.fruitStockMeta?.coin ? { quantity: Number(raw.fruitStockMeta.coin.quantity) || 0, estimated_per_hour: Number(raw.fruitStockMeta.coin.estimated_per_hour) || 0 } : null)
+        : undefined,
+      coinTiers: (!scope || scope === 'fruit_coin' || scope === 'fruit_by_fruit' || scope === 'fruit_all')
+        ? coinTiers.map(t => ({ min_coin: Number(t.min_coin), markup_percent: Number(t.markup_percent) || 0, quantity: Number(t.quantity) || 0, is_default: enabled(t.is_default) }))
+        : undefined,
+      mutations: (!scope || scope === 'fruit_by_fruit' || scope === 'fruit_all') ? FRUIT_MUTATIONS : undefined,
+      catalog,
     };
-    if (catalogResponseCache.size > 8) catalogResponseCache.clear();
-    catalogResponseCache.set(cacheKey, payload);
-    res.json(payload);
+    const packed = packCatalogCacheEntry(payload);
+    if (catalogResponseCache.size > 24) catalogResponseCache.clear();
+    catalogResponseCache.set(cacheKey, packed);
+    return sendPackedCatalog(req, res, packed);
   } catch (err) {
     console.error('Error in GET /api/catalog:', err);
-    res.status(500).json({
+    res.status(err?.status === 502 ? 502 : 500).json({
       success: false,
-      message: publicError(req, err, 'Không thể tải dữ liệu bảng giá.'),
+      message: publicError(req, err, 'Không thể tải dữ liệu bảng giá (quá thời gian phản hồi).'),
     });
   }
 });
@@ -2020,7 +2197,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         Number(selection.customer.gameProfileId || 0) !== Number(game_profile_id || 0))) {
       return res.status(403).json({ success: false, message: 'Vui lòng tìm và chọn lại nhân vật bằng tài khoản của bạn trước khi đặt đơn.' });
     }
-    const rawCatalog = await fetchRawCatalogFromHoanNguyen(true);
+    const rawCatalog = await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 8000 });
 
     // Check if the category is currently active on HoanNguyen
     const isSendTask = enabled(rawCatalog.hnSettings?.is_send_task);

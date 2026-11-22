@@ -295,6 +295,7 @@ if (!process.env.DATABASE_URL && !fs.existsSync(DATA_DIR)) {
 const DEFAULT_DB = {
   settings: {
     brandName: 'ZnStudio',
+    maintenanceMode: false,
     defaultMarkup: 5000,
     categoryMarkups: {
       fruit_coin: 5000,
@@ -1148,12 +1149,26 @@ function getAuthUser(req) {
   return user;
 }
 
+const MAINTENANCE_MESSAGE = 'Hệ thống Zn đang bảo trì';
+
+function isMaintenanceActive() {
+  return Boolean(db?.settings?.maintenanceMode);
+}
+
 function requireAuth(req, res, next) {
   const user = getAuthUser(req);
   if (!user) {
     return res.status(401).json({
       success: false,
       message: 'Vui lòng đăng nhập tài khoản để tiếp tục.',
+    });
+  }
+  if (user.role !== 'admin' && isMaintenanceActive()) {
+    return res.status(503).json({
+      success: false,
+      code: 'MAINTENANCE',
+      maintenance: true,
+      message: MAINTENANCE_MESSAGE,
     });
   }
   req.user = user;
@@ -1216,7 +1231,7 @@ app.get('/assets/playtogether/*', async (req, res) => {
 // AUTH & HEALTH ENDPOINTS
 // ============================================================================
 app.get('/api/ping', (req, res) => {
-  res.json({ ok: true, ts: Date.now() });
+  res.json({ ok: true, maintenance: isMaintenanceActive(), ts: Date.now() });
 });
 
 app.get('/api/health', (req, res) => {
@@ -1263,6 +1278,15 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     });
   }
 
+  if (user.role !== 'admin' && isMaintenanceActive()) {
+    return res.status(503).json({
+      success: false,
+      code: 'MAINTENANCE',
+      maintenance: true,
+      message: MAINTENANCE_MESSAGE,
+    });
+  }
+
   const token = crypto.randomBytes(32).toString('hex');
   for (const [oldToken, session] of Object.entries(db.sessions)) {
     if (Date.now() - Number(session.createdAt || 0) > SESSION_TTL_MS) delete db.sessions[oldToken];
@@ -1287,8 +1311,17 @@ app.get('/api/auth/me', (req, res) => {
   if (!user) {
     return res.status(401).json({ success: false, message: 'Chưa đăng nhập' });
   }
+  if (user.role !== 'admin' && isMaintenanceActive()) {
+    return res.status(503).json({
+      success: false,
+      code: 'MAINTENANCE',
+      maintenance: true,
+      message: MAINTENANCE_MESSAGE,
+      user: sanitizeUser(user),
+    });
+  }
   user.lastSeenAt = new Date().toISOString();
-  res.json({ success: true, user: sanitizeUser(user) });
+  res.json({ success: true, maintenance: isMaintenanceActive(), user: sanitizeUser(user) });
 });
 
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
@@ -3336,6 +3369,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
     },
     settings: {
       brandName: db.settings.brandName,
+      maintenanceMode: isMaintenanceActive(),
       defaultMarkup: db.settings.defaultMarkup,
       defaultFruitUnitMarkup: db.settings.defaultFruitUnitMarkup ?? 40,
       categoryMarkups: db.settings.categoryMarkups,
@@ -3370,6 +3404,21 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
     transactions: db.transactions.slice(0, 80),
   });
 });
+
+// Toggle System Maintenance Mode (ADMIN ONLY — blocks all CTVs with maintenance screen while Admin retains full access)
+app.post('/api/admin/maintenance', requireAdmin, asyncRoute(async (req, res) => {
+  const nextState = typeof req.body?.enabled === 'boolean' ? req.body.enabled : !isMaintenanceActive();
+  db.settings.maintenanceMode = nextState;
+  req.auditDetails = { maintenanceMode: nextState };
+  req.needsSave = true;
+  res.json({
+    success: true,
+    maintenanceMode: nextState,
+    message: nextState
+      ? 'Đã BẬT chế độ bảo trì — tất cả CTV đang đăng nhập sẽ thấy "Hệ thống Zn đang bảo trì".'
+      : 'Đã TẮT chế độ bảo trì — các tài khoản CTV có thể sử dụng lại bình thường.',
+  });
+}));
 
 // Admin Backup Export & Import (Safe snapshot for migration / disaster recovery)
 app.get('/api/admin/backup/export', requireAdmin, (req, res) => {

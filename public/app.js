@@ -175,11 +175,71 @@ async function apiFetch(url, method = 'GET', body = null) {
     clearAuthState();
     updateShellAuthUI();
   }
+  if (res.status === 503 && (data?.code === 'MAINTENANCE' || data?.maintenance) && state.token && state.user?.role !== 'admin') {
+    setCtvMaintenanceOverlay(true, data?.message || 'Hệ thống Zn đang bảo trì');
+  }
   if (!data || typeof data !== 'object') throw new Error('Máy chủ chưa trả về dữ liệu. Vui lòng thử lại.');
   if (!res.ok && !data.needs_confirmation) {
     throw Object.assign(new Error(data.message || `Lỗi kết nối (${res.status})`), { code: data.code, status: res.status });
   }
   return data;
+}
+
+function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo trì') {
+  if (state.user?.role === 'admin') active = false;
+  state.maintenanceLocked = Boolean(active);
+  if (typeof document === 'undefined' || !document.body) return;
+  let el = document.getElementById('znMaintenanceOverlay');
+  if (!active) {
+    if (el) el.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'znMaintenanceOverlay';
+    el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(5,6,15,0.94);backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
+    el.innerHTML = `
+      <div style="max-width:440px;width:100%;background:rgba(20,22,42,0.96);border:1px solid rgba(251,191,36,0.45);border-radius:18px;padding:30px 26px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,0.6);display:flex;flex-direction:column;align-items:center;gap:14px;">
+        <img src="/logo.jpg" alt="ZnStudio" class="brand-logo-img brand-logo-lg" />
+        <span class="badge-tag amber" style="font-size:12px;">🛠️ ĐANG BẢO TRÌ</span>
+        <h2 id="znMaintenanceTitle" style="margin:0;color:#fff;font-size:22px;font-weight:700;">${escapeHtml(message)}</h2>
+        <p style="margin:0;color:var(--color-moon-mist);font-size:13.5px;line-height:1.6;">
+          Hệ thống đang được quản trị viên bảo trì để cập nhật. Trang sẽ tự động mở lại ngay khi hoàn tất.
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px;">
+          <button type="button" class="btn-violet" id="btnRetryMaintenanceCheck">↻ Kiểm tra lại</button>
+          <button type="button" class="btn-frost" id="btnLogoutFromMaintenance">Đăng xuất</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(el);
+    el.querySelector('#btnRetryMaintenanceCheck')?.addEventListener('click', async (ev) => {
+      const b = ev.currentTarget;
+      b.disabled = true;
+      b.textContent = '⏳ Đang kiểm tra...';
+      try {
+        const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
+        if (p && !p.maintenance) {
+          setCtvMaintenanceOverlay(false);
+          await initAuth();
+          if (state.user) await loadInitialAppData();
+          return;
+        }
+        showToast('Hệ thống Zn vẫn đang bảo trì. Vui lòng chờ thêm ít phút.');
+      } finally {
+        if (document.getElementById('znMaintenanceOverlay')) {
+          b.disabled = false;
+          b.textContent = '↻ Kiểm tra lại';
+        }
+      }
+    });
+    el.querySelector('#btnLogoutFromMaintenance')?.addEventListener('click', () => {
+      logout();
+    });
+  } else {
+    const titleEl = el.querySelector('#znMaintenanceTitle');
+    if (titleEl) titleEl.textContent = message;
+  }
 }
 
 // ============================================================================
@@ -204,6 +264,7 @@ function clearAuthState() {
   state.adminMonitorCtvTab = 'orders';
   state.adminMonitorCtvOrderSearch = '';
   state.adminMonitorCtvCatFilter = 'all';
+  setCtvMaintenanceOverlay(false);
   state.currentView = 'fruit_coin';
   state.modalOrder.customer = null;
   state.modalOrder.fruit_preview_admin = null;
@@ -270,6 +331,10 @@ async function initAuth() {
       }
     } catch (err) {
       if (state.token !== requestToken) return;
+      if (err.code === 'MAINTENANCE') {
+        setCtvMaintenanceOverlay(true, err.message || 'Hệ thống Zn đang bảo trì');
+        return;
+      }
       if (err.status !== 401) {
         const message = document.getElementById('gateLoginError');
         message.textContent = 'Chưa kiểm tra được phiên đăng nhập. Tải lại trang khi kết nối ổn định.';
@@ -4018,6 +4083,7 @@ function renderAdminCtvPageHtml() {
   const ctvs = state.adminOverview?.ctvs || [];
   const stats = state.adminOverview?.stats || {};
   const storage = state.adminOverview?.storage || {};
+  const isMaintenance = Boolean(state.adminOverview?.settings?.maintenanceMode);
   const ephemeralBanner = storage.isRender && !storage.persistent
     ? `
       <div class="tool-warning" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
@@ -4027,8 +4093,30 @@ function renderAdminCtvPageHtml() {
     `
     : '';
 
+  const maintenanceBanner = `
+    <div class="glass-panel" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;border:1px solid ${isMaintenance ? 'rgba(248,113,113,0.55)' : 'rgba(167,139,250,0.3)'};background:${isMaintenance ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.03)'};">
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <strong style="color:#fff;font-size:15px;">🛠️ Chế độ Bảo trì CTV</strong>
+          <span class="badge-tag ${isMaintenance ? 'red' : 'green'}">${isMaintenance ? '● ĐANG BẢO TRÌ' : '● Đang hoạt động'}</span>
+        </div>
+        <div style="font-size:12.5px;color:var(--color-moon-mist);">
+          ${
+            isMaintenance
+              ? 'Toàn bộ tài khoản CTV đang đăng nhập hiện đang thấy màn hình <strong>"Hệ thống Zn đang bảo trì"</strong> và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
+              : 'Khi bật nút <strong>Bảo trì</strong>, tất cả các tài khoản CTV đang đăng nhập sẽ ngay lập tức hiển thị <strong>"Hệ thống Zn đang bảo trì"</strong> (Admin vẫn dùng bình thường).'
+          }
+        </div>
+      </div>
+      <button type="button" class="${isMaintenance ? 'btn-violet' : 'btn-frost'}" id="btnToggleMaintenanceMode" style="padding:9px 18px;font-size:13px;font-weight:700;${isMaintenance ? '' : 'border-color:rgba(251,191,36,0.5);color:#fbbf24;'}">
+        ${isMaintenance ? '✓ Tắt bảo trì (Mở lại cho CTV)' : '🛠️ Bảo trì'}
+      </button>
+    </div>
+  `;
+
   return `
     ${ephemeralBanner}
+    ${maintenanceBanner}
     <div class="stats-three-grid">
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng số tài khoản CTV</div>
@@ -4162,6 +4250,25 @@ function openResetCtvPasswordModal(ctvId) {
 function bindAdminCtvEvents() {
   document.getElementById('btnGotoStorageSetup')?.addEventListener('click', () => {
     switchView('admin_system');
+  });
+  document.getElementById('btnToggleMaintenanceMode')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    const currentlyOn = Boolean(state.adminOverview?.settings?.maintenanceMode);
+    const nextEnabled = !currentlyOn;
+    const confirmText = nextEnabled
+      ? 'Bật chế độ Bảo trì?\n\nTất cả các tài khoản CTV đang đăng nhập sẽ hiển thị "Hệ thống Zn đang bảo trì" và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
+      : 'Tắt chế độ Bảo trì và mở lại hệ thống cho toàn bộ CTV?';
+    if (!confirm(confirmText)) return;
+    btn.disabled = true;
+    try {
+      const r = await apiFetch('/api/admin/maintenance', 'POST', { enabled: nextEnabled });
+      showToast(r.message);
+      await loadAdminOverview();
+      renderCurrentView();
+    } catch (err) {
+      showToast(err.message);
+      btn.disabled = false;
+    }
   });
   document.querySelectorAll('[data-reset-ctv]').forEach(button => button.addEventListener('click', async () => {
     openResetCtvPasswordModal(button.dataset.resetCtv);
@@ -4514,10 +4621,29 @@ function bindGlobalEvents() {
     } catch {}
   }, 60000);
 
+  // Ultra-light maintenance check every 10s for CTVs (zero DB load, instant overlay toggle when Admin switches Maintenance)
+  const checkCtvMaintenance = async () => {
+    if (!state.token || state.user?.role === 'admin' || document.hidden) return;
+    try {
+      const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
+      if (!p) return;
+      if (p.maintenance) {
+        setCtvMaintenanceOverlay(true, 'Hệ thống Zn đang bảo trì');
+      } else if (state.maintenanceLocked) {
+        setCtvMaintenanceOverlay(false);
+        await initAuth();
+        if (state.user) await loadInitialAppData();
+      }
+    } catch {}
+  };
+  setInterval(checkCtvMaintenance, 10000);
+
   // When returning to tab, refresh only if stale (> 1 min for Admin, > 10 min for CTV).
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('visibilitychange', async () => {
-      if (document.hidden || !state.user) return;
+      if (document.hidden) return;
+      if (state.token && state.user?.role !== 'admin') await checkCtvMaintenance();
+      if (!state.user || state.maintenanceLocked) return;
       const intervalMs = state.user.role === 'admin' ? 60 * 1000 : 10 * 60 * 1000;
       if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
       lastClientCatalogSyncAt = Date.now();

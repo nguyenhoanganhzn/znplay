@@ -1146,3 +1146,52 @@ test('admin per-CTV monitor endpoint returns isolated orders, wallet transaction
   assert.doesNotMatch(rendered, /<img|<script/);
   assert.match(rendered, /&lt;script&gt;/);
 });
+
+test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with maintenance message while Admin retains full access', async t => {
+  const server = await startTestServer(t, financeSource());
+  const admin = await server.login('owner', 'owner-test-password');
+  const seller = await server.login('seller', 'seller-test-password');
+
+  // CTV cannot toggle maintenance
+  assert.equal((await server.request('/api/admin/maintenance', 'POST', seller.body.token, { enabled: true })).status, 403);
+
+  // Admin enables maintenance mode
+  const onRes = await server.request('/api/admin/maintenance', 'POST', admin.body.token, { enabled: true });
+  assert.equal(onRes.status, 200);
+  assert.equal(onRes.body.maintenanceMode, true);
+
+  // /api/ping reports maintenance: true immediately
+  const pingOn = await server.request('/api/ping');
+  assert.equal(pingOn.body.maintenance, true);
+
+  // Logged-in CTV is blocked on /api/auth/me and /api/catalog with 503 + exact message
+  const ctvMe = await server.request('/api/auth/me', 'GET', seller.body.token);
+  assert.equal(ctvMe.status, 503);
+  assert.equal(ctvMe.body.code, 'MAINTENANCE');
+  assert.equal(ctvMe.body.message, 'Hệ thống Zn đang bảo trì');
+
+  const ctvCat = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(ctvCat.status, 503);
+  assert.equal(ctvCat.body.message, 'Hệ thống Zn đang bảo trì');
+
+  // New CTV login is also blocked with 503 maintenance message
+  const ctvLoginBlocked = await server.login('seller', 'seller-test-password');
+  assert.equal(ctvLoginBlocked.status, 503);
+  assert.equal(ctvLoginBlocked.body.message, 'Hệ thống Zn đang bảo trì');
+
+  // Admin continues accessing everything normally (login, me, overview, catalog)
+  const adminRelogin = await server.login('owner', 'owner-test-password');
+  assert.equal(adminRelogin.status, 200);
+  const adminOverview = await server.request('/api/admin/overview', 'GET', adminRelogin.body.token);
+  assert.equal(adminOverview.status, 200);
+  assert.equal(adminOverview.body.settings.maintenanceMode, true);
+  assert.equal((await server.request('/api/catalog', 'GET', adminRelogin.body.token)).status, 200);
+
+  // Admin disables maintenance mode -> CTV resumes seamlessly with existing token
+  const offRes = await server.request('/api/admin/maintenance', 'POST', adminRelogin.body.token, { enabled: false });
+  assert.equal(offRes.status, 200);
+  assert.equal(offRes.body.maintenanceMode, false);
+  assert.equal((await server.request('/api/ping')).body.maintenance, false);
+  assert.equal((await server.request('/api/auth/me', 'GET', seller.body.token)).status, 200);
+  assert.equal((await server.request('/api/catalog', 'GET', seller.body.token)).status, 200);
+});

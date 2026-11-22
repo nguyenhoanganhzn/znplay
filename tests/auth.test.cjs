@@ -766,11 +766,13 @@ test('per-category percentage and manual pricing modes work across packages, fru
   const catReset = await server.request('/api/catalog', 'GET', seller.body.token);
   assert.equal(catReset.body.catalog.buff_tim[0].total_price, 12000);
 
-  // Switch back to fixed +3000đ on buff_tim -> 13000đ
+  // Switch back to fixed +3000đ on buff_tim -> 13000đ, and pricingVersion increments
+  const beforeVer = catReset.body.pricingVersion;
   await server.request('/api/admin/settings', 'PUT', admin.body.token, {
     categoryMarkupModes: { buff_tim: 'fixed' },
     categoryMarkups: { buff_tim: 3000 },
   });
   const catFixed = await server.request('/api/catalog', 'GET', seller.body.token);
   assert.equal(catFixed.body.catalog.buff_tim[0].total_price, 13000);
+  assert.ok(catFixed.body.pricingVersion > beforeVer);
 });

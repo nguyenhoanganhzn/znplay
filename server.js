@@ -1479,6 +1479,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     const payload = {
       success: true,
       syncedAt: raw.syncedAt,
+      pricingVersion: settingsVersion,
       systemStatus,
       processingRates: raw.processingRates,
       hnSettings: {

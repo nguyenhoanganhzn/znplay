@@ -216,19 +216,7 @@ function clearAuthState() {
 }
 
 function hydrateCachedCatalog() {
-  if (!state.user) return false;
-  try {
-    const raw = sessionStorage.getItem('znplay_catalog_cache');
-    if (!raw) return false;
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed.userId !== state.user.id || parsed.role !== state.user.role) return false;
-    if (Date.now() - Number(parsed.cachedAt || 0) > 15 * 1000) return false;
-    if (parsed.data && parsed.data.success) {
-      state.catalogData = parsed.data;
-      applyCatalogSideEffects(parsed.data);
-      return true;
-    }
-  } catch {}
+  // Always load fresh prices from server RAM (<5ms) so CTV never sees outdated prices after Admin edits.
   return false;
 }
 
@@ -396,13 +384,17 @@ async function loadCatalog(forceRefresh = false) {
     const r = await apiFetch(`/api/catalog${forceRefresh ? '?refresh=1' : ''}`);
     if (!r.success || state.token !== requestToken) return false;
     const sig = JSON.stringify({
+      pv: r.pricingVersion,
       s: r.systemStatus,
       wl: r.weeklyLimit,
       fc: (r.catalog?.fruit_coin || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      fb: (r.catalog?.fruit_by_fruit || []).map(f => [f.id, f.unit_price, f.stock_quantity]),
       bt: (r.catalog?.buff_tim || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
       bs: (r.catalog?.buff_sao || []).map(p => [p.id, p.total_price]),
       gb: (r.catalog?.guestbook || []).map(p => [p.id, p.total_price]),
       wb: (r.catalog?.weather_buff || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      fg: (r.catalog?.farm_gift || []).map(g => [g.id, (g.packages || []).map(p => [p.id, p.total_price])]),
+      mg: (r.catalog?.mail_gift || []).map(g => [g.id, (g.packages || []).map(p => [p.id, p.total_price])]),
       cs: r.coinStock?.quantity,
     });
     const changed = sig !== state.lastCatalogSig || !state.catalogData;
@@ -1083,6 +1075,13 @@ function openCreateOrderModal(catKey) {
   overlay.style.display = 'flex';
 
   renderCreateOrderModalBody();
+  // Always sync latest prices in background when opening order modal so CTV sees Admin's newest prices immediately.
+  loadCatalog(false).then((changed) => {
+    if (changed && document.getElementById('appModalOverlay')?.style.display !== 'none') {
+      renderCreateOrderModalBody();
+      if (state.modalOrder.category === 'fruit_by_fruit') triggerModalFruitPreview();
+    }
+  }).catch(() => {});
 }
 
 function renderCreateOrderModalBody() {
@@ -1860,6 +1859,9 @@ function openFruitWarehouseModal() {
     whTimer = setTimeout(() => renderList(val), 80);
   });
   overlay.style.display = 'flex';
+  loadCatalog(false).then((changed) => {
+    if (changed && document.getElementById('whFruitGrid')) openFruitWarehouseModal();
+  }).catch(() => {});
 }
 
 function openCoinWarehouseModal() {
@@ -2620,15 +2622,21 @@ function renderAdminPricingPageHtml() {
                   }
                 </div>
 
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:4px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:4px;flex-wrap:wrap;">
                   ${
                     overrideCount > 0
-                      ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-cat-overrides="${cat.key}">↺ Gỡ ${overrideCount} giá riêng</button>`
+                      ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#fbbf24;cursor:pointer;">
+                          <input type="checkbox" id="admCatApplyOvr_${cat.key}" checked />
+                          <span>Áp dụng luôn cho ${overrideCount} giá riêng</span>
+                        </label>`
                       : `<span style="font-size:11px;color:var(--color-fog-veil);">Tất cả đang chạy tự động</span>`
                   }
-                  <button type="button" class="btn-violet" style="padding:6px 14px;font-size:12px;" data-save-single-cat="${cat.key}">
-                    ✓ Cập nhật
-                  </button>
+                  <div style="display:flex;gap:6px;align-items:center;">
+                    ${overrideCount > 0 ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-cat-overrides="${cat.key}">↺ Gỡ giá riêng</button>` : ''}
+                    <button type="button" class="btn-violet" style="padding:6px 14px;font-size:12px;" data-save-single-cat="${cat.key}">
+                      ✓ Cập nhật
+                    </button>
+                  </div>
                 </div>
               </div>
             `;
@@ -2737,6 +2745,14 @@ function renderAdminPricingPageHtml() {
             </div>
             <input type="number" id="admFruitGeneralValInput" class="input-box" style="width:110px;" value="${fruitMode === 'percent' ? fruitPercent : defaultFruitMarkup}" step="${fruitMode === 'percent' ? 1 : 10}" min="0" max="${fruitMode === 'percent' ? 500 : 1000000}" />
             <span id="admFruitGeneralUnit" style="font-size:12px;color:var(--color-moon-mist);">${fruitMode === 'percent' ? '%' : 'đ / trái'}</span>
+            ${
+              Object.keys(fruitOverrides).length > 0
+                ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#fbbf24;cursor:pointer;">
+                    <input type="checkbox" id="admFruitApplyAllOverrides" checked />
+                    <span>Áp dụng luôn cho ${Object.keys(fruitOverrides).length} trái đang đặt giá riêng</span>
+                  </label>`
+                : ''
+            }
             <button type="button" class="btn-violet" id="btnSaveFruitGeneral" style="padding:7px 14px;font-size:12px;">✓ Cập nhật mức chung</button>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -2944,6 +2960,10 @@ function buildCategoryPayload(catKey) {
   } else {
     payload.categoryMarkups = { [catKey]: fixedVal };
   }
+  const applyOvr = document.getElementById(`admCatApplyOvr_${catKey}`);
+  if (applyOvr && applyOvr.checked) {
+    payload.resetCategoryOverrides = [catKey];
+  }
   return payload;
 }
 
@@ -3038,6 +3058,7 @@ function bindAdminPricingEvents() {
     const categoryMarkups = {};
     const categoryMarkupModes = {};
     const categoryMarkupPercents = {};
+    const resetCategoryOverrides = [];
     let defaultFruitUnitMarkup;
     for (const cat of PRICING_CATEGORIES) {
       const sub = buildCategoryPayload(cat.key);
@@ -3046,11 +3067,14 @@ function bindAdminPricingEvents() {
       Object.assign(categoryMarkupPercents, sub.categoryMarkupPercents);
       if (sub.categoryMarkups) Object.assign(categoryMarkups, sub.categoryMarkups);
       if (sub.defaultFruitUnitMarkup !== undefined) defaultFruitUnitMarkup = sub.defaultFruitUnitMarkup;
+      if (sub.resetCategoryOverrides?.length) resetCategoryOverrides.push(...sub.resetCategoryOverrides);
     }
     if (triggerBtn) { triggerBtn.disabled = true; triggerBtn.textContent = 'Đang cập nhật...'; }
     try {
+      const body = { categoryMarkups, categoryMarkupModes, categoryMarkupPercents, defaultFruitUnitMarkup };
+      if (resetCategoryOverrides.length > 0) body.resetCategoryOverrides = resetCategoryOverrides;
       await savePricingSettingsAndReload(
-        { categoryMarkups, categoryMarkupModes, categoryMarkupPercents, defaultFruitUnitMarkup },
+        body,
         'Đã cập nhật giá cho toàn bộ 8 danh mục!'
       );
     } catch (err) {
@@ -3153,10 +3177,14 @@ function bindAdminPricingEvents() {
     const payload = { categoryMarkupModes: { fruit_by_fruit: activeFruitBarMode } };
     if (activeFruitBarMode === 'percent') payload.categoryMarkupPercents = { fruit_by_fruit: Math.max(0, Math.min(500, val)) };
     else payload.defaultFruitUnitMarkup = Math.max(0, Math.round(val));
+    const applyAllOvr = document.getElementById('admFruitApplyAllOverrides');
+    if (applyAllOvr && applyAllOvr.checked) {
+      payload.resetCategoryOverrides = ['fruit_by_fruit'];
+    }
     btn.disabled = true;
     btn.textContent = 'Đang lưu...';
     try {
-      await savePricingSettingsAndReload(payload, 'Đã cập nhật mức cộng chung cho trái cây!');
+      await savePricingSettingsAndReload(payload, 'Đã cập nhật mức cộng chung cho tất cả trái cây!');
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
       btn.disabled = false;
@@ -3211,7 +3239,11 @@ function bindAdminPricingEvents() {
       document.querySelectorAll('.adm-fruit-unit-input[data-dirty="1"]').forEach((inp) => {
         fruitUnitPrices[inp.dataset.fruitId] = inp.value === '' ? null : Math.round(Number(inp.value));
       });
-      if (Object.keys(fruitUnitPrices).length > 0) payload.fruitUnitPrices = fruitUnitPrices;
+      if (Object.keys(fruitUnitPrices).length > 0) {
+        payload.fruitUnitPrices = fruitUnitPrices;
+      } else if (document.getElementById('admFruitApplyAllOverrides')?.checked) {
+        payload.resetCategoryOverrides = ['fruit_by_fruit'];
+      }
     } else if (state.adminPricingTab === 'packages') {
       const packagePriceOverrides = {};
       document.querySelectorAll('.adm-pkg-override-input[data-dirty="1"]').forEach((inp) => {
@@ -3874,7 +3906,7 @@ function bindAdminSystemEvents() {
 // GLOBAL EVENTS & BOOTSTRAP
 // ============================================================================
 function bindGlobalEvents() {
-  // Keep status dots, active/inactive flags, and prices synced live with HoanNguyen every 20s!
+  // Keep status dots, active/inactive flags, and prices synced live with HoanNguyen & Admin every 10s!
   setInterval(async () => {
     if (!state.user || document.hidden) return;
     try {
@@ -3883,7 +3915,7 @@ function bindGlobalEvents() {
         renderCurrentView();
       }
     } catch {}
-  }, 20000);
+  }, 10000);
 
   // Sync session, wallet balance, and live orders every 45s.
   setInterval(async () => {

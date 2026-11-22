@@ -1194,4 +1194,12 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
   assert.equal((await server.request('/api/ping')).body.maintenance, false);
   assert.equal((await server.request('/api/auth/me', 'GET', seller.body.token)).status, 200);
   assert.equal((await server.request('/api/catalog', 'GET', seller.body.token)).status, 200);
+
+  // Admin notify-update bumps updateVersion exposed by /api/ping; CTV cannot call it
+  assert.equal((await server.request('/api/admin/notify-update', 'POST', seller.body.token)).status, 403);
+  const beforeVer = (await server.request('/api/ping')).body.updateVersion;
+  const notifyRes = await server.request('/api/admin/notify-update', 'POST', adminRelogin.body.token);
+  assert.equal(notifyRes.status, 200);
+  assert.ok(notifyRes.body.updateVersion > beforeVer);
+  assert.equal((await server.request('/api/ping')).body.updateVersion, notifyRes.body.updateVersion);
 });

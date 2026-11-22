@@ -296,6 +296,7 @@ const DEFAULT_DB = {
   settings: {
     brandName: 'ZnStudio',
     maintenanceMode: false,
+    clientUpdateVersion: 0,
     defaultMarkup: 5000,
     categoryMarkups: {
       fruit_coin: 5000,
@@ -1231,7 +1232,12 @@ app.get('/assets/playtogether/*', async (req, res) => {
 // AUTH & HEALTH ENDPOINTS
 // ============================================================================
 app.get('/api/ping', (req, res) => {
-  res.json({ ok: true, maintenance: isMaintenanceActive(), ts: Date.now() });
+  res.json({
+    ok: true,
+    maintenance: isMaintenanceActive(),
+    updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    ts: Date.now(),
+  });
 });
 
 app.get('/api/health', (req, res) => {
@@ -1302,6 +1308,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     success: true,
     message: 'Đăng nhập thành công',
     token,
+    updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
     user: sanitizeUser(user),
   });
 }));
@@ -1321,7 +1328,12 @@ app.get('/api/auth/me', (req, res) => {
     });
   }
   user.lastSeenAt = new Date().toISOString();
-  res.json({ success: true, maintenance: isMaintenanceActive(), user: sanitizeUser(user) });
+  res.json({
+    success: true,
+    maintenance: isMaintenanceActive(),
+    updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    user: sanitizeUser(user),
+  });
 });
 
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
@@ -3370,6 +3382,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
     settings: {
       brandName: db.settings.brandName,
       maintenanceMode: isMaintenanceActive(),
+      clientUpdateVersion: Number(db.settings.clientUpdateVersion || 0),
       defaultMarkup: db.settings.defaultMarkup,
       defaultFruitUnitMarkup: db.settings.defaultFruitUnitMarkup ?? 40,
       categoryMarkups: db.settings.categoryMarkups,
@@ -3417,6 +3430,20 @@ app.post('/api/admin/maintenance', requireAdmin, asyncRoute(async (req, res) => 
     message: nextState
       ? 'Đã BẬT chế độ bảo trì — tất cả CTV đang đăng nhập sẽ thấy "Hệ thống Zn đang bảo trì".'
       : 'Đã TẮT chế độ bảo trì — các tài khoản CTV có thể sử dụng lại bình thường.',
+  });
+}));
+
+// Notify all logged-in CTVs that a new Zn update is available (click banner to F5 reload)
+app.post('/api/admin/notify-update', requireAdmin, asyncRoute(async (req, res) => {
+  const prev = Number(db.settings.clientUpdateVersion || 0);
+  const nextVer = Math.max(prev + 1, Date.now());
+  db.settings.clientUpdateVersion = nextVer;
+  req.auditDetails = { clientUpdateVersion: nextVer };
+  req.needsSave = true;
+  res.json({
+    success: true,
+    updateVersion: nextVer,
+    message: 'Đã gửi thông báo "Có cập nhật từ Zn, vui lòng bấm vào dòng này" tới toàn bộ CTV!',
   });
 }));
 

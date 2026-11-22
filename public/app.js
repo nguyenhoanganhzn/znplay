@@ -242,6 +242,27 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
   }
 }
 
+function setCtvUpdateBanner(visible) {
+  if (state.user?.role === 'admin') visible = false;
+  if (typeof document === 'undefined' || !document.body) return;
+  let bar = document.getElementById('znCtvUpdateBanner');
+  if (!visible) {
+    if (bar) bar.remove();
+    return;
+  }
+  if (bar) return;
+  bar = document.createElement('button');
+  bar.id = 'znCtvUpdateBanner';
+  bar.type = 'button';
+  bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:linear-gradient(90deg,#6d28d9 0%,#4f46e5 100%);color:#fff;border:1px solid rgba(196,181,253,0.75);border-radius:999px;padding:10px 22px;font-size:13.5px;font-weight:700;cursor:pointer;box-shadow:0 12px 32px rgba(79,70,229,0.55);display:flex;align-items:center;gap:8px;max-width:calc(100vw - 24px);text-align:center;';
+  bar.textContent = '🔄 Có cập nhật từ Zn, vui lòng bấm vào dòng này';
+  bar.addEventListener('click', () => {
+    try { sessionStorage.removeItem('znplay_catalog_cache'); } catch {}
+    window.location.reload();
+  });
+  document.body.appendChild(bar);
+}
+
 // ============================================================================
 // AUTHENTICATION & SESSION GATE
 // ============================================================================
@@ -265,6 +286,8 @@ function clearAuthState() {
   state.adminMonitorCtvOrderSearch = '';
   state.adminMonitorCtvCatFilter = 'all';
   setCtvMaintenanceOverlay(false);
+  setCtvUpdateBanner(false);
+  state.seenUpdateVersion = null;
   state.currentView = 'fruit_coin';
   state.modalOrder.customer = null;
   state.modalOrder.fruit_preview_admin = null;
@@ -326,6 +349,9 @@ async function initAuth() {
       const r = await apiFetch('/api/auth/me');
       if (r.success && r.user) {
         state.user = r.user;
+        if (r.updateVersion !== undefined && state.seenUpdateVersion == null) {
+          state.seenUpdateVersion = Number(r.updateVersion || 0);
+        }
         updateShellAuthUI();
         return;
       }
@@ -354,6 +380,9 @@ async function loginWithCredentials(identifier, password) {
     clearAuthState();
     state.token = r.token;
     state.user = r.user;
+    if (r.updateVersion !== undefined) {
+      state.seenUpdateVersion = Number(r.updateVersion || 0);
+    }
     sessionStorage.setItem('znplay_token', r.token);
     const passwordInput = document.getElementById('gateLoginPw');
     if (passwordInput) passwordInput.value = '';
@@ -4054,9 +4083,14 @@ function renderAdminCtvPageHtml() {
           }
         </div>
       </div>
-      <button type="button" class="${isMaintenance ? 'btn-violet' : 'btn-frost'}" id="btnToggleMaintenanceMode" style="padding:9px 18px;font-size:13px;font-weight:700;${isMaintenance ? '' : 'border-color:rgba(251,191,36,0.5);color:#fbbf24;'}">
-        ${isMaintenance ? '✓ Tắt bảo trì (Mở lại cho CTV)' : '🛠️ Bảo trì'}
-      </button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <button type="button" class="btn-violet" id="btnNotifyCtvUpdate" style="padding:9px 16px;font-size:13px;font-weight:700;">
+          🔄 Cập nhật cho CTV
+        </button>
+        <button type="button" class="${isMaintenance ? 'btn-violet' : 'btn-frost'}" id="btnToggleMaintenanceMode" style="padding:9px 18px;font-size:13px;font-weight:700;${isMaintenance ? '' : 'border-color:rgba(251,191,36,0.5);color:#fbbf24;'}">
+          ${isMaintenance ? '✓ Tắt bảo trì (Mở lại cho CTV)' : '🛠️ Bảo trì'}
+        </button>
+      </div>
     </div>
   `;
 
@@ -4196,6 +4230,21 @@ function openResetCtvPasswordModal(ctvId) {
 function bindAdminCtvEvents() {
   document.getElementById('btnGotoStorageSetup')?.addEventListener('click', () => {
     switchView('admin_system');
+  });
+  document.getElementById('btnNotifyCtvUpdate')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = '⏳ Đang gửi...';
+    try {
+      const r = await apiFetch('/api/admin/notify-update', 'POST');
+      showToast(r.message || 'Đã gửi thông báo cập nhật cho CTV!');
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
   });
   document.getElementById('btnToggleMaintenanceMode')?.addEventListener('click', async (ev) => {
     const btn = ev.currentTarget;
@@ -4567,7 +4616,7 @@ function bindGlobalEvents() {
     } catch {}
   }, 60000);
 
-  // Ultra-light maintenance check every 10s for CTVs (zero DB load, instant overlay toggle when Admin switches Maintenance)
+  // Ultra-light maintenance & update check every 10s for CTVs (zero DB load)
   const checkCtvMaintenance = async () => {
     if (!state.token || state.user?.role === 'admin' || document.hidden) return;
     try {
@@ -4579,6 +4628,12 @@ function bindGlobalEvents() {
         setCtvMaintenanceOverlay(false);
         await initAuth();
         if (state.user) await loadInitialAppData();
+      }
+      const remoteVer = Number(p.updateVersion || 0);
+      if (state.seenUpdateVersion == null) {
+        state.seenUpdateVersion = remoteVer;
+      } else if (remoteVer > state.seenUpdateVersion && !state.maintenanceLocked) {
+        setCtvUpdateBanner(true);
       }
     } catch {}
   };

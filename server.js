@@ -253,7 +253,7 @@ const DEFAULT_DB = {
     defaultMarkup: 5000,
     categoryMarkups: {
       fruit_coin: 5000,
-      fruit_by_fruit: 0, // Trái cây lẻ tính theo đơn giá từng trái (VD: Nhân sâm 130đ -> 170đ) + phí đơn tùy chọn
+      fruit_by_fruit: 0, // Phí cộng thêm tùy chọn mỗi đơn Trái cây lẻ (+VNĐ/đơn)
       buff_tim: 5000,
       buff_sao: 5000,
       guestbook: 5000,
@@ -261,12 +261,32 @@ const DEFAULT_DB = {
       mail_gift: 5000,
       weather_buff: 5000,
     },
+    // Chế độ cộng giá từng danh mục: 'fixed' (+VNĐ) hoặc 'percent' (+%)
+    categoryMarkupModes: {
+      fruit_coin: 'fixed',
+      fruit_by_fruit: 'fixed',
+      buff_tim: 'fixed',
+      buff_sao: 'fixed',
+      guestbook: 'fixed',
+      farm_gift: 'fixed',
+      mail_gift: 'fixed',
+      weather_buff: 'fixed',
+    },
+    // Mức cộng theo % cho từng danh mục (0..500%)
+    categoryMarkupPercents: {
+      fruit_coin: 0,
+      fruit_by_fruit: 0,
+      buff_tim: 0,
+      buff_sao: 0,
+      guestbook: 0,
+      farm_gift: 0,
+      mail_gift: 0,
+      weather_buff: 0,
+    },
     // Tùy chỉnh giá bán CTV trực tiếp cho từng gói cố định: { "fruit_coin:80": 15000, "buff_tim:94": 10000 }
     packagePriceOverrides: {},
-    // Tùy chỉnh đơn giá bán CTV cho từng loại trái cây (VD: Nhân sâm id=1 gốc 130đ -> bán CTV 170đ)
-    fruitUnitPrices: {
-      '1': 170, // Nhân sâm: gốc 130đ -> mặc định ví dụ 170đ (Admin tùy chỉnh tự do)
-    },
+    // Tùy chỉnh đơn giá bán CTV cho từng loại trái cây (trống = tự động theo giá gốc HoanNguyen + defaultFruitUnitMarkup)
+    fruitUnitPrices: {},
     // Tùy chỉnh đơn giá bán CTV cho từng hệ đột biến của trái: { "1:1": 3500 }
     fruitMutationPrices: {},
     // Mức cộng mặc định cho mỗi trái cây nếu chưa chỉnh riêng từng trái (VNĐ/trái)
@@ -350,6 +370,14 @@ function normalizeDb(raw) {
       categoryMarkups: {
         ...DEFAULT_DB.settings.categoryMarkups,
         ...(raw.settings?.categoryMarkups || {}),
+      },
+      categoryMarkupModes: {
+        ...DEFAULT_DB.settings.categoryMarkupModes,
+        ...(raw.settings?.categoryMarkupModes || {}),
+      },
+      categoryMarkupPercents: {
+        ...DEFAULT_DB.settings.categoryMarkupPercents,
+        ...(raw.settings?.categoryMarkupPercents || {}),
       },
       packagePriceOverrides: {
         ...DEFAULT_DB.settings.packagePriceOverrides,
@@ -581,7 +609,8 @@ const CATEGORY_METADATA = {
     menuLabel: 'Buff Thời Tiết',
     unit: 'lần',
     apiOrderPath: '/api/weather-buff-orders',
-    settingKey: 'is_send_weatherbufforder',
+    // HoanNguyen's WeatherBuffOrdersBoard uses <OrderSystemStatusChip /> without a category key (depends only on is_send_task).
+    settingKey: null,
     rateKey: 'weather_buff_order',
   },
   fruit_coin: {
@@ -608,27 +637,41 @@ const CATEGORY_METADATA = {
 // PRICING ENGINE (PER-PRODUCT, PER-FRUIT, PER-MUTATION & PER-CATEGORY)
 // ============================================================================
 
+function validPercent(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 500;
+}
+
 function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal, tierMarkupPercent = 0) {
   const pkgKey = `${categoryKey}:${pkgId}`;
   const override = db.settings.packagePriceOverrides?.[pkgKey];
+  const catMode = db.settings.categoryMarkupModes?.[categoryKey] === 'percent' ? 'percent' : 'fixed';
   const catMarkup = Number(db.settings.categoryMarkups?.[categoryKey] ?? db.settings.defaultMarkup ?? 5000);
+  const catPercent = Number(db.settings.categoryMarkupPercents?.[categoryKey] ?? 0);
   const factor = tierMarkupPercent > 0 ? (100 + tierMarkupPercent) / 100 : 1;
 
   const adjustedCostEffective = Math.round(Number(costEffective || 0) * factor);
   const adjustedCostOriginal = Math.round(Number(costOriginal || costEffective || 0) * factor);
-  if (!validMoney(adjustedCostEffective) || !validMoney(adjustedCostOriginal) || !validMoney(catMarkup)) throw new Error('Giá nguồn hoặc bảng giá chưa hợp lệ.');
-
-  let sellEffective;
-  if (override !== undefined && override !== null && override !== '' && Number(override) > 0) {
-    sellEffective = Math.round(Number(override) * factor);
-  } else {
-    sellEffective = adjustedCostEffective + catMarkup;
+  if (!validMoney(adjustedCostEffective) || !validMoney(adjustedCostOriginal) || !validMoney(catMarkup) || !validPercent(catPercent)) {
+    throw new Error('Giá nguồn hoặc bảng giá chưa hợp lệ.');
   }
 
-  sellEffective = Math.max(adjustedCostEffective, sellEffective);
+  const hasOverride = override !== undefined && override !== null && override !== '' && Number(override) > 0;
+  let sellEffective;
+  let sellOriginal;
+  if (hasOverride) {
+    sellEffective = Math.max(adjustedCostEffective, Math.round(Number(override) * factor));
+    const markupDiff = sellEffective - adjustedCostEffective;
+    sellOriginal = Math.max(sellEffective, adjustedCostOriginal + markupDiff);
+  } else if (catMode === 'percent') {
+    sellEffective = Math.max(adjustedCostEffective, Math.round(adjustedCostEffective * (100 + catPercent) / 100));
+    sellOriginal = Math.max(sellEffective, Math.round(adjustedCostOriginal * (100 + catPercent) / 100));
+  } else {
+    sellEffective = Math.max(adjustedCostEffective, adjustedCostEffective + catMarkup);
+    const markupDiff = sellEffective - adjustedCostEffective;
+    sellOriginal = Math.max(sellEffective, adjustedCostOriginal + markupDiff);
+  }
+
   if (!validMoney(sellEffective, false)) throw new Error('Giá bán không hợp lệ.');
-  const markupDiff = sellEffective - adjustedCostEffective;
-  const sellOriginal = Math.max(sellEffective, adjustedCostOriginal + markupDiff);
 
   return {
     costEffective: adjustedCostEffective,
@@ -636,7 +679,8 @@ function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal,
     sellEffective,
     sellOriginal,
     profit: sellEffective - adjustedCostEffective,
-    hasCustomOverride: override !== undefined && override !== null && override !== '',
+    hasCustomOverride: hasOverride,
+    markupMode: hasOverride ? 'override' : catMode,
   };
 }
 
@@ -644,12 +688,17 @@ function getFruitUnitPricing(fruitItem) {
   const fid = String(fruitItem.id);
   const costBase = Number(fruitItem.base_price || 0);
   const customUnit = db.settings.fruitUnitPrices?.[fid];
+  const fruitMode = db.settings.categoryMarkupModes?.fruit_by_fruit === 'percent' ? 'percent' : 'fixed';
   const defaultFruitMarkup = Number(db.settings.defaultFruitUnitMarkup ?? 40);
+  const fruitPercent = Number(db.settings.categoryMarkupPercents?.fruit_by_fruit ?? 0);
+  if (!validMoney(defaultFruitMarkup) || !validPercent(fruitPercent)) throw new Error('Cấu hình mức cộng trái cây không hợp lệ.');
 
-  const requestedBase =
-    customUnit !== undefined && customUnit !== null && customUnit !== '' && Number(customUnit) >= 0
-      ? Number(customUnit)
-      : costBase + defaultFruitMarkup;
+  const hasCustomUnit = customUnit !== undefined && customUnit !== null && customUnit !== '' && Number(customUnit) >= 0;
+  const requestedBase = hasCustomUnit
+    ? Number(customUnit)
+    : fruitMode === 'percent'
+    ? Math.round(costBase * (100 + fruitPercent) / 100)
+    : costBase + defaultFruitMarkup;
 
   const sellBase = Math.max(costBase, requestedBase);
   if (!validMoney(costBase) || !validMoney(sellBase)) throw new Error('Đơn giá trái cây không hợp lệ.');
@@ -659,10 +708,12 @@ function getFruitUnitPricing(fruitItem) {
     const mKey = `${fid}:${mp.mutation_key}`;
     const costMut = Number(mp.unit_price || 0);
     const customMut = db.settings.fruitMutationPrices?.[mKey];
-    const requestedMut =
-      customMut !== undefined && customMut !== null && customMut !== '' && Number(customMut) >= 0
-        ? Number(customMut)
-        : costMut + unitDiff;
+    const hasCustomMut = customMut !== undefined && customMut !== null && customMut !== '' && Number(customMut) >= 0;
+    const requestedMut = hasCustomMut
+      ? Number(customMut)
+      : fruitMode === 'percent' && !hasCustomUnit
+      ? Math.round(costMut * (100 + fruitPercent) / 100)
+      : costMut + unitDiff;
     const sellMut = Math.max(costMut, requestedMut);
     if (!validMoney(costMut) || !validMoney(sellMut)) throw new Error('Giá hệ đột biến không hợp lệ.');
     return {
@@ -672,7 +723,7 @@ function getFruitUnitPricing(fruitItem) {
       mutation_color: FRUIT_MUTATIONS[mp.mutation_key]?.color || '#b6d9fc',
       cost_unit_price: costMut,
       sell_unit_price: sellMut,
-      has_custom_override: customMut !== undefined && customMut !== null && customMut !== '',
+      has_custom_override: hasCustomMut,
     };
   });
 
@@ -680,7 +731,8 @@ function getFruitUnitPricing(fruitItem) {
     costBase,
     sellBase,
     profitPerFruit: sellBase - costBase,
-    hasCustomOverride: customUnit !== undefined && customUnit !== null && customUnit !== '',
+    hasCustomOverride: hasCustomUnit,
+    markupMode: hasCustomUnit ? 'override' : fruitMode,
     mutations,
   };
 }
@@ -1099,10 +1151,11 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 }));
 
 // ============================================================================
-// REALTIME CATALOG, SYSTEM STATUS & PROCESSING RATE SYNC (SWR + MEMOIZED)
+// REALTIME CATALOG, SYSTEM STATUS & PROCESSING RATE SYNC (15s LIVE SYNC)
 // ============================================================================
-const CATALOG_FRESH_MS = 60000;
-const CATALOG_STALE_MS = 300000;
+const CATALOG_FRESH_MS = 15000;
+const CATALOG_STALE_MS = 25000;
+let lastCatalogRequestAt = 0;
 let settingsVersion = 1;
 let catalogCache = {
   timestamp: 0,
@@ -1127,7 +1180,7 @@ async function fetchRawCatalogFromHoanNguyen(force = false) {
   if (!force && catalogCache.raw) {
     if (age < CATALOG_FRESH_MS) return catalogCache.raw;
     if (age < CATALOG_STALE_MS) {
-      // Stale-while-revalidate: serve immediately and refresh silently in background.
+      // Short 10s SWR window: serve immediately while refreshing in background so status & prices stay <= 15s fresh.
       if (!catalogPromise) {
         catalogPromise = buildRawCatalogFromHoanNguyen(true).catch(() => catalogCache.raw).finally(() => { catalogPromise = null; });
       }
@@ -1209,11 +1262,30 @@ async function buildRawCatalogFromHoanNguyen(force = false) {
   return raw;
 }
 
+function resolveActiveSale(pkg) {
+  const salesList = Array.isArray(pkg.sales) && pkg.sales.length
+    ? pkg.sales
+    : Array.isArray(pkg.active_sales) && pkg.active_sales.length
+    ? pkg.active_sales
+    : pkg.sale
+    ? [pkg.sale]
+    : [];
+  const activeSales = salesList.filter(s => s && Number(s.slots_remaining ?? 1) > 0 && (!s.status || s.status === 'active'));
+  const primary = activeSales[0] || (pkg.sale && Number(pkg.sale.slots_remaining ?? 1) > 0 ? pkg.sale : null);
+  const isOnSale = enabled(pkg.is_on_sale) && (
+    salesList.length > 0
+      ? primary !== null
+      : pkg.effective_price != null && Number(pkg.effective_price) < Number(pkg.original_price ?? pkg.total_price ?? 0)
+  );
+  return { isOnSale, sale: primary };
+}
+
 function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent = 0) {
   if (!Number.isSafeInteger(Number(pkg.id)) || Number(pkg.id) <= 0) throw new Error('Mã gói nguồn không hợp lệ.');
+  const { isOnSale, sale } = resolveActiveSale(pkg);
   const rawBaseCost = Number(pkg.original_price ?? pkg.total_price ?? 0);
   const rawEffectiveCost = Number(
-    enabled(pkg.is_on_sale) ? (pkg.effective_price ?? pkg.sale?.sale_price ?? pkg.total_price ?? 0) : (pkg.total_price ?? 0)
+    isOnSale ? (pkg.effective_price ?? sale?.sale_price ?? pkg.total_price ?? 0) : (pkg.total_price ?? 0)
   );
 
   const calc = getPackageSellingPrice(categoryKey, pkg.id, rawEffectiveCost, rawBaseCost, tierMarkupPercent);
@@ -1223,20 +1295,20 @@ function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent = 0) {
     quantity: Number(pkg.quantity ?? pkg.coin_quantity),
     coin_quantity: Number(pkg.coin_quantity ?? pkg.quantity),
     is_active: pkg.is_active,
-    is_on_sale: enabled(pkg.is_on_sale),
+    is_on_sale: isOnSale,
     // CTV ONLY sees the final selling price as the standard package price!
     total_price: calc.sellEffective,
     effective_price: calc.sellEffective,
     original_price: calc.sellOriginal,
-    sale: pkg.sale
+    sale: isOnSale && sale
       ? {
-          id: pkg.sale.id,
+          id: sale.id,
           sale_price: calc.sellEffective,
-          slots_total: pkg.sale.slots_total,
-          slots_used: pkg.sale.slots_used,
-          slots_remaining: pkg.sale.slots_remaining,
-          title: pkg.sale.title,
-          status: pkg.sale.status,
+          slots_total: sale.slots_total,
+          slots_used: sale.slots_used,
+          slots_remaining: sale.slots_remaining,
+          title: sale.title,
+          status: sale.status,
         }
       : null,
   };
@@ -1258,7 +1330,9 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
-    const force = isAdmin && req.query.refresh === '1';
+    // Allow both Admin and CTV to request live refresh (throttled to 3s for non-admin to protect upstream).
+    const force = req.query.refresh === '1' && (isAdmin || Date.now() - catalogCache.timestamp > 3000);
+    lastCatalogRequestAt = Date.now();
 
     const raw = await fetchRawCatalogFromHoanNguyen(force);
     const cacheKey = `${isAdmin ? 'admin' : 'ctv'}:${settingsVersion}:${raw.syncedAt}`;
@@ -1271,15 +1345,19 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       ? raw.fruitStockMeta.coin_tiers
       : [];
 
-    // System status per category (exact match with HoanNguyen's OrderSystemStatusChip)
+    // System status per category (exact match with HoanNguyen's OrderSystemStatusChip!)
+    // Weather Buff on HoanNguyen has no per-category setting key — it depends solely on is_send_task.
     const isSendTask = enabled(raw.hnSettings?.is_send_task);
+    const weatherAllowed = raw.hnSettings?.is_send_weatherbufforder === undefined
+      ? true
+      : enabled(raw.hnSettings.is_send_weatherbufforder);
     const systemStatus = {
       farm_gift: isSendTask && enabled(raw.hnSettings?.is_send_farmgiftorder),
       mail_gift: isSendTask && enabled(raw.hnSettings?.is_send_mailgiftorder),
       guestbook: isSendTask && enabled(raw.hnSettings?.is_send_guestbookorder),
       buff_tim: isSendTask && enabled(raw.hnSettings?.is_send_bufftimorder),
       buff_sao: isSendTask && enabled(raw.hnSettings?.is_send_buffsaoorder),
-      weather_buff: isSendTask && enabled(raw.hnSettings?.is_send_weatherbufforder),
+      weather_buff: isSendTask && weatherAllowed,
       fruit_coin: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
       fruit_by_fruit: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
     };
@@ -1749,9 +1827,10 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         tiers.find((t) => t.is_default) ||
         tiers[0];
       const tierMarkup = Number(selectedTier?.markup_percent || 0);
+      const { isOnSale, sale } = resolveActiveSale(pkg);
       const rawBaseCost = Number(pkg.original_price ?? pkg.total_price ?? 0);
       const rawEffectiveCost = Number(
-        enabled(pkg.is_on_sale) ? (pkg.effective_price ?? pkg.sale?.sale_price ?? pkg.total_price) : pkg.total_price
+        isOnSale ? (pkg.effective_price ?? sale?.sale_price ?? pkg.total_price) : pkg.total_price
       );
 
       const calc = getPackageSellingPrice('fruit_coin', pkg.id, rawEffectiveCost, rawBaseCost, tierMarkup);
@@ -1768,8 +1847,8 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         type: 'by_coin',
         coin_price_package_id: Number(pkg.id),
         min_coin_filter: selectedTier ? Number(selectedTier.min_coin) : undefined,
-        expect_sale: enabled(pkg.is_on_sale),
-        expect_package_sale_id: enabled(pkg.is_on_sale) ? pkg.sale?.id ?? null : null,
+        expect_sale: isOnSale,
+        expect_package_sale_id: isOnSale ? sale?.id ?? null : null,
         is_active: true,
         confirm_duplicate_customer: !!confirm_duplicate_customer,
       };
@@ -1813,8 +1892,9 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       if (!pkg || !enabled(pkg.is_active)) {
         return res.status(400).json({ success: false, message: 'Gói Buff Tim không hợp lệ.' });
       }
-      const useSale = expect_sale !== false && enabled(pkg.is_on_sale) && pkg.sale;
-      const rawEffective = Number(useSale ? pkg.sale.sale_price : pkg.total_price);
+      const { isOnSale, sale } = resolveActiveSale(pkg);
+      const useSale = expect_sale !== false && isOnSale && sale;
+      const rawEffective = Number(useSale ? (pkg.effective_price ?? sale.sale_price) : pkg.total_price);
       const calc = getPackageSellingPrice('buff_tim', pkg.id, rawEffective, pkg.original_price ?? pkg.total_price, 0);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
@@ -1827,7 +1907,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         total_cnt: Number(pkg.quantity),
         is_active: true,
         expect_sale: !!useSale,
-        expect_package_sale_id: useSale ? Number(pkg.sale.id) : null,
+        expect_package_sale_id: useSale ? Number(sale.id) : null,
         confirm_duplicate_customer: !!confirm_duplicate_customer,
       };
     } else if (category === 'buff_sao') {
@@ -1881,9 +1961,10 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
           message: 'Gói quà tặng hiện không hoạt động hoặc không tồn tại.',
         });
       }
-      const useSale = expect_sale !== false && enabled(plantPkg.is_on_sale) && plantPkg.sale;
-      const rawEffective = Number(useSale ? plantPkg.sale.sale_price : plantPkg.total_price);
-      const calc = getPackageSellingPrice(category, plantPkg.id, rawEffective, plantPkg.total_price, 0);
+      const { isOnSale, sale } = resolveActiveSale(plantPkg);
+      const useSale = expect_sale !== false && isOnSale && sale;
+      const rawEffective = Number(useSale ? (plantPkg.effective_price ?? sale.sale_price) : plantPkg.total_price);
+      const calc = getPackageSellingPrice(category, plantPkg.id, rawEffective, plantPkg.original_price ?? plantPkg.total_price, 0);
       costPrice = calc.costEffective;
       sellPrice = calc.sellEffective;
       orderSummary = `${gift.item?.name || 'Quà'} × ${Number(plantPkg.quantity).toLocaleString('vi-VN')}`;
@@ -1895,7 +1976,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         gift_plant_id: Number(plantPkg.id),
         message: category === 'mail_gift' ? String(message || 'Cảm ơn quý khách') : undefined,
         expect_sale: category === 'mail_gift' ? !!useSale : undefined,
-        expect_package_sale_id: category === 'mail_gift' && useSale ? plantPkg.sale?.id ?? null : undefined,
+        expect_package_sale_id: category === 'mail_gift' && useSale ? sale?.id ?? null : undefined,
         is_active: true,
         confirm_duplicate_customer: !!confirm_duplicate_customer,
       };
@@ -2282,6 +2363,13 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       success: true,
       orders: results,
       partial: remote.partial,
+      remoteSummaries: isAdmin
+        ? {
+            fruit_coin: fruitActiveRes?.summary || fruitActiveRes?.data?.summary || null,
+            buff_tim: timActiveRes?.summary || timActiveRes?.data?.summary || null,
+            buff_sao: saoActiveRes?.summary || saoActiveRes?.data?.summary || null,
+          }
+        : undefined,
     });
   } catch (err) {
     res.status(500).json({
@@ -2589,6 +2677,8 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       defaultMarkup: db.settings.defaultMarkup,
       defaultFruitUnitMarkup: db.settings.defaultFruitUnitMarkup ?? 40,
       categoryMarkups: db.settings.categoryMarkups,
+      categoryMarkupModes: db.settings.categoryMarkupModes,
+      categoryMarkupPercents: db.settings.categoryMarkupPercents,
       packagePriceOverrides: db.settings.packagePriceOverrides,
       fruitUnitPrices: db.settings.fruitUnitPrices,
       fruitMutationPrices: db.settings.fruitMutationPrices,
@@ -2705,18 +2795,47 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
       defaultMarkup,
       defaultFruitUnitMarkup,
       categoryMarkups,
+      categoryMarkupModes,
+      categoryMarkupPercents,
       packagePriceOverrides,
       fruitUnitPrices,
       fruitMutationPrices,
+      resetCategoryOverrides,
       hoanNguyenEmail,
       hoanNguyenPassword,
     } = req.body || {};
 
+    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff)$/;
     for (const value of [defaultMarkup, defaultFruitUnitMarkup]) {
       if (value !== undefined && !validMoney(value)) throw new Error('Mức cộng giá phải là số nguyên không âm và hữu hạn.');
     }
+    if (categoryMarkupModes !== undefined) {
+      if (!categoryMarkupModes || typeof categoryMarkupModes !== 'object' || Array.isArray(categoryMarkupModes)) {
+        throw new Error('Chế độ tính giá danh mục không hợp lệ.');
+      }
+      for (const [key, mode] of Object.entries(categoryMarkupModes)) {
+        if (!catKeyPattern.test(key) || !['fixed', 'percent'].includes(mode)) {
+          throw new Error('Khóa hoặc chế độ tính giá (VNĐ / %) không hợp lệ.');
+        }
+      }
+    }
+    if (categoryMarkupPercents !== undefined) {
+      if (!categoryMarkupPercents || typeof categoryMarkupPercents !== 'object' || Array.isArray(categoryMarkupPercents)) {
+        throw new Error('Bảng phần trăm danh mục không hợp lệ.');
+      }
+      for (const [key, pct] of Object.entries(categoryMarkupPercents)) {
+        if (!catKeyPattern.test(key) || !validPercent(pct)) {
+          throw new Error('Phần trăm cộng giá phải nằm trong khoảng 0 đến 500%.');
+        }
+      }
+    }
+    if (resetCategoryOverrides !== undefined) {
+      if (!Array.isArray(resetCategoryOverrides) || !resetCategoryOverrides.every(k => typeof k === 'string' && catKeyPattern.test(k))) {
+        throw new Error('Danh sách đặt lại giá danh mục không hợp lệ.');
+      }
+    }
     for (const [label, values, keyPattern] of [
-      ['categoryMarkups', categoryMarkups, /^(fruit_coin|fruit_by_fruit|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff)$/],
+      ['categoryMarkups', categoryMarkups, catKeyPattern],
       ['packagePriceOverrides', packagePriceOverrides, /^(fruit_coin|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff):[1-9]\d*$/],
       ['fruitUnitPrices', fruitUnitPrices, /^[1-9]\d*$/],
       ['fruitMutationPrices', fruitMutationPrices, /^[1-9]\d*:(?:[1-9]|1\d)$/],
@@ -2740,6 +2859,30 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
       for (const [k, v] of Object.entries(categoryMarkups)) {
         if (v !== undefined && v !== '') {
           db.settings.categoryMarkups[k] = Math.max(0, Number(v));
+        }
+      }
+    }
+    if (categoryMarkupModes && typeof categoryMarkupModes === 'object') {
+      db.settings.categoryMarkupModes = db.settings.categoryMarkupModes || {};
+      for (const [k, v] of Object.entries(categoryMarkupModes)) {
+        db.settings.categoryMarkupModes[k] = v;
+      }
+    }
+    if (categoryMarkupPercents && typeof categoryMarkupPercents === 'object') {
+      db.settings.categoryMarkupPercents = db.settings.categoryMarkupPercents || {};
+      for (const [k, v] of Object.entries(categoryMarkupPercents)) {
+        db.settings.categoryMarkupPercents[k] = Math.round(Number(v) * 100) / 100;
+      }
+    }
+    if (Array.isArray(resetCategoryOverrides)) {
+      for (const catKey of resetCategoryOverrides) {
+        if (catKey === 'fruit_by_fruit') {
+          db.settings.fruitUnitPrices = {};
+          db.settings.fruitMutationPrices = {};
+        } else {
+          for (const pkgKey of Object.keys(db.settings.packagePriceOverrides || {})) {
+            if (pkgKey.startsWith(`${catKey}:`)) delete db.settings.packagePriceOverrides[pkgKey];
+          }
         }
       }
     }
@@ -3004,4 +3147,11 @@ app.listen(PORT, HOST, async () => {
   } catch (err) {
     console.warn('Initial HoanNguyen login warning:', err.message);
   }
+  // Keep catalog & active/inactive status fresh every 15s while users are active (shared across all CTVs).
+  const refreshTimer = setInterval(() => {
+    if (Date.now() - lastCatalogRequestAt <= 3 * 60 * 1000 && !catalogPromise) {
+      fetchRawCatalogFromHoanNguyen(true).catch(() => {});
+    }
+  }, CATALOG_FRESH_MS);
+  if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
 });

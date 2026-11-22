@@ -700,3 +700,77 @@ test('admin backup export excludes upstream secrets and backup import restores C
   assert.equal(server.db.settings.hoanNguyen.token, 'test-upstream-token');
   assert.equal((await server.login('restored01', 'restored-ctv-password-123')).status, 200);
 });
+
+test('weather_buff status follows is_send_task when source has no separate weather toggle, and exhausted sales fall back to regular price', async t => {
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options) => {
+    const p = new URL(url).pathname;
+    if (p === '/api/settings') {
+      return { ok: true, status: 200, json: async () => ({ data: { is_send_task: true, is_send_fruitorder: true, is_send_farmgiftorder: false, is_send_bufftimorder: true } }) };
+    }
+    if (p === '/api/buff-tim-price-packages') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          data: [
+            { id: 7, is_active: true, quantity: 1000, total_price: 10000, original_price: 10000, effective_price: 6000, is_on_sale: true, sale: { id: 1, sale_price: 6000, slots_total: 10, slots_used: 10, slots_remaining: 0, status: 'active' } },
+            { id: 8, is_active: true, quantity: 5000, total_price: 30000, original_price: 30000, effective_price: 20000, is_on_sale: true, sale: { id: 2, sale_price: 20000, slots_total: 10, slots_used: 3, slots_remaining: 7, status: 'active' } },
+          ],
+        }),
+      };
+    }
+    return base(url, options);
+  });
+  const seller = await server.login('seller', 'seller-test-password');
+  const cat = await server.request('/api/catalog?refresh=1', 'GET', seller.body.token);
+  assert.equal(cat.status, 200);
+  assert.equal(cat.body.systemStatus.weather_buff, true);
+  assert.equal(cat.body.systemStatus.farm_gift, false);
+  assert.equal(cat.body.systemStatus.fruit_coin, true);
+  // Package 7 has 0 remaining sale slots -> must use regular price (10000 + 5000 = 15000), not sale price
+  assert.equal(cat.body.catalog.buff_tim[0].is_on_sale, false);
+  assert.equal(cat.body.catalog.buff_tim[0].total_price, 15000);
+  // Package 8 has 7 remaining sale slots -> must use sale price (20000 + 5000 = 25000)
+  assert.equal(cat.body.catalog.buff_tim[1].is_on_sale, true);
+  assert.equal(cat.body.catalog.buff_tim[1].total_price, 25000);
+});
+
+test('per-category percentage and manual pricing modes work across packages, fruits, mutations, and reset overrides', async t => {
+  const server = await startTestServer(t, financeSource());
+  const admin = await server.login('owner', 'owner-test-password');
+  const seller = await server.login('seller', 'seller-test-password');
+
+  // Reject invalid mode or out-of-range percent
+  assert.equal((await server.request('/api/admin/settings', 'PUT', admin.body.token, { categoryMarkupModes: { buff_tim: 'invalid' } })).status, 400);
+  assert.equal((await server.request('/api/admin/settings', 'PUT', admin.body.token, { categoryMarkupPercents: { buff_tim: 999 } })).status, 400);
+  assert.equal((await server.request('/api/admin/settings', 'PUT', admin.body.token, { categoryMarkupPercents: { constructor: 10 } })).status, 400);
+
+  // Switch buff_tim to +20% (base cost 10000 -> 12000) and fruit_by_fruit to +50% (base 130 -> 195, mut1 1000 -> 1500)
+  const updated = await server.request('/api/admin/settings', 'PUT', admin.body.token, {
+    categoryMarkupModes: { buff_tim: 'percent', fruit_by_fruit: 'percent', weather_buff: 'percent' },
+    categoryMarkupPercents: { buff_tim: 20, fruit_by_fruit: 50, weather_buff: 15 },
+  });
+  assert.equal(updated.status, 200);
+
+  const catPct = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(catPct.body.catalog.buff_tim[0].total_price, 12000);
+  assert.equal(catPct.body.catalog.fruit_by_fruit[0].unit_price, 195);
+  assert.equal(catPct.body.catalog.fruit_by_fruit[0].mutation_prices[0].unit_price, 1500);
+
+  // Manual package override beats category percentage, then resetCategoryOverrides brings it back to +20%
+  await server.request('/api/admin/settings', 'PUT', admin.body.token, { packagePriceOverrides: { 'buff_tim:7': 14500 } });
+  const catOvr = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(catOvr.body.catalog.buff_tim[0].total_price, 14500);
+
+  await server.request('/api/admin/settings', 'PUT', admin.body.token, { resetCategoryOverrides: ['buff_tim'] });
+  const catReset = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(catReset.body.catalog.buff_tim[0].total_price, 12000);
+
+  // Switch back to fixed +3000đ on buff_tim -> 13000đ
+  await server.request('/api/admin/settings', 'PUT', admin.body.token, {
+    categoryMarkupModes: { buff_tim: 'fixed' },
+    categoryMarkups: { buff_tim: 3000 },
+  });
+  const catFixed = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(catFixed.body.catalog.buff_tim[0].total_price, 13000);
+});

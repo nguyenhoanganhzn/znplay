@@ -13,6 +13,8 @@ const state = {
   loadingCatalog: false,
   loadingOrders: false,
   lastOrdersSig: '',
+  lastCatalogSig: '',
+  remoteSummaries: {},
 
   // Active Sidebar View
   currentView: 'fruit_coin', // default to 'fruit_coin' (Trái cây) or 'dashboard'
@@ -26,7 +28,9 @@ const state = {
   orders: [],
   adminOverview: null,
   adminMonitor: null,
-  adminPricingTab: 'fruits', // 'fruits' | 'packages' | 'categories'
+  adminPricingTab: 'categories', // 'categories' | 'packages' | 'fruits'
+  adminPkgCatFilter: 'all',
+  adminFruitFilter: 'all', // 'all' | 'custom'
   adminFruitSearch: '',
 
   // Modal Create Order State
@@ -190,6 +194,8 @@ function clearAuthState() {
   state.loadingCatalog = false;
   state.loadingOrders = false;
   state.lastOrdersSig = '';
+  state.lastCatalogSig = '';
+  state.remoteSummaries = {};
   state.orders = [];
   state.adminOverview = null;
   state.adminMonitor = null;
@@ -216,7 +222,7 @@ function hydrateCachedCatalog() {
     if (!raw) return false;
     const parsed = JSON.parse(raw);
     if (!parsed || parsed.userId !== state.user.id || parsed.role !== state.user.role) return false;
-    if (Date.now() - Number(parsed.cachedAt || 0) > 5 * 60 * 1000) return false;
+    if (Date.now() - Number(parsed.cachedAt || 0) > 15 * 1000) return false;
     if (parsed.data && parsed.data.success) {
       state.catalogData = parsed.data;
       applyCatalogSideEffects(parsed.data);
@@ -366,6 +372,7 @@ function applyCatalogSideEffects(r) {
   const updateDot = (id, working) => {
     const el = document.getElementById(id);
     if (!el) return;
+    el.classList.remove('is-loading');
     el.classList.toggle('is-off', !working);
     el.title = working ? 'Đang hoạt động' : 'Không hoạt động';
   };
@@ -382,18 +389,32 @@ function applyCatalogSideEffects(r) {
 }
 
 async function loadCatalog(forceRefresh = false) {
-  if (!state.user) return;
+  if (!state.user) return false;
   const requestToken = state.token;
   state.loadingCatalog = true;
   try {
     const r = await apiFetch(`/api/catalog${forceRefresh ? '?refresh=1' : ''}`);
-    if (!r.success || state.token !== requestToken) return;
+    if (!r.success || state.token !== requestToken) return false;
+    const sig = JSON.stringify({
+      s: r.systemStatus,
+      wl: r.weeklyLimit,
+      fc: (r.catalog?.fruit_coin || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      bt: (r.catalog?.buff_tim || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      bs: (r.catalog?.buff_sao || []).map(p => [p.id, p.total_price]),
+      gb: (r.catalog?.guestbook || []).map(p => [p.id, p.total_price]),
+      wb: (r.catalog?.weather_buff || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      cs: r.coinStock?.quantity,
+    });
+    const changed = sig !== state.lastCatalogSig || !state.catalogData;
+    state.lastCatalogSig = sig;
     state.catalogData = r;
     state.catalogWarning = '';
     saveCachedCatalog(r);
     applyCatalogSideEffects(r);
+    return changed;
   } catch (err) {
     if (state.token === requestToken) state.catalogWarning = 'Chưa đồng bộ được bảng giá nguồn. Bấm Làm mới dữ liệu để thử lại.';
+    return false;
   } finally {
     if (state.token === requestToken) state.loadingCatalog = false;
   }
@@ -424,6 +445,26 @@ function updateSaleMarquee() {
       );
     }
   }
+  for (const g of cat.mail_gift || []) {
+    for (const p of g.packages || []) {
+      if (p.is_on_sale && p.sale && p.sale.slots_remaining > 0) {
+        saleItems.push(
+          `✦ Quà thư ${g.name} × ${formatNum(p.quantity)} - ${formatVnd(p.original_price)} → ${formatVnd(
+            p.total_price
+          )} • Còn ${p.sale.slots_remaining}/${p.sale.slots_total} lượt • Đặt ngay!`
+        );
+      }
+    }
+  }
+  for (const p of cat.weather_buff || []) {
+    if (p.is_on_sale && p.sale && p.sale.slots_remaining > 0) {
+      saleItems.push(
+        `✦ Buff Thời Tiết ${formatNum(p.quantity)} lần - ${formatVnd(p.original_price)} → ${formatVnd(
+          p.total_price
+        )} • Còn ${p.sale.slots_remaining}/${p.sale.slots_total} lượt • Đặt ngay!`
+      );
+    }
+  }
 
   const text =
     saleItems.length > 0
@@ -447,6 +488,7 @@ async function loadOrders(forceRefresh = false) {
       const changed = sig !== state.lastOrdersSig;
       state.lastOrdersSig = sig;
       state.orders = nextOrders;
+      state.remoteSummaries = r.remoteSummaries || {};
       state.ordersWarning = r.partial ? 'Một phần danh sách đơn chưa đồng bộ được với nguồn.' : '';
       const activeCount = state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
       const badge = document.getElementById('sidebarActiveOrdersCount');
@@ -593,19 +635,30 @@ function renderOrderCategoryPageHtml(catKey) {
       : o.category === catKey
   );
 
-  const totalOrders = catOrders.length;
-  const completedOrders = catOrders.filter((o) => o.status === 'completed').length;
-  const activeOrdersCount = catOrders.filter((o) => o.status !== 'completed' && o.isActive).length;
-  const inactiveOrdersCount = catOrders.filter((o) => o.status !== 'completed' && !o.isActive).length;
+  // Admin uses HoanNguyen's live summary totals when available so numbers match source 100%.
+  const remSum = state.user?.role === 'admin' ? state.remoteSummaries?.[catKey] : null;
 
-  const totalUnits = catOrders.reduce((s, o) => s + Number(o.totalCnt || 0), 0);
-  const completedUnits = catOrders.reduce((s, o) => s + Number(o.completedCnt || 0), 0);
-  const activeRemainingUnits = catOrders
-    .filter((o) => o.status !== 'completed' && o.isActive)
-    .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
-  const pausedRemainingUnits = catOrders
-    .filter((o) => o.status !== 'completed' && !o.isActive)
-    .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
+  const totalOrders = remSum ? Number(remSum.total_orders ?? catOrders.length) : catOrders.length;
+  const completedOrders = remSum ? Number(remSum.completed_orders ?? 0) : catOrders.filter((o) => o.status === 'completed').length;
+  const activeOrdersCount = remSum ? Number(remSum.active_orders ?? 0) : catOrders.filter((o) => o.status !== 'completed' && o.isActive).length;
+  const inactiveOrdersCount = remSum ? Number(remSum.inactive_orders ?? 0) : catOrders.filter((o) => o.status !== 'completed' && !o.isActive).length;
+
+  const totalUnits = remSum ? Number(remSum.total_units ?? 0) : catOrders.reduce((s, o) => s + Number(o.totalCnt || 0), 0);
+  const completedUnits = remSum ? Number(remSum.completed_units ?? 0) : catOrders.reduce((s, o) => s + Number(o.completedCnt || 0), 0);
+  const activeRemainingUnits = remSum
+    ? Number(remSum.active_units ?? 0)
+    : catOrders
+        .filter((o) => o.status !== 'completed' && o.isActive)
+        .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
+  const pausedRemainingUnits = remSum
+    ? Number(remSum.inactive_units ?? 0)
+    : catOrders
+        .filter((o) => o.status !== 'completed' && !o.isActive)
+        .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
+
+  const syncedTimeText = r?.syncedAt
+    ? new Date(r.syncedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '';
 
   const unitLabelMap = {
     farm_gift: 'quà',
@@ -644,7 +697,7 @@ function renderOrderCategoryPageHtml(catKey) {
         <button type="button" class="btn-frost" id="btnViewCategoryPrices">🏷️ Xem bảng giá gói xu</button>
       </div>
     `;
-  } else if (['buff_tim', 'buff_sao', 'guestbook', 'mail_gift', 'farm_gift'].includes(catKey)) {
+  } else if (['buff_tim', 'buff_sao', 'guestbook', 'mail_gift', 'farm_gift', 'weather_buff'].includes(catKey)) {
     footerButtonsHtml = `
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">
         <button type="button" class="btn-frost" id="btnViewCategoryPrices">🏷️ Xem bảng giá ${escapeHtml(VIEW_TITLES[catKey])}</button>
@@ -659,9 +712,10 @@ function renderOrderCategoryPageHtml(catKey) {
       <div class="panel-title-row">
         <div class="panel-title-left">
           <span class="panel-title-text">${escapeHtml(VIEW_TITLES[catKey])}</span>
-          <span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}">
-            ● ${state.catalogWarning ? 'Chưa đồng bộ' : isWorking ? 'Đang hoạt động' : 'Không hoạt động'}
+          <span class="system-status-chip ${!r ? '' : isWorking ? 'is-working' : 'is-not-working'}">
+            ● ${state.catalogWarning ? 'Chưa đồng bộ' : !r ? 'Đang kiểm tra...' : isWorking ? 'Đang hoạt động' : 'Không hoạt động'}
           </span>
+          ${syncedTimeText ? `<span style="font-size:11px;color:var(--color-fog-veil);">Đồng bộ: ${escapeHtml(syncedTimeText)}</span>` : ''}
         </div>
         <button type="button" class="btn-frost" id="btnRefreshCatPage" style="font-size:12px;">
           ↻ Làm mới dữ liệu
@@ -1863,22 +1917,60 @@ function openCategoryPriceListModal(catKey) {
 
   box.className = 'modal-box';
   title.textContent = `🏷️ Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
-  const pkgs = state.catalogData.catalog?.[catKey] || [];
+  const items = state.catalogData.catalog?.[catKey] || [];
+  const isGiftCat = catKey === 'farm_gift' || catKey === 'mail_gift';
 
-  if (!pkgs.length) {
-    body.innerHTML = `<div style="color:var(--color-fog-veil);padding:16px 0;">Hiện chưa có gói giá nào đang mở cho danh mục này.</div>`;
+  if (!items.length) {
+    body.innerHTML = `<div style="color:var(--color-fog-veil);padding:16px 0;">Hiện chưa có gói giá nào đang mở bán cho danh mục này trên nguồn HoanNguyen.</div>`;
+  } else if (isGiftCat) {
+    body.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:12px;max-height:440px;overflow-y:auto;">
+        ${items
+          .map(
+            (g) => `
+          <div style="background:rgba(255,255,255,0.03);padding:12px;border-radius:10px;">
+            <div style="font-weight:600;color:#fff;margin-bottom:8px;">${escapeHtml(g.name)}</div>
+            <div class="pkg-picker-list" style="max-height:none;">
+              ${(g.packages || [])
+                .map(
+                  (p) => `
+                <div class="pkg-picker-card">
+                  <div style="display:flex;justify-content:space-between;gap:6px;">
+                    <strong style="color:#fff;">Số lượng ${formatNum(p.quantity)}</strong>
+                    ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Sale còn ${p.sale.slots_remaining}</span>` : ''}
+                  </div>
+                  <div style="display:flex;align-items:baseline;gap:8px;">
+                    <span style="font-size:16px;font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
+                    ${p.is_on_sale && p.original_price > p.total_price ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
+                  </div>
+                </div>
+              `
+                )
+                .join('')}
+            </div>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `;
   } else {
+    const unitMap = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
+    const unit = unitMap[catKey] || '';
     body.innerHTML = `
       <div class="pkg-picker-list" style="max-height:420px;">
-        ${pkgs
+        ${items
           .map(
             (p) => `
           <div class="pkg-picker-card">
-            <div style="display:flex;justify-content:space-between;">
-              <strong style="color:#fff;">Gói ${formatNum(p.quantity || p.coin_quantity)}</strong>
+            <div style="display:flex;justify-content:space-between;gap:6px;">
+              <strong style="color:#fff;">Gói ${formatNum(p.quantity || p.coin_quantity)} ${unit}</strong>
               ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Sale còn ${p.sale.slots_remaining} slot</span>` : ''}
             </div>
-            <div style="font-size:16px;font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</div>
+            <div style="display:flex;align-items:baseline;gap:8px;">
+              <span style="font-size:16px;font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
+              ${p.is_on_sale && p.original_price > p.total_price ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
+            </div>
           </div>
         `
           )
@@ -2304,20 +2396,48 @@ async function renderSavedCustomersPage(container, zeroBannerHtml, q = '') {
 }
 
 // ============================================================================
-// 6. ADMIN PAGE: TÙY CHỈNH GIÁ TỪNG SẢN PHẨM (NHÂN SÂM 130Đ -> 170Đ, GÓI XU...)
+// 6. ADMIN PAGE: TÙY CHỈNH GIÁ TỪNG DANH MỤC, GÓI & SẢN PHẨM (VNĐ + %)
 // ============================================================================
-function renderAdminPricingPageHtml() {
-  const r = state.catalogData;
-  const adm = state.adminOverview;
-  const fruits = r?.catalog?.fruit_by_fruit || [];
-  const defaultFruitMarkup = adm?.settings?.defaultFruitUnitMarkup ?? 40;
-  const cm = adm?.settings?.categoryMarkups || {};
+const PRICING_CATEGORIES = [
+  { key: 'fruit_coin', icon: '🪙', label: '01. Gói Xu Nông Trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
+  { key: 'fruit_by_fruit', icon: '🍎', label: '02. Trái cây lẻ & 19 Đột biến', unitHint: 'trái', isFruitUnit: true, stepFixed: 10, presetsFixed: [20, 40, 50, 100] },
+  { key: 'buff_tim', icon: '🤍', label: '03. Gói Buff Tim', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
+  { key: 'buff_sao', icon: '☆', label: '04. Gói Buff Sao', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000, 20000] },
+  { key: 'guestbook', icon: '📰', label: '05. Gói Bài viết lưu bút', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'mail_gift', icon: '✉️', label: '06. Gói Quà thư', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'farm_gift', icon: '🏪', label: '07. Gói Quà nông trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'weather_buff', icon: '☁️', label: '08. Gói Buff Thời Tiết', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+];
 
-  const filteredFruits = state.adminFruitSearch.trim()
-    ? fruits.filter((f) => f.name.toLowerCase().includes(state.adminFruitSearch.trim().toLowerCase()))
-    : fruits;
+function computePreviewSell(cost, mode, fixedVal, pctVal) {
+  const c = Math.max(0, Number(cost || 0));
+  if (mode === 'percent') {
+    const p = Math.max(0, Math.min(500, Number(pctVal || 0)));
+    return Math.max(c, Math.round(c * (100 + p) / 100));
+  }
+  return Math.max(c, Math.round(c + Math.max(0, Number(fixedVal || 0))));
+}
 
-  // Collect all fixed packages across categories
+function getCategorySampleItem(catKey, catalog) {
+  if (!catalog) return null;
+  if (catKey === 'fruit_by_fruit') {
+    const f = (catalog.fruit_by_fruit || [])[0];
+    if (!f) return null;
+    return { name: `${f.name} (1 trái)`, cost: f._admin?.cost_unit_price ?? f.unit_price };
+  }
+  if (catKey === 'farm_gift' || catKey === 'mail_gift') {
+    const g = (catalog[catKey] || [])[0];
+    const p = g?.packages?.[0];
+    if (!g || !p) return null;
+    return { name: `${g.name} × ${formatNum(p.quantity)}`, cost: p._admin?.cost_effective ?? p.total_price };
+  }
+  const p = (catalog[catKey] || [])[0];
+  if (!p) return null;
+  const uMap = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
+  return { name: `Gói ${formatNum(p.quantity || p.coin_quantity)} ${uMap[catKey] || ''}`, cost: p._admin?.cost_effective ?? p.total_price };
+}
+
+function getAllAdminFixedPackages(r) {
   const fixedPackages = [];
   const pushPkgs = (arr, catKey, catLabel, unitLabel) => {
     for (const p of arr || []) {
@@ -2326,8 +2446,10 @@ function renderAdminPricingPageHtml() {
         catKey,
         catLabel,
         id: p.id,
-        name: `Gói ${formatNum(p.quantity || p.coin_quantity)} ${unitLabel}${p.is_on_sale ? ' (Đang Sale)' : ''}`,
+        name: `Gói ${formatNum(p.quantity || p.coin_quantity)} ${unitLabel}`,
+        isOnSale: !!p.is_on_sale,
         costPrice: p._admin?.cost_effective ?? p.total_price,
+        costOriginal: p._admin?.cost_original ?? p._admin?.cost_effective ?? p.total_price,
         sellPrice: p.total_price,
         profit: p._admin?.profit ?? 0,
         hasOverride: p._admin?.has_custom_override ?? false,
@@ -2338,66 +2460,208 @@ function renderAdminPricingPageHtml() {
   pushPkgs(r?.catalog?.buff_tim, 'buff_tim', 'Buff Tim', 'Tim');
   pushPkgs(r?.catalog?.buff_sao, 'buff_sao', 'Buff Sao', 'Sao');
   pushPkgs(r?.catalog?.guestbook, 'guestbook', 'Bài Viết', 'Bài viết');
+  pushPkgs(r?.catalog?.weather_buff, 'weather_buff', 'Buff Thời Tiết', 'Lần');
+  for (const [catKey, catLabel] of [['farm_gift', 'Quà nông trại'], ['mail_gift', 'Quà thư']]) {
+    for (const g of r?.catalog?.[catKey] || []) {
+      for (const p of g.packages || []) {
+        fixedPackages.push({
+          key: `${catKey}:${p.id}`,
+          catKey,
+          catLabel,
+          id: p.id,
+          name: `${g.name} × ${formatNum(p.quantity)}`,
+          isOnSale: !!p.is_on_sale,
+          costPrice: p._admin?.cost_effective ?? p.total_price,
+          costOriginal: p._admin?.cost_original ?? p._admin?.cost_effective ?? p.total_price,
+          sellPrice: p.total_price,
+          profit: p._admin?.profit ?? 0,
+          hasOverride: p._admin?.has_custom_override ?? false,
+        });
+      }
+    }
+  }
+  return fixedPackages;
+}
+
+function renderAdminPricingPageHtml() {
+  const r = state.catalogData;
+  const adm = state.adminOverview;
+  const fruits = r?.catalog?.fruit_by_fruit || [];
+  const defaultFruitMarkup = adm?.settings?.defaultFruitUnitMarkup ?? 40;
+  const cm = adm?.settings?.categoryMarkups || {};
+  const modes = adm?.settings?.categoryMarkupModes || {};
+  const percents = adm?.settings?.categoryMarkupPercents || {};
+  const pkgOverrides = adm?.settings?.packagePriceOverrides || {};
+  const fruitOverrides = adm?.settings?.fruitUnitPrices || {};
+  const sysStatus = r?.systemStatus || {};
+
+  const fixedPackages = getAllAdminFixedPackages(r);
+  const filteredPackages = state.adminPkgCatFilter === 'all'
+    ? fixedPackages
+    : fixedPackages.filter((p) => p.catKey === state.adminPkgCatFilter);
+
+  const qFruit = state.adminFruitSearch.trim().toLowerCase();
+  const filteredFruits = fruits.filter((f) => {
+    if (state.adminFruitFilter === 'custom' && !f._admin?.has_custom_override) return false;
+    if (qFruit && !f.name.toLowerCase().includes(qFruit)) return false;
+    return true;
+  });
+
+  const fruitMode = modes.fruit_by_fruit === 'percent' ? 'percent' : 'fixed';
+  const fruitPercent = Number(percents.fruit_by_fruit ?? 0);
+  const syncedText = r?.syncedAt
+    ? new Date(r.syncedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : 'Chưa đồng bộ';
+
+  const pkgCatCounts = { all: fixedPackages.length };
+  for (const p of fixedPackages) pkgCatCounts[p.catKey] = (pkgCatCounts[p.catKey] || 0) + 1;
 
   return `
     <div class="glass-panel">
       <div class="panel-title-row">
         <div>
-          <span class="panel-title-text">🏷️ Tùy chỉnh Giá bán CTV cho từng Sản phẩm & Danh mục</span>
+          <span class="panel-title-text">🏷️ Tùy chỉnh Giá bán CTV cho từng Danh mục & Sản phẩm</span>
           <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
-            CTV sẽ chỉ nhìn thấy mức <strong>Giá bán CTV</strong> bạn cài đặt ở đây. Khi CTV đặt đơn, ví CTV bị trừ theo Giá bán CTV và hệ thống trừ giá gốc bên HoanNguyen.
+            Đồng bộ nguồn HoanNguyen lúc <strong style="color:#5eead4;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
           </div>
         </div>
-        <button type="button" class="btn-violet" id="btnSaveAllAdminPricing">
-          💾 Lưu Toàn Bộ Bảng Giá
-        </button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn-frost" id="btnRefreshAdminPricing">↻ Làm mới giá nguồn</button>
+          <button type="button" class="btn-violet" id="btnSaveAllAdminPricing">
+            💾 Cập nhật tất cả thay đổi
+          </button>
+        </div>
       </div>
 
       <!-- Sub-navigation tabs -->
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
-        <button type="button" class="btn-frost ${state.adminPricingTab === 'fruits' ? 'is-active' : ''}" data-adm-ptab="fruits">
-          🍎 1. Giá từng loại Trái cây (${fruits.length} loại — VD: Nhân sâm 130đ → 170đ)
+        <button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
+          ⚙️ 1. Chỉnh giá từng Danh mục (VNĐ / %) — 8 danh mục
         </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'packages' ? 'is-active' : ''}" data-adm-ptab="packages">
-          📦 2. Giá từng Gói cố định (Xu, Buff Tim, Buff Sao, Bài viết)
+          📦 2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)
         </button>
-        <button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
-          ⚙️ 3. Mức cộng mặc định theo Danh mục (+5.000đ)
+        <button type="button" class="btn-frost ${state.adminPricingTab === 'fruits' ? 'is-active' : ''}" data-adm-ptab="fruits">
+          🍎 3. Chỉnh từng loại Trái cây & 19 Đột biến (${fruits.length} loại)
         </button>
       </div>
 
       ${
-        state.adminPricingTab === 'fruits'
+        state.adminPricingTab === 'categories'
           ? `
-        <div style="background:rgba(102,58,243,0.12);padding:14px 16px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <span style="font-size:13px;color:#fff;font-weight:600;">Mức cộng mặc định mỗi trái (cho các trái chưa chỉnh riêng):</span>
-            <input type="number" id="admDefaultFruitMarkupInput" class="input-box" style="width:120px;" value="${defaultFruitMarkup}" step="10" min="0" />
-            <span style="font-size:12px;color:var(--color-moon-mist);">đ / trái</span>
-          </div>
-          <input type="text" id="admFruitSearchInput" class="input-box" style="max-width:280px;" placeholder="🔍 Tìm trái cây: Nhân sâm, Dưa hấu..." value="${escapeHtml(state.adminFruitSearch)}" />
+        <div class="pricing-cat-grid">
+          ${PRICING_CATEGORIES.map((cat) => {
+            const mode = modes[cat.key] === 'percent' ? 'percent' : 'fixed';
+            const fixedVal = cat.isFruitUnit ? defaultFruitMarkup : Number(cm[cat.key] ?? 5000);
+            const pctVal = Number(percents[cat.key] ?? 0);
+            const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
+            const isWorking = !!sysStatus[cat.key];
+            const overrideCount = cat.isFruitUnit
+              ? Object.keys(fruitOverrides).length
+              : Object.keys(pkgOverrides).filter((k) => k.startsWith(`${cat.key}:`)).length;
+            const sample = getCategorySampleItem(cat.key, r?.catalog);
+            const sampleSell = sample ? computePreviewSell(sample.cost, mode, fixedVal, pctVal) : 0;
+            const sampleProfit = sample ? sampleSell - sample.cost : 0;
+
+            return `
+              <div class="pricing-cat-card" data-cat-card="${cat.key}">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                  <strong style="color:#fff;font-size:14px;">${cat.icon} ${escapeHtml(cat.label)}</strong>
+                  <span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
+                    ● ${isWorking ? 'Hoạt động' : 'Tạm ngưng'}
+                  </span>
+                </div>
+
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                  <div class="pricing-mode-switch">
+                    <button type="button" class="pricing-mode-btn ${mode === 'fixed' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="fixed">+VNĐ thủ công</button>
+                    <button type="button" class="pricing-mode-btn ${mode === 'percent' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="percent">+% Phần trăm</button>
+                  </div>
+                  ${overrideCount > 0 ? `<span class="badge-tag amber">${overrideCount} giá riêng</span>` : `<span class="badge-tag green">Tự động</span>`}
+                </div>
+
+                <div data-cat-fixed-wrap="${cat.key}" style="display:${mode === 'fixed' ? 'flex' : 'none'};flex-direction:column;gap:8px;">
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <input type="number" id="admCatFixed_${cat.key}" class="input-box adm-cat-fixed-input" data-cat-key="${cat.key}" value="${fixedVal}" step="${cat.stepFixed}" min="0" />
+                    <span style="font-size:12px;color:var(--color-moon-mist);white-space:nowrap;">đ / ${cat.unitHint}</span>
+                  </div>
+                  <div class="pricing-preset-row">
+                    ${cat.presetsFixed.map((v) => `<button type="button" class="pricing-preset-chip" data-preset-cat="${cat.key}" data-preset-mode="fixed" data-preset-val="${v}">+${formatVnd(v)}</button>`).join('')}
+                  </div>
+                </div>
+
+                <div data-cat-percent-wrap="${cat.key}" style="display:${mode === 'percent' ? 'flex' : 'none'};flex-direction:column;gap:8px;">
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <input type="number" id="admCatPct_${cat.key}" class="input-box adm-cat-pct-input" data-cat-key="${cat.key}" value="${pctVal}" step="1" min="0" max="500" />
+                    <span style="font-size:12px;color:var(--color-moon-mist);white-space:nowrap;">% trên giá gốc</span>
+                  </div>
+                  <div class="pricing-preset-row">
+                    ${[5, 10, 15, 20, 30, 50].map((v) => `<button type="button" class="pricing-preset-chip" data-preset-cat="${cat.key}" data-preset-mode="percent" data-preset-val="${v}">+${v}%</button>`).join('')}
+                  </div>
+                </div>
+
+                ${
+                  cat.isFruitUnit
+                    ? `
+                  <div style="display:flex;align-items:center;gap:8px;padding-top:4px;border-top:1px solid rgba(186,215,247,0.08);">
+                    <label style="font-size:11.5px;color:var(--color-fog-veil);white-space:nowrap;" for="admCatFruitOrderFee">Phí cố định / đơn:</label>
+                    <input type="number" id="admCatFruitOrderFee" class="input-box" style="max-width:120px;padding:6px 10px;" value="${orderFeeVal}" step="1000" min="0" />
+                    <span style="font-size:11.5px;color:var(--color-fog-veil);">đ</span>
+                  </div>
+                `
+                    : ''
+                }
+
+                <div class="pricing-preview-line" id="admCatPreview_${cat.key}" data-sample-name="${escapeHtml(sample?.name || '')}" data-sample-cost="${sample?.cost || 0}">
+                  ${
+                    sample
+                      ? `VD: <strong>${escapeHtml(sample.name)}</strong> · gốc ${formatVnd(sample.cost)} → bán CTV <strong style="color:#5eead4;">${formatVnd(sampleSell)}</strong> <span style="color:#4ade80;">(+${formatVnd(sampleProfit)})</span>`
+                      : `Hiện nguồn chưa mở gói mẫu cho danh mục này; mức cộng sẽ tự áp dụng ngay khi nguồn mở bán.`
+                  }
+                </div>
+
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:4px;">
+                  ${
+                    overrideCount > 0
+                      ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-cat-overrides="${cat.key}">↺ Gỡ ${overrideCount} giá riêng</button>`
+                      : `<span style="font-size:11px;color:var(--color-fog-veil);">Tất cả đang chạy tự động</span>`
+                  }
+                  <button type="button" class="btn-violet" style="padding:6px 14px;font-size:12px;" data-save-single-cat="${cat.key}">
+                    ✓ Cập nhật
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('')}
         </div>
 
-        <div class="table-wrap" style="max-height:520px;overflow-y:auto;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>TRÁI CÂY</th>
-                <th>TỒN KHO</th>
-                <th>GIÁ GỐC HOANNGUYEN / TRÁI</th>
-                <th>GIÁ BÁN CHO CTV / TRÁI (VNĐ)</th>
-                <th>LÃI ADMIN / TRÁI</th>
-                <th>19 HỆ ĐỘT BIẾN</th>
-              </tr>
-            </thead>
-            <tbody id="admFruitTbody">
-              ${renderAdminFruitRowsHtml(filteredFruits)}
-            </tbody>
-          </table>
+        <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+          <button type="button" class="btn-violet" id="btnSaveAllCatsBottom">💾 Cập nhật tất cả 8 danh mục</button>
         </div>
       `
           : state.adminPricingTab === 'packages'
           ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+          ${[
+            ['all', 'Tất cả'],
+            ['fruit_coin', '🪙 Xu Nông Trại'],
+            ['buff_tim', '🤍 Buff Tim'],
+            ['buff_sao', '☆ Buff Sao'],
+            ['guestbook', '📰 Bài Viết'],
+            ['weather_buff', '☁️ Buff Thời Tiết'],
+            ['farm_gift', '🏪 Quà nông trại'],
+            ['mail_gift', '✉️ Quà thư'],
+          ]
+            .map(
+              ([k, label]) => `
+            <button type="button" class="btn-frost ${state.adminPkgCatFilter === k ? 'is-active' : ''}" style="padding:6px 12px;font-size:12px;" data-adm-pkg-filter="${k}">
+              ${label} (${pkgCatCounts[k] || 0})
+            </button>
+          `
+            )
+            .join('')}
+        </div>
+
         <div class="table-wrap">
           <table class="data-table">
             <thead>
@@ -2407,22 +2671,37 @@ function renderAdminPricingPageHtml() {
                 <th>GIÁ GỐC HOANNGUYEN</th>
                 <th>GIÁ BÁN CHO CTV (VNĐ)</th>
                 <th>LÃI ADMIN / ĐƠN</th>
+                <th>CẬP NHẬT</th>
               </tr>
             </thead>
             <tbody>
-              ${fixedPackages
-                .map(
-                  (p) => `
+              ${
+                filteredPackages.length === 0
+                  ? `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Hiện nguồn HoanNguyen chưa mở gói nào cho danh mục này.</td></tr>`
+                  : filteredPackages
+                      .map((p) => {
+                        const pctProfit = p.costPrice > 0 ? Math.round((p.profit / p.costPrice) * 100) : 0;
+                        return `
                 <tr>
                   <td><span class="badge-tag violet">${escapeHtml(p.catLabel)}</span></td>
-                  <td><strong style="color:#fff;">${escapeHtml(p.name)}</strong></td>
-                  <td><strong>${formatVnd(p.costPrice)}</strong></td>
-                  <td style="max-width:180px;">
+                  <td>
+                    <strong style="color:#fff;">${escapeHtml(p.name)}</strong>
+                    ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Sale</span>` : ''}
+                    <div style="font-size:10.5px;color:${p.hasOverride ? '#fbbf24' : '#5eead4'};margin-top:2px;">
+                      ${p.hasOverride ? 'Giá cố định riêng' : modes[p.catKey] === 'percent' ? `Tự động (+${percents[p.catKey] ?? 0}%)` : `Tự động (+${formatVnd(cm[p.catKey] ?? 5000)})`}
+                    </div>
+                  </td>
+                  <td>
+                    <strong>${formatVnd(p.costPrice)}</strong>
+                    ${p.isOnSale && p.costOriginal > p.costPrice ? `<div style="font-size:11px;text-decoration:line-through;color:var(--color-fog-veil);">${formatVnd(p.costOriginal)}</div>` : ''}
+                  </td>
+                  <td style="min-width:170px;max-width:210px;">
                     <input
                       type="number"
                       class="input-box adm-pkg-override-input"
                       data-pkg-key="${p.key}"
                       data-cost="${p.costPrice}"
+                      data-has-override="${p.hasOverride ? '1' : '0'}"
                       value="${p.sellPrice}"
                       step="1000"
                       min="0"
@@ -2430,47 +2709,61 @@ function renderAdminPricingPageHtml() {
                   </td>
                   <td>
                     <span class="badge-tag ${p.profit >= 0 ? 'green' : 'red'}" id="admPkgProfit_${p.key.replace(':', '_')}">
-                      +${formatVnd(p.profit)}
+                      ${p.profit >= 0 ? `+${formatVnd(p.profit)}` : formatVnd(p.profit)} (${pctProfit >= 0 ? `+${pctProfit}%` : `${pctProfit}%`})
                     </span>
                   </td>
+                  <td>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                      <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11.5px;" data-save-pkg-row="${p.key}">✓ Cập nhật</button>
+                      ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-pkg-override="${p.key}">↺ Tự động</button>` : ''}
+                    </div>
+                  </td>
                 </tr>
-              `
-                )
-                .join('')}
+              `;
+                      })
+                      .join('')
+              }
             </tbody>
           </table>
         </div>
       `
           : `
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
-          <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">01. Gói Xu Nông Trại (+VNĐ/đơn):</label>
-            <input type="number" id="admCatMk_fruit_coin" class="input-box" value="${cm.fruit_coin ?? 5000}" step="1000" />
+        <div style="background:rgba(102,58,243,0.12);padding:14px 16px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span style="font-size:13px;color:#fff;font-weight:600;">Mức chung cho trái chưa chỉnh riêng:</span>
+            <div class="pricing-mode-switch">
+              <button type="button" class="pricing-mode-btn ${fruitMode === 'fixed' ? 'is-active' : ''}" id="btnFruitBarModeFixed">+VNĐ/trái</button>
+              <button type="button" class="pricing-mode-btn ${fruitMode === 'percent' ? 'is-active' : ''}" id="btnFruitBarModePct">+%</button>
+            </div>
+            <input type="number" id="admFruitGeneralValInput" class="input-box" style="width:110px;" value="${fruitMode === 'percent' ? fruitPercent : defaultFruitMarkup}" step="${fruitMode === 'percent' ? 1 : 10}" min="0" max="${fruitMode === 'percent' ? 500 : 1000000}" />
+            <span id="admFruitGeneralUnit" style="font-size:12px;color:var(--color-moon-mist);">${fruitMode === 'percent' ? '%' : 'đ / trái'}</span>
+            <button type="button" class="btn-violet" id="btnSaveFruitGeneral" style="padding:7px 14px;font-size:12px;">✓ Cập nhật mức chung</button>
           </div>
-          <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">02. Phí cộng thêm mỗi đơn Trái cây lẻ (+VNĐ):</label>
-            <input type="number" id="admCatMk_fruit_by_fruit" class="input-box" value="${cm.fruit_by_fruit ?? 0}" step="1000" />
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <select id="admFruitFilterSelect" class="input-box" style="width:auto;">
+              <option value="all" ${state.adminFruitFilter === 'all' ? 'selected' : ''}>Tất cả (${fruits.length})</option>
+              <option value="custom" ${state.adminFruitFilter === 'custom' ? 'selected' : ''}>Đang đặt giá riêng (${Object.keys(fruitOverrides).length})</option>
+            </select>
+            <input type="text" id="admFruitSearchInput" class="input-box" style="width:230px;" placeholder="🔍 Tìm trái cây: Nhân sâm..." value="${escapeHtml(state.adminFruitSearch)}" />
           </div>
-          <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">03. Gói Buff Tim (+VNĐ/đơn):</label>
-            <input type="number" id="admCatMk_buff_tim" class="input-box" value="${cm.buff_tim ?? 5000}" step="1000" />
-          </div>
-          <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">04. Gói Buff Sao (+VNĐ/đơn):</label>
-            <input type="number" id="admCatMk_buff_sao" class="input-box" value="${cm.buff_sao ?? 5000}" step="1000" />
-          </div>
-          <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">05. Gói Bài viết lưu bút (+VNĐ/đơn):</label>
-            <input type="number" id="admCatMk_guestbook" class="input-box" value="${cm.guestbook ?? 5000}" step="1000" />
-          </div>
-          <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">06. Gói Quà thư (+VNĐ/đơn):</label>
-            <input type="number" id="admCatMk_mail_gift" class="input-box" value="${cm.mail_gift ?? 5000}" step="1000" />
-          </div>
-          <div>
-            <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">07. Gói Quà nông trại (+VNĐ/đơn):</label>
-            <input type="number" id="admCatMk_farm_gift" class="input-box" value="${cm.farm_gift ?? 5000}" step="1000" />
-          </div>
+        </div>
+
+        <div class="table-wrap" style="max-height:540px;overflow-y:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>TRÁI CÂY</th>
+                <th>TỒN KHO</th>
+                <th>GIÁ GỐC HOANNGUYEN</th>
+                <th>GIÁ BÁN CHO CTV (VNĐ)</th>
+                <th>LÃI ADMIN / TRÁI</th>
+                <th>CẬP NHẬT / 19 ĐỘT BIẾN</th>
+              </tr>
+            </thead>
+            <tbody id="admFruitTbody">
+              ${renderAdminFruitRowsHtml(filteredFruits)}
+            </tbody>
+          </table>
         </div>
       `
       }
@@ -2479,27 +2772,44 @@ function renderAdminPricingPageHtml() {
 }
 
 function renderAdminFruitRowsHtml(fruits) {
+  const adm = state.adminOverview;
+  const fruitMode = adm?.settings?.categoryMarkupModes?.fruit_by_fruit === 'percent' ? 'percent' : 'fixed';
+  const fruitPct = Number(adm?.settings?.categoryMarkupPercents?.fruit_by_fruit ?? 0);
+  const defMk = Number(adm?.settings?.defaultFruitUnitMarkup ?? 40);
+
+  if (fruits.length === 0) {
+    return `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Không tìm thấy trái cây phù hợp.</td></tr>`;
+  }
+
   return fruits
     .map((f) => {
-      const cost = f._admin?.cost_unit_price ?? 130;
+      const cost = f._admin?.cost_unit_price ?? 0;
       const sell = f.unit_price;
       const profit = sell - cost;
+      const pctProf = cost > 0 ? Math.round((profit / cost) * 100) : 0;
+      const hasOverride = !!f._admin?.has_custom_override;
       return `
         <tr>
           <td>
             <div style="display:flex;align-items:center;gap:10px;">
               ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:30px;height:30px;object-fit:contain;" alt="" />` : '🍎'}
-              <strong style="color:#fff;">${escapeHtml(f.name)}</strong>
+              <div>
+                <strong style="color:#fff;">${escapeHtml(f.name)}</strong>
+                <div style="font-size:10.5px;color:${hasOverride ? '#fbbf24' : '#5eead4'};">
+                  ${hasOverride ? 'Giá cố định riêng' : fruitMode === 'percent' ? `Tự động (+${fruitPct}%)` : `Tự động (+${formatVnd(defMk)})`}
+                </div>
+              </div>
             </div>
           </td>
           <td>${formatNum(f.stock_quantity)} trái</td>
           <td><strong style="color:var(--color-moon-mist);">${formatVnd(cost)}</strong></td>
-          <td style="max-width:160px;">
+          <td style="min-width:140px;max-width:170px;">
             <input
               type="number"
               class="input-box adm-fruit-unit-input"
               data-fruit-id="${f.id}"
               data-cost="${cost}"
+              data-has-override="${hasOverride ? '1' : '0'}"
               value="${sell}"
               step="10"
               min="0"
@@ -2507,13 +2817,17 @@ function renderAdminFruitRowsHtml(fruits) {
           </td>
           <td>
             <span class="badge-tag ${profit >= 0 ? 'green' : 'red'}" id="admFruitProfit_${f.id}">
-              ${profit >= 0 ? `+${formatVnd(profit)}` : formatVnd(profit)} / trái
+              ${profit >= 0 ? `+${formatVnd(profit)}` : formatVnd(profit)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})
             </span>
           </td>
           <td>
-            <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-open-mut-pricing="${f.id}">
-              Chỉnh giá đột biến (${f.mutation_prices?.length || 0})
-            </button>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;" data-save-fruit-row="${f.id}">✓ Cập nhật</button>
+              ${hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-fruit-override="${f.id}">↺ Tự động</button>` : ''}
+              <button type="button" class="btn-frost" style="padding:5px 9px;font-size:11px;" data-open-mut-pricing="${f.id}">
+                19 đột biến
+              </button>
+            </div>
           </td>
         </tr>
       `;
@@ -2521,17 +2835,71 @@ function renderAdminFruitRowsHtml(fruits) {
     .join('');
 }
 
+async function savePricingSettingsAndReload(payload, successMsg) {
+  const r = await apiFetch('/api/admin/settings', 'PUT', payload);
+  showToast(successMsg || r.message || 'Đã cập nhật bảng giá thành công!');
+  await Promise.all([loadCatalog(true), loadAdminOverview()]);
+  renderCurrentView();
+}
+
 function bindAdminFruitRowEvents() {
   document.querySelectorAll('.adm-fruit-unit-input').forEach((inp) => {
     inp.addEventListener('input', () => {
+      inp.dataset.dirty = '1';
       const fid = inp.dataset.fruitId;
       const cost = Number(inp.dataset.cost || 0);
       const sell = Number(inp.value || 0);
       const prof = sell - cost;
+      const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
       const badge = document.getElementById(`admFruitProfit_${fid}`);
       if (badge) {
-        badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} / trái`;
+        badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})`;
         badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
+      }
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.querySelector(`[data-save-fruit-row="${inp.dataset.fruitId}"]`)?.click();
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-save-fruit-row]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const fid = btn.dataset.saveFruitRow;
+      const inp = document.querySelector(`.adm-fruit-unit-input[data-fruit-id="${fid}"]`);
+      if (!inp) return;
+      const val = Number(inp.value);
+      const cost = Number(inp.dataset.cost || 0);
+      if (!Number.isFinite(val) || val < 0) {
+        showToast('Giá bán phải là số nguyên không âm.');
+        return;
+      }
+      if (val < cost) {
+        showToast(`Lưu ý: Giá nhập (${formatVnd(val)}) thấp hơn giá gốc (${formatVnd(cost)}) — hệ thống tự giữ tối thiểu bằng giá gốc.`);
+      }
+      btn.disabled = true;
+      btn.textContent = 'Đang lưu...';
+      try {
+        await savePricingSettingsAndReload({ fruitUnitPrices: { [fid]: Math.round(val) } }, 'Đã cập nhật giá bán trái cây!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
+        btn.textContent = '✓ Cập nhật';
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-reset-fruit-override]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const fid = btn.dataset.resetFruitOverride;
+      btn.disabled = true;
+      try {
+        await savePricingSettingsAndReload({ fruitUnitPrices: { [fid]: null } }, 'Đã đưa giá trái cây về chế độ tự động!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
       }
     });
   });
@@ -2543,13 +2911,262 @@ function bindAdminFruitRowEvents() {
   });
 }
 
+function updateCategoryCardPreview(catKey) {
+  const card = document.querySelector(`[data-cat-card="${catKey}"]`);
+  const previewEl = document.getElementById(`admCatPreview_${catKey}`);
+  if (!card || !previewEl) return;
+  const sampleName = previewEl.dataset.sampleName;
+  const sampleCost = Number(previewEl.dataset.sampleCost || 0);
+  if (!sampleName) return;
+  const activeModeBtn = card.querySelector('.pricing-mode-btn.is-active');
+  const mode = activeModeBtn?.dataset.mode === 'percent' ? 'percent' : 'fixed';
+  const fixedVal = Number(document.getElementById(`admCatFixed_${catKey}`)?.value || 0);
+  const pctVal = Number(document.getElementById(`admCatPct_${catKey}`)?.value || 0);
+  const sell = computePreviewSell(sampleCost, mode, fixedVal, pctVal);
+  const profit = sell - sampleCost;
+  previewEl.innerHTML = `VD: <strong>${escapeHtml(sampleName)}</strong> · gốc ${formatVnd(sampleCost)} → bán CTV <strong style="color:#5eead4;">${formatVnd(sell)}</strong> <span style="color:#4ade80;">(+${formatVnd(profit)})</span>`;
+}
+
+function buildCategoryPayload(catKey) {
+  const card = document.querySelector(`[data-cat-card="${catKey}"]`);
+  if (!card) return null;
+  const mode = card.querySelector('.pricing-mode-btn.is-active')?.dataset.mode === 'percent' ? 'percent' : 'fixed';
+  const fixedVal = Math.max(0, Math.round(Number(document.getElementById(`admCatFixed_${catKey}`)?.value || 0)));
+  const pctVal = Math.max(0, Math.min(500, Number(document.getElementById(`admCatPct_${catKey}`)?.value || 0)));
+  const payload = {
+    categoryMarkupModes: { [catKey]: mode },
+    categoryMarkupPercents: { [catKey]: pctVal },
+  };
+  if (catKey === 'fruit_by_fruit') {
+    payload.defaultFruitUnitMarkup = fixedVal;
+    const feeEl = document.getElementById('admCatFruitOrderFee');
+    if (feeEl) payload.categoryMarkups = { fruit_by_fruit: Math.max(0, Math.round(Number(feeEl.value || 0))) };
+  } else {
+    payload.categoryMarkups = { [catKey]: fixedVal };
+  }
+  return payload;
+}
+
 let admFruitSearchTimer = null;
 function bindAdminPricingEvents() {
+  document.getElementById('btnRefreshAdminPricing')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btnRefreshAdminPricing');
+    if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
+    showToast('Đang tải giá gốc mới nhất từ nguồn HoanNguyen...');
+    await Promise.all([loadCatalog(true), loadAdminOverview()]);
+    renderCurrentView();
+  });
+
   document.querySelectorAll('[data-adm-ptab]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.adminPricingTab = btn.dataset.admPtab;
       renderCurrentView();
     });
+  });
+
+  // --- TAB 1: CATEGORY PRICING (FIXED VNĐ + PERCENT %) ---
+  document.querySelectorAll('[data-cat-mode-btn]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const catKey = btn.dataset.catModeBtn;
+      const mode = btn.dataset.mode;
+      const card = document.querySelector(`[data-cat-card="${catKey}"]`);
+      if (!card) return;
+      card.querySelectorAll('[data-cat-mode-btn]').forEach((b) => b.classList.toggle('is-active', b.dataset.mode === mode));
+      const fWrap = card.querySelector(`[data-cat-fixed-wrap="${catKey}"]`);
+      const pWrap = card.querySelector(`[data-cat-percent-wrap="${catKey}"]`);
+      if (fWrap) fWrap.style.display = mode === 'fixed' ? 'flex' : 'none';
+      if (pWrap) pWrap.style.display = mode === 'percent' ? 'flex' : 'none';
+      updateCategoryCardPreview(catKey);
+    });
+  });
+
+  document.querySelectorAll('[data-preset-cat]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const catKey = chip.dataset.presetCat;
+      const mode = chip.dataset.presetMode;
+      const val = chip.dataset.presetVal;
+      const inp = document.getElementById(mode === 'percent' ? `admCatPct_${catKey}` : `admCatFixed_${catKey}`);
+      if (inp) {
+        inp.value = val;
+        updateCategoryCardPreview(catKey);
+      }
+    });
+  });
+
+  document.querySelectorAll('.adm-cat-fixed-input, .adm-cat-pct-input').forEach((inp) => {
+    inp.addEventListener('input', () => updateCategoryCardPreview(inp.dataset.catKey));
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.querySelector(`[data-save-single-cat="${inp.dataset.catKey}"]`)?.click();
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-save-single-cat]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const catKey = btn.dataset.saveSingleCat;
+      const payload = buildCategoryPayload(catKey);
+      if (!payload) return;
+      btn.disabled = true;
+      btn.textContent = 'Đang lưu...';
+      try {
+        await savePricingSettingsAndReload(payload, 'Đã cập nhật giá danh mục thành công!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
+        btn.textContent = '✓ Cập nhật';
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-reset-cat-overrides]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const catKey = btn.dataset.resetCatOverrides;
+      if (!confirm('Gỡ toàn bộ giá cố định riêng của danh mục này để chạy theo cấu hình tự động?')) return;
+      btn.disabled = true;
+      try {
+        await savePricingSettingsAndReload({ resetCategoryOverrides: [catKey] }, 'Đã gỡ toàn bộ giá riêng của danh mục!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  const saveAllCategories = async (triggerBtn) => {
+    const categoryMarkups = {};
+    const categoryMarkupModes = {};
+    const categoryMarkupPercents = {};
+    let defaultFruitUnitMarkup;
+    for (const cat of PRICING_CATEGORIES) {
+      const sub = buildCategoryPayload(cat.key);
+      if (!sub) continue;
+      Object.assign(categoryMarkupModes, sub.categoryMarkupModes);
+      Object.assign(categoryMarkupPercents, sub.categoryMarkupPercents);
+      if (sub.categoryMarkups) Object.assign(categoryMarkups, sub.categoryMarkups);
+      if (sub.defaultFruitUnitMarkup !== undefined) defaultFruitUnitMarkup = sub.defaultFruitUnitMarkup;
+    }
+    if (triggerBtn) { triggerBtn.disabled = true; triggerBtn.textContent = 'Đang cập nhật...'; }
+    try {
+      await savePricingSettingsAndReload(
+        { categoryMarkups, categoryMarkupModes, categoryMarkupPercents, defaultFruitUnitMarkup },
+        'Đã cập nhật giá cho toàn bộ 8 danh mục!'
+      );
+    } catch (err) {
+      showToast(`Lỗi: ${err.message}`);
+      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.textContent = '💾 Cập nhật tất cả 8 danh mục'; }
+    }
+  };
+  document.getElementById('btnSaveAllCatsBottom')?.addEventListener('click', (e) => saveAllCategories(e.currentTarget));
+
+  // --- TAB 2: FIXED PACKAGES ---
+  document.querySelectorAll('[data-adm-pkg-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.adminPkgCatFilter = btn.dataset.admPkgFilter;
+      renderCurrentView();
+    });
+  });
+
+  document.querySelectorAll('.adm-pkg-override-input').forEach((inp) => {
+    inp.addEventListener('input', () => {
+      inp.dataset.dirty = '1';
+      const key = inp.dataset.pkgKey;
+      const cost = Number(inp.dataset.cost || 0);
+      const sell = Number(inp.value || 0);
+      const prof = sell - cost;
+      const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
+      const badge = document.getElementById(`admPkgProfit_${key.replace(':', '_')}`);
+      if (badge) {
+        badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})`;
+        badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
+      }
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.querySelector(`[data-save-pkg-row="${inp.dataset.pkgKey}"]`)?.click();
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-save-pkg-row]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = btn.dataset.savePkgRow;
+      const inp = document.querySelector(`.adm-pkg-override-input[data-pkg-key="${key}"]`);
+      if (!inp) return;
+      const val = Number(inp.value);
+      const cost = Number(inp.dataset.cost || 0);
+      if (!Number.isFinite(val) || val <= 0) {
+        showToast('Giá bán gói phải lớn hơn 0đ (hoặc bấm ↺ Tự động để gỡ giá riêng).');
+        return;
+      }
+      if (val < cost) {
+        showToast(`Lưu ý: Giá nhập (${formatVnd(val)}) thấp hơn giá gốc (${formatVnd(cost)}) — hệ thống tự giữ tối thiểu bằng giá gốc.`);
+      }
+      btn.disabled = true;
+      btn.textContent = 'Đang lưu...';
+      try {
+        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: Math.round(val) } }, 'Đã cập nhật giá gói thành công!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
+        btn.textContent = '✓ Cập nhật';
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-reset-pkg-override]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = btn.dataset.resetPkgOverride;
+      btn.disabled = true;
+      try {
+        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: null } }, 'Đã đặt lại gói về chế độ giá tự động!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  // --- TAB 3: FRUITS ---
+  let activeFruitBarMode = state.adminOverview?.settings?.categoryMarkupModes?.fruit_by_fruit === 'percent' ? 'percent' : 'fixed';
+  const switchFruitBarMode = (mode) => {
+    activeFruitBarMode = mode;
+    document.getElementById('btnFruitBarModeFixed')?.classList.toggle('is-active', mode === 'fixed');
+    document.getElementById('btnFruitBarModePct')?.classList.toggle('is-active', mode === 'percent');
+    const inp = document.getElementById('admFruitGeneralValInput');
+    const unitEl = document.getElementById('admFruitGeneralUnit');
+    if (inp) {
+      inp.value = mode === 'percent'
+        ? Number(state.adminOverview?.settings?.categoryMarkupPercents?.fruit_by_fruit ?? 0)
+        : Number(state.adminOverview?.settings?.defaultFruitUnitMarkup ?? 40);
+      inp.step = mode === 'percent' ? '1' : '10';
+    }
+    if (unitEl) unitEl.textContent = mode === 'percent' ? '%' : 'đ / trái';
+  };
+  document.getElementById('btnFruitBarModeFixed')?.addEventListener('click', () => switchFruitBarMode('fixed'));
+  document.getElementById('btnFruitBarModePct')?.addEventListener('click', () => switchFruitBarMode('percent'));
+  document.getElementById('btnSaveFruitGeneral')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const val = Number(document.getElementById('admFruitGeneralValInput')?.value || 0);
+    const payload = { categoryMarkupModes: { fruit_by_fruit: activeFruitBarMode } };
+    if (activeFruitBarMode === 'percent') payload.categoryMarkupPercents = { fruit_by_fruit: Math.max(0, Math.min(500, val)) };
+    else payload.defaultFruitUnitMarkup = Math.max(0, Math.round(val));
+    btn.disabled = true;
+    btn.textContent = 'Đang lưu...';
+    try {
+      await savePricingSettingsAndReload(payload, 'Đã cập nhật mức cộng chung cho trái cây!');
+    } catch (err) {
+      showToast(`Lỗi: ${err.message}`);
+      btn.disabled = false;
+      btn.textContent = '✓ Cập nhật mức chung';
+    }
+  });
+
+  document.getElementById('admFruitFilterSelect')?.addEventListener('change', (e) => {
+    state.adminFruitFilter = e.target.value;
+    renderCurrentView();
   });
 
   const searchIn = document.getElementById('admFruitSearchInput');
@@ -2561,7 +3178,11 @@ function bindAdminPricingEvents() {
       if (!tbody) return;
       const fruits = state.catalogData?.catalog?.fruit_by_fruit || [];
       const q = state.adminFruitSearch.trim().toLowerCase();
-      const filtered = q ? fruits.filter((f) => f.name.toLowerCase().includes(q)) : fruits;
+      const filtered = fruits.filter((f) => {
+        if (state.adminFruitFilter === 'custom' && !f._admin?.has_custom_override) return false;
+        if (q && !f.name.toLowerCase().includes(q)) return false;
+        return true;
+      });
       tbody.innerHTML = renderAdminFruitRowsHtml(filtered);
       bindAdminFruitRowEvents();
     }, 80);
@@ -2569,63 +3190,49 @@ function bindAdminPricingEvents() {
 
   bindAdminFruitRowEvents();
 
-  // Live profit calculation when typing package override price
-  document.querySelectorAll('.adm-pkg-override-input').forEach((inp) => {
-    inp.addEventListener('input', () => {
-      const key = inp.dataset.pkgKey;
-      const cost = Number(inp.dataset.cost || 0);
-      const sell = Number(inp.value || 0);
-      const prof = sell - cost;
-      const badge = document.getElementById(`admPkgProfit_${key.replace(':', '_')}`);
-      if (badge) {
-        badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)}`;
-        badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
-      }
-    });
-  });
+  // --- TOP MASTER SAVE BUTTON (Works across ALL 3 tabs!) ---
+  document.getElementById('btnSaveAllAdminPricing')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    if (state.adminPricingTab === 'categories') {
+      await saveAllCategories(btn);
+      return;
+    }
 
-  // Save All Admin Pricing
-  document.getElementById('btnSaveAllAdminPricing')?.addEventListener('click', async () => {
     const payload = {};
-
-    const defFruitMk = document.getElementById('admDefaultFruitMarkupInput');
-    if (defFruitMk) payload.defaultFruitUnitMarkup = Number(defFruitMk.value || 0);
-
-    const fruitUnitPrices = {};
-    document.querySelectorAll('.adm-fruit-unit-input').forEach((inp) => {
-      fruitUnitPrices[inp.dataset.fruitId] = Number(inp.value || 0);
-    });
-    if (Object.keys(fruitUnitPrices).length > 0) {
-      payload.fruitUnitPrices = fruitUnitPrices;
+    if (state.adminPricingTab === 'fruits') {
+      const genInput = document.getElementById('admFruitGeneralValInput');
+      if (genInput) {
+        const val = Number(genInput.value || 0);
+        payload.categoryMarkupModes = { fruit_by_fruit: activeFruitBarMode };
+        if (activeFruitBarMode === 'percent') payload.categoryMarkupPercents = { fruit_by_fruit: Math.max(0, Math.min(500, val)) };
+        else payload.defaultFruitUnitMarkup = Math.max(0, Math.round(val));
+      }
+      const fruitUnitPrices = {};
+      document.querySelectorAll('.adm-fruit-unit-input[data-dirty="1"]').forEach((inp) => {
+        fruitUnitPrices[inp.dataset.fruitId] = inp.value === '' ? null : Math.round(Number(inp.value));
+      });
+      if (Object.keys(fruitUnitPrices).length > 0) payload.fruitUnitPrices = fruitUnitPrices;
+    } else if (state.adminPricingTab === 'packages') {
+      const packagePriceOverrides = {};
+      document.querySelectorAll('.adm-pkg-override-input[data-dirty="1"]').forEach((inp) => {
+        packagePriceOverrides[inp.dataset.pkgKey] = inp.value === '' ? null : Math.round(Number(inp.value));
+      });
+      if (Object.keys(packagePriceOverrides).length > 0) payload.packagePriceOverrides = packagePriceOverrides;
     }
 
-    const packagePriceOverrides = {};
-    document.querySelectorAll('.adm-pkg-override-input').forEach((inp) => {
-      packagePriceOverrides[inp.dataset.pkgKey] = Number(inp.value || 0);
-    });
-    if (Object.keys(packagePriceOverrides).length > 0) {
-      payload.packagePriceOverrides = packagePriceOverrides;
+    if (Object.keys(payload).length === 0) {
+      showToast('Chưa có thay đổi giá nào cần lưu.');
+      return;
     }
 
-    if (document.getElementById('admCatMk_fruit_coin')) {
-      payload.categoryMarkups = {
-        fruit_coin: Number(document.getElementById('admCatMk_fruit_coin')?.value || 5000),
-        fruit_by_fruit: Number(document.getElementById('admCatMk_fruit_by_fruit')?.value || 0),
-        buff_tim: Number(document.getElementById('admCatMk_buff_tim')?.value || 5000),
-        buff_sao: Number(document.getElementById('admCatMk_buff_sao')?.value || 5000),
-        guestbook: Number(document.getElementById('admCatMk_guestbook')?.value || 5000),
-        mail_gift: Number(document.getElementById('admCatMk_mail_gift')?.value || 5000),
-        farm_gift: Number(document.getElementById('admCatMk_farm_gift')?.value || 5000),
-      };
-    }
-
+    btn.disabled = true;
+    btn.textContent = 'Đang lưu...';
     try {
-      const r = await apiFetch('/api/admin/settings', 'PUT', payload);
-      showToast(r.message || 'Đã lưu toàn bộ bảng giá CTV!');
-      await Promise.all([loadCatalog(true), loadAdminOverview()]);
-      renderCurrentView();
+      await savePricingSettingsAndReload(payload, 'Đã cập nhật toàn bộ thay đổi bảng giá!');
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
+      btn.disabled = false;
+      btn.textContent = '💾 Cập nhật tất cả thay đổi';
     }
   });
 }
@@ -2640,67 +3247,155 @@ function openAdminMutationPricingModal(fruitId) {
   const body = document.getElementById('appModalBody');
   if (!overlay || !box || !title || !body) return;
 
-  box.className = 'modal-box';
+  box.className = 'modal-box wide';
   title.textContent = `Chỉnh giá 19 Hệ Đột Biến: ${f.name}`;
   const muts = f.mutation_prices || [];
 
   body.innerHTML = `
-    <div class="table-wrap" style="max-height:420px;overflow-y:auto;">
+    <div style="background:rgba(102,58,243,0.12);padding:12px 14px;border-radius:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span style="font-size:12px;color:#fff;font-weight:600;">Áp nhanh cả 19 hệ:</span>
+        <input type="number" id="mutBulkPctInput" class="input-box" style="width:90px;padding:6px 8px;" placeholder="%" value="20" min="0" max="500" />
+        <button type="button" class="btn-frost" id="btnApplyMutBulkPct" style="padding:6px 10px;font-size:12px;">Áp dụng +%</button>
+        <input type="number" id="mutBulkVndInput" class="input-box" style="width:110px;padding:6px 8px;" placeholder="VNĐ" value="500" step="100" min="0" />
+        <button type="button" class="btn-frost" id="btnApplyMutBulkVnd" style="padding:6px 10px;font-size:12px;">Áp dụng +VNĐ</button>
+      </div>
+      <button type="button" class="btn-frost" id="btnResetAllMutAuto" style="padding:6px 10px;font-size:11.5px;color:#fca5a5;">↺ Đặt lại tất cả về tự động</button>
+    </div>
+
+    <div class="table-wrap" style="max-height:400px;overflow-y:auto;">
       <table class="data-table">
         <thead>
           <tr>
             <th>HỆ ĐỘT BIẾN</th>
             <th>GIÁ GỐC HOANNGUYEN</th>
             <th>GIÁ BÁN CHO CTV (VNĐ)</th>
+            <th>LÃI / TRÁI</th>
           </tr>
         </thead>
         <tbody>
           ${muts
-            .map(
-              (m) => `
+            .map((m) => {
+              const cost = m._admin?.cost_unit_price ?? m.unit_price;
+              const prof = m.unit_price - cost;
+              const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
+              const hasOvr = !!m._admin?.has_custom_override;
+              return `
             <tr>
               <td>
                 <span style="display:inline-flex;align-items:center;gap:6px;">
                   <span style="width:10px;height:10px;border-radius:999px;background:${m.mutation_color};"></span>
                   <strong style="color:#fff;">${escapeHtml(m.mutation_name)}</strong>
                 </span>
+                <div style="font-size:10px;color:${hasOvr ? '#fbbf24' : '#5eead4'};margin-top:2px;">${hasOvr ? 'Giá cố định riêng' : 'Tự động'}</div>
               </td>
-              <td>${formatVnd(m._admin?.cost_unit_price ?? m.unit_price)}</td>
-              <td>
+              <td>${formatVnd(cost)}</td>
+              <td style="max-width:170px;">
                 <input
                   type="number"
                   class="input-box adm-mut-price-input"
                   data-mut-key="${f.id}:${m.mutation_key}"
+                  data-cost="${cost}"
                   value="${m.unit_price}"
                   step="100"
                   min="0"
                 />
               </td>
+              <td>
+                <span class="badge-tag ${prof >= 0 ? 'green' : 'red'}" id="admMutProf_${f.id}_${m.mutation_key}">
+                  ${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})
+                </span>
+              </td>
             </tr>
-          `
-            )
+          `;
+            })
             .join('')}
         </tbody>
       </table>
     </div>
     <div style="display:flex;justify-content:flex-end;gap:10px;">
-      <button type="button" class="btn-violet" id="btnSaveMutPrices">Lưu giá đột biến →</button>
+      <button type="button" class="btn-frost" id="btnCloseMutModal">Đóng</button>
+      <button type="button" class="btn-violet" id="btnSaveMutPrices">✓ Cập nhật giá đột biến</button>
     </div>
   `;
 
-  body.querySelector('#btnSaveMutPrices')?.addEventListener('click', async () => {
+  const updateMutRowBadge = (inp) => {
+    const cost = Number(inp.dataset.cost || 0);
+    const sell = Number(inp.value || 0);
+    const prof = sell - cost;
+    const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
+    const badge = document.getElementById(`admMutProf_${inp.dataset.mutKey.replace(':', '_')}`);
+    if (badge) {
+      badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})`;
+      badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
+    }
+  };
+
+  body.querySelectorAll('.adm-mut-price-input').forEach((inp) => {
+    inp.addEventListener('input', () => {
+      inp.dataset.dirty = '1';
+      updateMutRowBadge(inp);
+    });
+  });
+
+  body.querySelector('#btnApplyMutBulkPct')?.addEventListener('click', () => {
+    const pct = Math.max(0, Math.min(500, Number(body.querySelector('#mutBulkPctInput')?.value || 0)));
+    body.querySelectorAll('.adm-mut-price-input').forEach((inp) => {
+      const cost = Number(inp.dataset.cost || 0);
+      inp.value = Math.round(cost * (100 + pct) / 100);
+      inp.dataset.dirty = '1';
+      updateMutRowBadge(inp);
+    });
+    showToast(`Đã điền thử +${pct}% cho cả 19 hệ — bấm "✓ Cập nhật giá đột biến" để lưu.`);
+  });
+
+  body.querySelector('#btnApplyMutBulkVnd')?.addEventListener('click', () => {
+    const add = Math.max(0, Math.round(Number(body.querySelector('#mutBulkVndInput')?.value || 0)));
+    body.querySelectorAll('.adm-mut-price-input').forEach((inp) => {
+      const cost = Number(inp.dataset.cost || 0);
+      inp.value = cost + add;
+      inp.dataset.dirty = '1';
+      updateMutRowBadge(inp);
+    });
+    showToast(`Đã điền thử +${formatVnd(add)} cho cả 19 hệ — bấm "✓ Cập nhật giá đột biến" để lưu.`);
+  });
+
+  body.querySelector('#btnResetAllMutAuto')?.addEventListener('click', async () => {
     const fruitMutationPrices = {};
     body.querySelectorAll('.adm-mut-price-input').forEach((inp) => {
-      fruitMutationPrices[inp.dataset.mutKey] = Number(inp.value || 0);
+      fruitMutationPrices[inp.dataset.mutKey] = null;
     });
     try {
-      const r = await apiFetch('/api/admin/settings', 'PUT', { fruitMutationPrices });
-      showToast(r.message);
       overlay.style.display = 'none';
-      await Promise.all([loadCatalog(true), loadAdminOverview()]);
-      renderCurrentView();
+      await savePricingSettingsAndReload({ fruitMutationPrices }, `Đã đưa 19 hệ đột biến của ${f.name} về tự động!`);
     } catch (err) {
       showToast(err.message);
+    }
+  });
+
+  body.querySelector('#btnCloseMutModal')?.addEventListener('click', () => {
+    overlay.style.display = 'none';
+  });
+
+  body.querySelector('#btnSaveMutPrices')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const fruitMutationPrices = {};
+    body.querySelectorAll('.adm-mut-price-input[data-dirty="1"]').forEach((inp) => {
+      fruitMutationPrices[inp.dataset.mutKey] = inp.value === '' ? null : Math.round(Number(inp.value));
+    });
+    if (Object.keys(fruitMutationPrices).length === 0) {
+      showToast('Chưa có thay đổi giá đột biến nào cần lưu.');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Đang lưu...';
+    try {
+      overlay.style.display = 'none';
+      await savePricingSettingsAndReload({ fruitMutationPrices }, `Đã cập nhật giá đột biến cho ${f.name}!`);
+    } catch (err) {
+      showToast(err.message);
+      btn.disabled = false;
+      btn.textContent = '✓ Cập nhật giá đột biến';
     }
   });
 
@@ -3179,6 +3874,18 @@ function bindAdminSystemEvents() {
 // GLOBAL EVENTS & BOOTSTRAP
 // ============================================================================
 function bindGlobalEvents() {
+  // Keep status dots, active/inactive flags, and prices synced live with HoanNguyen every 20s!
+  setInterval(async () => {
+    if (!state.user || document.hidden) return;
+    try {
+      const catChanged = await loadCatalog(false);
+      if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard')) {
+        renderCurrentView();
+      }
+    } catch {}
+  }, 20000);
+
+  // Sync session, wallet balance, and live orders every 45s.
   setInterval(async () => {
     if (!state.user || document.hidden) return;
     try {
@@ -3192,6 +3899,19 @@ function bindGlobalEvents() {
       }
     } catch {}
   }, 45000);
+
+  // Immediately refresh live status & prices when user switches back to this tab.
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', async () => {
+      if (document.hidden || !state.user) return;
+      try {
+        const catChanged = await loadCatalog(false);
+        if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard')) {
+          renderCurrentView();
+        }
+      } catch {}
+    });
+  }
   // Sidebar menu navigation
   document.querySelectorAll('.sidebar-item[data-view]').forEach((btn) => {
     btn.addEventListener('click', () => {

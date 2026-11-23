@@ -26,6 +26,7 @@ const state = {
 
   // Orders & Admin Data
   orders: [],
+  listLimits: {},
   adminOverview: null,
   adminMonitor: null,
   adminPricingTab: 'categories', // 'categories' | 'packages' | 'fruits'
@@ -60,7 +61,33 @@ const state = {
 localStorage.removeItem('znplay_token');
 
 const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
-  createToolViews({ state, apiFetch, createRequestKey, escapeHtml, showToast, copyTextToClipboard, formatVnd, formatDateVi, renderCurrentView, loadOrders });
+  createToolViews({ state, apiFetch, pageLimit, moreButton, renderLocalPages, escapeHtml, showToast, copyTextToClipboard, formatVnd, formatDateVi, renderCurrentView, loadOrders });
+
+function pageLimit(key) {
+  return state.listLimits[key] || 20;
+}
+
+function moreButton(key, count, columns = 0, shown = pageLimit(key)) {
+  if (!(count > shown)) return '';
+  const button = `<button type="button" class="btn-frost list-more" data-list-more="${escapeHtml(key)}" data-shown="${shown}">Xem thêm ${Math.min(count - shown, 20)} <span>(${shown}/${count})</span></button>`;
+  return columns ? `<tr><td colspan="${columns}">${button}</td></tr>` : button;
+}
+
+// Lists inside dialogs use their own paging state so expanding a list preserves the form.
+function renderLocalPages(host, items, paint) {
+  let shown = 20;
+  function draw() {
+    paint(items.slice(0, shown));
+    if (shown >= items.length) return;
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'btn-frost list-more';
+    more.textContent = `Xem thêm ${Math.min(20, items.length - shown)} (${shown}/${items.length})`;
+    more.addEventListener('click', () => { shown += 20; draw(); });
+    host.append(more);
+  }
+  draw();
+}
 
 function createRequestKey() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -119,11 +146,12 @@ function formatNum(num) {
 function formatDateVi(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso);
+  if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('vi-VN', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
+    timeZone: 'Asia/Ho_Chi_Minh',
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -295,6 +323,8 @@ function clearAuthState() {
   state.lastScopeSyncAt = {};
   state.remoteSummaries = {};
   state.orders = [];
+  state.orderPage = null;
+  state.listLimits = {};
   state.adminOverview = null;
   state.adminMonitor = null;
   state.adminMonitorCtvId = null;
@@ -584,29 +614,37 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
 // ============================================================================
 // LOAD ORDERS & ADMIN OVERVIEW
 // ============================================================================
+let orderRequest = 0;
 async function loadOrders(forceRefresh = false) {
   if (!state.user) return false;
   const requestToken = state.token;
+  const version = ++orderRequest;
+  const view = state.currentView;
+  const category = ORDER_VIEWS.includes(view) ? (view === 'fruit_coin' ? 'fruit_all' : view) : 'all';
+  const current = () => version === orderRequest && state.token === requestToken && view === state.currentView;
   state.loadingOrders = true;
   try {
-    const r = await apiFetch(`/api/orders?category=all${forceRefresh ? '&refresh=1' : ''}`);
-    if (r.success && state.token === requestToken) {
+    const filter = ORDER_VIEWS.includes(view);
+    const query = `category=${category}&limit=${pageLimit('orderList')}&q=${encodeURIComponent(state.orderSearch)}&active=${filter ? state.orderActiveFilter : 'all'}&progress=${filter ? state.orderProgressFilter : 'all'}`;
+    const r = await apiFetch(`/api/orders?${query}${forceRefresh ? '&refresh=1' : ''}`);
+    if (r.success && current()) {
       const nextOrders = r.orders || [];
-      const sig = `${nextOrders.length}:${nextOrders.map(o => `${o.id}:${o.status}:${o.isActive}:${o.completedCnt}:${o.sendingCnt}:${o.failedCnt}:${o.cancelRequested ? 1 : 0}`).join('|')}`;
-      const changed = sig !== state.lastOrdersSig;
+      const sig = JSON.stringify([nextOrders, r.page, r.partial, r.remoteSummaries]);
+      const changed = sig !== state.lastOrdersSig || !state.orderPage || Boolean(state.ordersWarning);
+      state.orderPage = r.page || null;
       state.lastOrdersSig = sig;
       state.orders = nextOrders;
       state.remoteSummaries = r.remoteSummaries || {};
       state.ordersWarning = r.partial ? 'Một phần danh sách đơn chưa đồng bộ được với nguồn.' : '';
-      const activeCount = state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
+      const activeCount = state.orderPage?.activeCount ?? state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
       const badge = document.getElementById('sidebarActiveOrdersCount');
       if (badge) badge.textContent = String(activeCount);
       return changed;
     }
   } catch (err) {
-    if (state.token === requestToken) state.ordersWarning = 'Chưa cập nhật được danh sách đơn.';
+    if (current()) { state.ordersWarning = 'Chưa cập nhật được danh sách đơn.'; return true; }
   } finally {
-    if (state.token === requestToken) state.loadingOrders = false;
+    if (version === orderRequest) state.loadingOrders = false;
   }
   return false;
 }
@@ -639,6 +677,11 @@ function switchView(viewKey) {
   if (!Object.hasOwn(VIEW_TITLES, viewKey) || (viewKey.startsWith('admin_') && state.user.role !== 'admin')) {
     viewKey = 'fruit_coin';
   }
+  if (state.currentView !== viewKey) {
+    state.listLimits = {};
+    state.orderPage = null;
+    state.orders = [];
+  }
   state.currentView = viewKey;
   document.querySelectorAll('.sidebar-item[data-view]').forEach((btn) => {
     btn.classList.toggle('is-active', btn.dataset.view === viewKey);
@@ -661,6 +704,9 @@ function switchView(viewKey) {
   }
   renderCurrentView();
   if (viewKey === 'admin_monitor') loadAdminMonitor();
+  if (ORDER_VIEWS.includes(viewKey) || ['order_history','dashboard'].includes(viewKey)) {
+    loadOrders().then(changed => { if (changed && state.currentView === viewKey) renderCurrentView(); });
+  }
 }
 
 function renderCurrentView() {
@@ -747,7 +793,7 @@ function renderOrderCategoryPageHtml(catKey) {
   );
 
   // Admin uses HoanNguyen's live summary totals when available so numbers match source 100%.
-  const remSum = state.user?.role === 'admin' ? state.remoteSummaries?.[catKey] : null;
+  const remSum = state.orderPage?.categoryStats || (state.user?.role === 'admin' ? state.remoteSummaries?.[catKey] : null);
 
   const totalOrders = remSum ? Number(remSum.total_orders ?? catOrders.length) : catOrders.length;
   const completedOrders = remSum ? Number(remSum.completed_orders ?? 0) : catOrders.filter((o) => o.status === 'completed').length;
@@ -781,22 +827,6 @@ function renderOrderCategoryPageHtml(catKey) {
     fruit_coin: 'trái / xu',
   };
   const unitName = unitLabelMap[catKey] || 'đơn vị';
-
-  // Apply search/status filters
-  const filteredOrders = catOrders.filter((o) => {
-    if (state.orderActiveFilter === '1' && !o.isActive) return false;
-    if (state.orderActiveFilter === '0' && o.isActive) return false;
-    if (state.orderProgressFilter === 'running' && ['completed', 'cancelled'].includes(o.status)) return false;
-    if (state.orderProgressFilter === 'completed' && o.status !== 'completed') return false;
-    if (state.orderSearch.trim()) {
-      const q = state.orderSearch.trim().toLowerCase();
-      const matchName = String(o.customer?.nickname || '').toLowerCase().includes(q);
-      const matchSuid = String(o.customer?.suid || '').toLowerCase().includes(q);
-      const matchId = String(o.remoteOrderId || o.id).toLowerCase().includes(q);
-      if (!matchName && !matchSuid && !matchId) return false;
-    }
-    return true;
-  });
 
   // Extra footer buttons inside Stats Panel (Kho trái cây / Kho xu / Bảng giá)
   let footerButtonsHtml = '';
@@ -987,7 +1017,7 @@ function getFilteredCatOrders(catKey) {
 }
 
 function renderCatOrdersTbodyHtml(catKey) {
-  const filteredOrders = getFilteredCatOrders(catKey);
+  const filteredOrders = state.orderPage ? state.orders : getFilteredCatOrders(catKey);
   const colSpan = catKey === 'weather_buff' ? 8 : state.user?.role === 'admin' ? 9 : 8;
   if (filteredOrders.length === 0) {
     return `
@@ -998,7 +1028,8 @@ function renderCatOrdersTbodyHtml(catKey) {
       </tr>
     `;
   }
-  return filteredOrders.map((o) => renderOrderTableRowHtml(o)).join('');
+  return filteredOrders.slice(0, pageLimit('orderList')).map(o => renderOrderTableRowHtml(o)).join('')
+    + moreButton('orderList', state.orderPage?.filteredCount ?? filteredOrders.length, colSpan, Math.min(filteredOrders.length, pageLimit('orderList')));
 }
 
 function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
@@ -1130,7 +1161,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
 
   return `
     <tr>
-      <td>${customerCellHtml}</td>
+      <td>${customerCellHtml}${isAdmin && o.placedBy ? `<div class="tool-note">${o.source !== 'znplay' ? 'Nguồn' : o.placedBy.role === 'ctv' ? 'CTV' : 'Admin'} · ${escapeHtml(o.placedBy.name)}</div>` : ''}</td>
       <td>${packageCellHtml}</td>
       <td><strong>${formatNum(o.totalCnt || 0)}</strong></td>
       <td>
@@ -1182,7 +1213,9 @@ function bindOrderCategoryPageEvents(catKey) {
     openCategoryPriceListModal(catKey);
   });
 
-  const updateTbodyOnly = () => {
+  const updateTbodyOnly = async () => {
+    state.listLimits.orderList = 20;
+    await loadOrders();
     const tbody = document.getElementById('catOrdersTbody');
     if (!tbody) return;
     tbody.innerHTML = renderCatOrdersTbodyHtml(catKey);
@@ -1347,6 +1380,7 @@ function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ Zn
 // ============================================================================
 let createOrderModalSeq = 0;
 async function openCreateOrderModal(catKey, presetOptions = null) {
+  state.listLimits.modalPackages = 20;
   // Check CTV wallet balance first!
   if (state.user.role !== 'admin' && Number(state.user.balance || 0) <= 0) {
     showToast('Số dư ví CTV của bạn là 0đ. Vui lòng nạp tiền vào ví trước khi tạo đơn!');
@@ -1458,7 +1492,7 @@ function renderCreateOrderModalBody() {
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn gói số lượng Xu:</label>
           <div class="pkg-picker-list">
-            ${coinPkgs
+            ${coinPkgs.slice(0, pageLimit('modalPackages'))
               .map((p) => {
                 const isSel = Number(state.modalOrder.coin_price_package_id) === Number(p.id);
                 const tObj = p.prices_by_tier?.[state.modalOrder.min_coin_filter] || p;
@@ -1475,7 +1509,7 @@ function renderCreateOrderModalBody() {
                   </button>
                 `;
               })
-              .join('')}
+              .join('')}${moreButton('modalPackages', coinPkgs.length)}
           </div>
         </div>
         <div>
@@ -1564,7 +1598,7 @@ function renderCreateOrderModalBody() {
             ? `<div style="padding:14px;background:rgba(228,109,76,0.14);border-radius:8px;color:#fca5a5;">Hiện chưa có gói giá đang mở cho danh mục này.</div>`
             : `
           <div class="pkg-picker-list">
-            ${pkgs
+            ${pkgs.slice(0, pageLimit('modalPackages'))
               .map((p) => {
                 const isSel = Number(state.modalOrder.price_package_id) === Number(p.id);
                 return `
@@ -1580,7 +1614,7 @@ function renderCreateOrderModalBody() {
                   </button>
                 `;
               })
-              .join('')}
+              .join('')}${moreButton('modalPackages', pkgs.length)}
           </div>
         `
         }
@@ -1619,7 +1653,7 @@ function renderCreateOrderModalBody() {
           </select>
         </div>
         <div class="pkg-picker-list">
-          ${pkgs
+          ${pkgs.slice(0, pageLimit('modalPackages'))
             .map((p) => {
               const isSel = Number(state.modalOrder.gift_plant_id) === Number(p.id);
               return `
@@ -1629,7 +1663,7 @@ function renderCreateOrderModalBody() {
                 </div>
               `;
             })
-            .join('')}
+            .join('')}${moreButton('modalPackages', pkgs.length)}
         </div>
       `;
     }
@@ -1955,37 +1989,39 @@ async function runModalCustomerSearch() {
       const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
       const list = r.profiles || [];
       statusEl.textContent = `Tìm thấy ${list.length} kết quả:`;
-      resultsEl.innerHTML = list
-        .map(
-          (p, i) => `
-          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-            <div>
-              <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
-              <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
-              <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+      renderLocalPages(resultsEl, list, visible => {
+        resultsEl.innerHTML = visible
+          .map(
+            (p, i) => `
+            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+              <div>
+                <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
+                <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
+                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+              </div>
+              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-ingame="${i}">Chọn</button>
             </div>
-            <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-ingame="${i}">Chọn</button>
-          </div>
-        `
-        )
-        .join('');
+          `
+          )
+          .join('');
 
-      resultsEl.querySelectorAll('[data-pick-ingame]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const prof = list[Number(btn.dataset.pickIngame)];
-          btn.disabled = true;
-          btn.textContent = 'Đang lưu...';
-          try {
-            const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
-            if (sel.success && sel.customer) {
-              state.modalOrder.customer = sel.customer;
-              renderCreateOrderModalBody();
+        resultsEl.querySelectorAll('[data-pick-ingame]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const prof = list[Number(btn.dataset.pickIngame)];
+            btn.disabled = true;
+            btn.textContent = 'Đang lưu...';
+            try {
+              const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
+              if (sel.success && sel.customer) {
+                state.modalOrder.customer = sel.customer;
+                renderCreateOrderModalBody();
+              }
+            } catch (err) {
+              showToast(err.message);
+              btn.disabled = false;
+              btn.textContent = 'Chọn';
             }
-          } catch (err) {
-            showToast(err.message);
-            btn.disabled = false;
-            btn.textContent = 'Chọn';
-          }
+          });
         });
       });
     } catch (err) {
@@ -2012,33 +2048,35 @@ async function runModalCustomerSearch() {
       const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
       const list = r.customers || [];
       statusEl.textContent = `Hiển thị ${list.length} khách hàng:`;
-      resultsEl.innerHTML = list
-        .map(
-          (c) => `
-          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-            <div>
-              <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
-              <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+      renderLocalPages(resultsEl, list, visible => {
+        resultsEl.innerHTML = visible
+          .map(
+            (c) => `
+            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+              <div>
+                <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
+                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+              </div>
+              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-saved="${c.id}">Chọn</button>
             </div>
-            <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-saved="${c.id}">Chọn</button>
-          </div>
-        `
-        )
-        .join('');
+          `
+          )
+          .join('');
 
-      resultsEl.querySelectorAll('[data-pick-saved]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          try {
-            const det = await apiFetch(`/api/customer/saved/${btn.dataset.pickSaved}`);
-            if (det.success && det.customer) {
-              state.modalOrder.customer = det.customer;
-              renderCreateOrderModalBody();
+        resultsEl.querySelectorAll('[data-pick-saved]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+              const det = await apiFetch(`/api/customer/saved/${btn.dataset.pickSaved}`);
+              if (det.success && det.customer) {
+                state.modalOrder.customer = det.customer;
+                renderCreateOrderModalBody();
+              }
+            } catch (err) {
+              showToast(err.message);
+              btn.disabled = false;
             }
-          } catch (err) {
-            showToast(err.message);
-            btn.disabled = false;
-          }
+          });
         });
       });
     } catch (err) {
@@ -2256,31 +2294,33 @@ function openWeatherSlotModal(order) {
           const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
           const list = r.profiles || [];
           stEl.textContent = `Tìm thấy ${list.length} nhân vật:`;
-          resEl.innerHTML = list.map((p, i) => `
-            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-              <div>
-                <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
-                <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
-                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+          renderLocalPages(resEl, list, visible => {
+            resEl.innerHTML = visible.map((p, i) => `
+              <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+                <div>
+                  <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
+                  <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
+                  <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+                </div>
+                <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-ingame="${i}">Gán khách</button>
               </div>
-              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-ingame="${i}">Gán khách</button>
-            </div>
-          `).join('');
-          resEl.querySelectorAll('[data-wb-pick-ingame]').forEach((b) => {
-            b.addEventListener('click', async () => {
-              const prof = list[Number(b.dataset.wbPickIngame)];
-              b.disabled = true;
-              b.textContent = 'Đang gán...';
-              try {
-                const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
-                if (sel.success && sel.customer?.customerId) {
-                  await assignCustomerId(sel.customer.customerId);
+            `).join('');
+            resEl.querySelectorAll('[data-wb-pick-ingame]').forEach((b) => {
+              b.addEventListener('click', async () => {
+                const prof = list[Number(b.dataset.wbPickIngame)];
+                b.disabled = true;
+                b.textContent = 'Đang gán...';
+                try {
+                  const sel = await apiFetch('/api/customer/select-ingame', 'POST', { profile: prof });
+                  if (sel.success && sel.customer?.customerId) {
+                    await assignCustomerId(sel.customer.customerId);
+                  }
+                } catch (err) {
+                  showToast(err.message);
+                  b.disabled = false;
+                  b.textContent = 'Gán khách';
                 }
-              } catch (err) {
-                showToast(err.message);
-                b.disabled = false;
-                b.textContent = 'Gán khách';
-              }
+              });
             });
           });
         } catch (err) {
@@ -2303,20 +2343,22 @@ function openWeatherSlotModal(order) {
           const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
           const list = r.customers || [];
           stEl.textContent = `Hiển thị ${list.length} khách hàng:`;
-          resEl.innerHTML = list.map((c) => `
-            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
-              <div>
-                <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
-                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+          renderLocalPages(resEl, list, visible => {
+            resEl.innerHTML = visible.map((c) => `
+              <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+                <div>
+                  <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
+                  <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
+                </div>
+                <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-saved="${c.id}">Gán khách</button>
               </div>
-              <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-saved="${c.id}">Gán khách</button>
-            </div>
-          `).join('');
-          resEl.querySelectorAll('[data-wb-pick-saved]').forEach((b) => {
-            b.addEventListener('click', async () => {
-              b.disabled = true;
-              b.textContent = 'Đang gán...';
-              await assignCustomerId(Number(b.dataset.wbPickSaved));
+            `).join('');
+            resEl.querySelectorAll('[data-wb-pick-saved]').forEach((b) => {
+              b.addEventListener('click', async () => {
+                b.disabled = true;
+                b.textContent = 'Đang gán...';
+                await assignCustomerId(Number(b.dataset.wbPickSaved));
+              });
             });
           });
         } catch (err) {
@@ -2578,29 +2620,31 @@ async function openFruitWarehouseModal() {
   const renderList = (q = '') => {
     const cq = q.trim().toLowerCase();
     const list = cq ? fruits.filter((f) => f.name.toLowerCase().includes(cq)) : fruits;
-    grid.innerHTML = list
-      .map(
-        (f) => `
-        <div class="pkg-picker-card" data-wh-fruit="${f.id}">
-          <div style="display:flex;align-items:center;gap:10px;">
-            ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:36px;height:36px;object-fit:contain;" alt="" />` : '🍎'}
-            <div>
-              <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(f.name)}</div>
-              <div style="font-size:11px;color:#4ade80;">Tồn kho: ${formatNum(f.stock_quantity)}</div>
-              <div style="font-size:11px;color:#fbbf24;">Giá: ${formatVnd(f.unit_price)}/trái</div>
+    renderLocalPages(grid, list, visible => {
+      grid.innerHTML = visible
+        .map(
+          (f) => `
+          <div class="pkg-picker-card" data-wh-fruit="${f.id}">
+            <div style="display:flex;align-items:center;gap:10px;">
+              ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:36px;height:36px;object-fit:contain;" alt="" />` : '🍎'}
+              <div>
+                <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(f.name)}</div>
+                <div style="font-size:11px;color:#4ade80;">Tồn kho: ${formatNum(f.stock_quantity)}</div>
+                <div style="font-size:11px;color:#fbbf24;">Giá: ${formatVnd(f.unit_price)}/trái</div>
+              </div>
             </div>
           </div>
-        </div>
-      `
-      )
-      .join('');
+        `
+        )
+        .join('');
 
-    grid.querySelectorAll('[data-wh-fruit]').forEach((card) => {
-      card.addEventListener('click', () => {
-        openCreateOrderModal('fruit_coin', {
-          fruitOrderType: 'by_fruit',
-          category: 'fruit_by_fruit',
-          fruit_item_id: Number(card.dataset.whFruit),
+      grid.querySelectorAll('[data-wh-fruit]').forEach((card) => {
+        card.addEventListener('click', () => {
+          openCreateOrderModal('fruit_coin', {
+            fruitOrderType: 'by_fruit',
+            category: 'fruit_by_fruit',
+            fruit_item_id: Number(card.dataset.whFruit),
+          });
         });
       });
     });
@@ -2633,37 +2677,39 @@ async function openCoinWarehouseModal() {
   const coin = state.catalogData.coinStock || {};
   const tiers = state.catalogData.coinTiers || [];
 
-  body.innerHTML = `
-    <div style="background:rgba(38,150,132,0.16);padding:16px;border-radius:12px;box-shadow:var(--shadow-subtle);">
-      <div style="font-size:12px;color:var(--color-moon-mist);">Tổng trữ lượng Xu sẵn sàng giao:</div>
-      <div style="font-size:26px;font-weight:700;color:#4ade80;margin-top:4px;">${formatNum(coin.quantity || 0)} Xu</div>
-      <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tốc độ sản xuất ước tính: ~${formatNum(coin.estimated_per_hour || 0)} Xu/giờ</div>
-    </div>
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Phân khúc giá trái</th>
-            <th>Phụ phí chọn lọc</th>
-            <th>Trữ lượng khả dụng</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${tiers
-            .map(
-              (t) => `
+  renderLocalPages(body, tiers, visible => {
+    body.innerHTML = `
+      <div style="background:rgba(38,150,132,0.16);padding:16px;border-radius:12px;box-shadow:var(--shadow-subtle);">
+        <div style="font-size:12px;color:var(--color-moon-mist);">Tổng trữ lượng Xu sẵn sàng giao:</div>
+        <div style="font-size:26px;font-weight:700;color:#4ade80;margin-top:4px;">${formatNum(coin.quantity || 0)} Xu</div>
+        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tốc độ sản xuất ước tính: ~${formatNum(coin.estimated_per_hour || 0)} Xu/giờ</div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
             <tr>
-              <td>Trái từ <strong>${formatNum(t.min_coin)} Xu</strong> trở lên</td>
-              <td><span class="badge-tag ${t.markup_percent > 0 ? 'amber' : 'green'}">+${t.markup_percent}%</span></td>
-              <td><strong>${formatNum(t.quantity)} Xu</strong></td>
+              <th>Phân khúc giá trái</th>
+              <th>Phụ phí chọn lọc</th>
+              <th>Trữ lượng khả dụng</th>
             </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
+          </thead>
+          <tbody>
+            ${visible
+              .map(
+                (t) => `
+              <tr>
+                <td>Trái từ <strong>${formatNum(t.min_coin)} Xu</strong> trở lên</td>
+                <td><span class="badge-tag ${t.markup_percent > 0 ? 'amber' : 'green'}">+${t.markup_percent}%</span></td>
+                <td><strong>${formatNum(t.quantity)} Xu</strong></td>
+              </tr>
+            `
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  });
 }
 
 async function openCategoryPriceListModal(catKey) {
@@ -2686,61 +2732,16 @@ async function openCategoryPriceListModal(catKey) {
 
   if (!items.length) {
     body.innerHTML = `<div style="color:var(--color-fog-veil);padding:16px 0;">Hiện chưa có gói giá nào đang mở bán cho danh mục này.</div>`;
-  } else if (isGiftCat) {
-    body.innerHTML = `
-      <div style="display:flex;flex-direction:column;gap:12px;max-height:440px;overflow-y:auto;">
-        ${items
-          .map(
-            (g) => `
-          <div style="background:rgba(255,255,255,0.03);padding:12px;border-radius:10px;">
-            <div style="font-weight:600;color:#fff;margin-bottom:8px;">${escapeHtml(g.name)}</div>
-            <div class="pkg-picker-list" style="max-height:none;">
-              ${(g.packages || [])
-                .map(
-                  (p) => `
-                <div class="pkg-picker-card">
-                  <div style="display:flex;justify-content:space-between;gap:6px;">
-                    <strong style="color:#fff;">Số lượng ${formatNum(p.quantity)}</strong>
-                    ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Sale còn ${p.sale.slots_remaining}</span>` : ''}
-                  </div>
-                  <div style="display:flex;align-items:baseline;gap:8px;">
-                    <span style="font-size:16px;font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
-                    ${p.is_on_sale && p.original_price > p.total_price ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
-                  </div>
-                </div>
-              `
-                )
-                .join('')}
-            </div>
-          </div>
-        `
-          )
-          .join('')}
-      </div>
-    `;
   } else {
-    const unitMap = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
-    const unit = unitMap[catKey] || '';
-    body.innerHTML = `
-      <div class="pkg-picker-list" style="max-height:420px;">
-        ${items
-          .map(
-            (p) => `
-          <div class="pkg-picker-card">
-            <div style="display:flex;justify-content:space-between;gap:6px;">
-              <strong style="color:#fff;">Gói ${formatNum(p.quantity || p.coin_quantity)} ${unit}</strong>
-              ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Sale còn ${p.sale.slots_remaining} slot</span>` : ''}
-            </div>
-            <div style="display:flex;align-items:baseline;gap:8px;">
-              <span style="font-size:16px;font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
-              ${p.is_on_sale && p.original_price > p.total_price ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
-            </div>
-          </div>
-        `
-          )
-          .join('')}
-      </div>
-    `;
+    const units = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
+    const rows = isGiftCat ? items.flatMap(g => (g.packages || []).map(pkg => ({ ...pkg, giftName: g.name }))) : items;
+    renderLocalPages(body, rows, visible => {
+      body.innerHTML = `<div class="pkg-picker-list">${visible.map(pkg => `<div class="pkg-picker-card">
+        <strong>${escapeHtml(pkg.giftName || 'Gói')} · ${formatNum(pkg.quantity || pkg.coin_quantity)} ${units[catKey] || ''}</strong>
+        <div>${formatVnd(pkg.total_price)} ${pkg.is_on_sale && pkg.original_price > pkg.total_price ? `<del>${formatVnd(pkg.original_price)}</del>` : ''}</div>
+        ${pkg.is_on_sale && pkg.sale ? `<span class="badge-tag amber">Sale còn ${formatNum(pkg.sale.slots_remaining)} slot</span>` : ''}
+      </div>`).join('')}</div>`;
+    });
   }
   overlay.style.display = 'flex';
 }
@@ -2753,7 +2754,7 @@ function renderDashboardOverviewHtml() {
   const st = r?.systemStatus || {};
   const coinQty = r?.coinStock?.quantity || 0;
   const totalFruits = (r?.catalog?.fruit_by_fruit || []).reduce((s, f) => s + Number(f.stock_quantity || 0), 0);
-  const activeOrders = state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
+  const activeOrders = state.orderPage?.activeCount ?? state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
 
   const catCards = [
     { key: 'farm_gift', icon: '🏪', name: 'Quà nông trại', working: st.farm_gift },
@@ -2776,7 +2777,7 @@ function renderDashboardOverviewHtml() {
       <div class="glass-panel">
         <div style="font-size:12px;color:var(--color-moon-mist);">Đơn hàng đang chạy</div>
         <div style="font-size:24px;font-weight:700;color:#fff;margin-top:6px;">${activeOrders} đơn đang bật</div>
-        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tổng số đơn: ${state.orders.length} đơn</div>
+        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tổng số đơn: ${state.orderPage?.totalCount ?? state.orders.length} đơn</div>
       </div>
 
       <div class="glass-panel">
@@ -2830,7 +2831,7 @@ function bindDashboardEvents() {
 // ============================================================================
 async function renderWeeklySettlementsView(container, zeroBannerHtml) {
   try {
-    const r = await apiFetch('/api/settlements');
+    const r = await apiFetch(`/api/settlements?limit=${pageLimit('settlements')}`);
     if (state.currentView !== 'weekly_settlements') return;
     const isAdmin = state.user.role === 'admin';
     const trxList = r.transactions || [];
@@ -2923,6 +2924,7 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
             </tbody>
           </table>
         </div>
+        ${moreButton('settlements', r.transactionCount, 0, trxList.length)}
       </div>
     `;
   } catch (err) {
@@ -2936,7 +2938,7 @@ function renderOrderHistoryHtml() {
     ${state.ordersWarning ? `<p class="tool-warning" role="status">${escapeHtml(state.ordersWarning)}</p>` : ''}
     <div class="glass-panel">
       <div class="panel-title-row">
-        <span class="panel-title-text">📄 Toàn bộ Lịch sử đơn hàng (${state.orders.length} đơn)</span>
+        <span class="panel-title-text">📄 Toàn bộ Lịch sử đơn hàng (${state.orderPage?.totalCount ?? state.orders.length} đơn)</span>
         <input type="text" id="histSearchInput" class="input-box" style="max-width:280px;" placeholder="🔍 Tìm tên khách, mã đơn, SUID..." value="${escapeHtml(state.orderSearch)}" />
       </div>
       <div class="table-wrap">
@@ -2965,7 +2967,7 @@ function renderOrderHistoryHtml() {
 
 function renderOrderHistoryTbodyHtml() {
   const q = state.orderSearch.trim().toLowerCase();
-  const list = state.orders.filter((o) => {
+  const list = state.orderPage ? state.orders : state.orders.filter((o) => {
     if (!q) return true;
     return (
       String(o.customer?.nickname || '').toLowerCase().includes(q) ||
@@ -2976,7 +2978,8 @@ function renderOrderHistoryTbodyHtml() {
   if (list.length === 0) {
     return `<tr><td colspan="9" style="text-align:center;padding:28px;color:var(--color-fog-veil);">${state.loadingOrders ? '<span class="loading-inline"><span class="loading-dot"></span>Đang đồng bộ lịch sử đơn...</span>' : 'Không có dữ liệu'}</td></tr>`;
   }
-  return list.map((o) => renderOrderTableRowHtml(o, { inHistory: true })).join('');
+  return list.slice(0, pageLimit('orderList')).map(o => renderOrderTableRowHtml(o, { inHistory: true })).join('')
+    + moreButton('orderList', state.orderPage?.filteredCount ?? list.length, 9, Math.min(list.length, pageLimit('orderList')));
 }
 
 let histFilterTimer = null;
@@ -2985,7 +2988,9 @@ function bindOrderHistoryEvents() {
   input?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
     if (histFilterTimer && typeof clearTimeout === 'function') clearTimeout(histFilterTimer);
-    histFilterTimer = setTimeout(() => {
+    histFilterTimer = setTimeout(async () => {
+      state.listLimits.orderList = 20;
+      await loadOrders();
       const tbody = document.getElementById('histOrdersTbody');
       if (!tbody) return;
       tbody.innerHTML = renderOrderHistoryTbodyHtml();
@@ -3285,7 +3290,7 @@ function renderAdminPricingPageHtml() {
               ${
                 filteredPackages.length === 0
                   ? `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Hiện nguồn API chưa mở gói nào cho danh mục này.</td></tr>`
-                  : filteredPackages
+                  : filteredPackages.slice(0, pageLimit('pricePackages'))
                       .map((p) => {
                         const pctProfit = p.costPrice > 0 ? Math.round((p.profit / p.costPrice) * 100) : 0;
                         return `
@@ -3330,6 +3335,7 @@ function renderAdminPricingPageHtml() {
                       })
                       .join('')
               }
+              ${moreButton('pricePackages', filteredPackages.length, 6)}
             </tbody>
           </table>
         </div>
@@ -3396,7 +3402,7 @@ function renderAdminFruitRowsHtml(fruits) {
     return `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Không tìm thấy trái cây phù hợp.</td></tr>`;
   }
 
-  return fruits
+  return fruits.slice(0, pageLimit('priceFruits'))
     .map((f) => {
       const cost = f._admin?.cost_unit_price ?? 0;
       const sell = f.unit_price;
@@ -3447,7 +3453,7 @@ function renderAdminFruitRowsHtml(fruits) {
         </tr>
       `;
     })
-    .join('');
+    .join('') + moreButton('priceFruits', fruits.length, 6);
 }
 
 async function savePricingSettingsAndReload(payload, successMsg) {
@@ -3457,8 +3463,8 @@ async function savePricingSettingsAndReload(payload, successMsg) {
   renderCurrentView();
 }
 
-function bindAdminFruitRowEvents() {
-  document.querySelectorAll('.adm-fruit-unit-input').forEach((inp) => {
+function bindAdminFruitRowEvents(scope = document) {
+  scope.querySelectorAll('.adm-fruit-unit-input').forEach((inp) => {
     inp.addEventListener('input', () => {
       inp.dataset.dirty = '1';
       const fid = inp.dataset.fruitId;
@@ -3480,7 +3486,7 @@ function bindAdminFruitRowEvents() {
     });
   });
 
-  document.querySelectorAll('[data-save-fruit-row]').forEach((btn) => {
+  scope.querySelectorAll('[data-save-fruit-row]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const fid = btn.dataset.saveFruitRow;
       const inp = document.querySelector(`.adm-fruit-unit-input[data-fruit-id="${fid}"]`);
@@ -3506,7 +3512,7 @@ function bindAdminFruitRowEvents() {
     });
   });
 
-  document.querySelectorAll('[data-reset-fruit-override]').forEach((btn) => {
+  scope.querySelectorAll('[data-reset-fruit-override]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const fid = btn.dataset.resetFruitOverride;
       btn.disabled = true;
@@ -3519,7 +3525,7 @@ function bindAdminFruitRowEvents() {
     });
   });
 
-  document.querySelectorAll('[data-open-mut-pricing]').forEach((btn) => {
+  scope.querySelectorAll('[data-open-mut-pricing]').forEach((btn) => {
     btn.addEventListener('click', () => {
       openAdminMutationPricingModal(Number(btn.dataset.openMutPricing));
     });
@@ -3567,6 +3573,69 @@ function buildCategoryPayload(catKey) {
 }
 
 let admFruitSearchTimer = null;
+function bindPackageRows(scope = document) {
+  scope.querySelectorAll('.adm-pkg-override-input').forEach((inp) => {
+    inp.addEventListener('input', () => {
+      inp.dataset.dirty = '1';
+      const key = inp.dataset.pkgKey;
+      const cost = Number(inp.dataset.cost || 0);
+      const sell = Number(inp.value || 0);
+      const prof = sell - cost;
+      const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
+      const badge = document.getElementById(`admPkgProfit_${key.replace(':', '_')}`);
+      if (badge) {
+        badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})`;
+        badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
+      }
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.querySelector(`[data-save-pkg-row="${inp.dataset.pkgKey}"]`)?.click();
+      }
+    });
+  });
+
+  scope.querySelectorAll('[data-save-pkg-row]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = btn.dataset.savePkgRow;
+      const inp = document.querySelector(`.adm-pkg-override-input[data-pkg-key="${key}"]`);
+      if (!inp) return;
+      const val = Number(inp.value);
+      const cost = Number(inp.dataset.cost || 0);
+      if (!Number.isFinite(val) || val <= 0) {
+        showToast('Giá bán gói phải lớn hơn 0đ (hoặc bấm ↺ Tự động để gỡ giá riêng).');
+        return;
+      }
+      if (val < cost) {
+        showToast(`Lưu ý: Giá nhập (${formatVnd(val)}) thấp hơn giá gốc (${formatVnd(cost)}) — hệ thống tự giữ tối thiểu bằng giá gốc.`);
+      }
+      btn.disabled = true;
+      btn.textContent = 'Đang lưu...';
+      try {
+        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: Math.round(val) } }, 'Đã cập nhật giá gói thành công!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
+        btn.textContent = '✓ Cập nhật';
+      }
+    });
+  });
+
+  scope.querySelectorAll('[data-reset-pkg-override]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = btn.dataset.resetPkgOverride;
+      btn.disabled = true;
+      try {
+        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: null } }, 'Đã đặt lại gói về chế độ giá tự động!');
+      } catch (err) {
+        showToast(`Lỗi: ${err.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 function bindAdminPricingEvents() {
   document.getElementById('btnRefreshAdminPricing')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnRefreshAdminPricing');
@@ -3686,71 +3755,13 @@ function bindAdminPricingEvents() {
   // --- TAB 2: FIXED PACKAGES ---
   document.querySelectorAll('[data-adm-pkg-filter]').forEach((btn) => {
     btn.addEventListener('click', () => {
+      state.listLimits.pricePackages = 20;
       state.adminPkgCatFilter = btn.dataset.admPkgFilter;
       renderCurrentView();
     });
   });
 
-  document.querySelectorAll('.adm-pkg-override-input').forEach((inp) => {
-    inp.addEventListener('input', () => {
-      inp.dataset.dirty = '1';
-      const key = inp.dataset.pkgKey;
-      const cost = Number(inp.dataset.cost || 0);
-      const sell = Number(inp.value || 0);
-      const prof = sell - cost;
-      const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
-      const badge = document.getElementById(`admPkgProfit_${key.replace(':', '_')}`);
-      if (badge) {
-        badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})`;
-        badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
-      }
-    });
-    inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        document.querySelector(`[data-save-pkg-row="${inp.dataset.pkgKey}"]`)?.click();
-      }
-    });
-  });
-
-  document.querySelectorAll('[data-save-pkg-row]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const key = btn.dataset.savePkgRow;
-      const inp = document.querySelector(`.adm-pkg-override-input[data-pkg-key="${key}"]`);
-      if (!inp) return;
-      const val = Number(inp.value);
-      const cost = Number(inp.dataset.cost || 0);
-      if (!Number.isFinite(val) || val <= 0) {
-        showToast('Giá bán gói phải lớn hơn 0đ (hoặc bấm ↺ Tự động để gỡ giá riêng).');
-        return;
-      }
-      if (val < cost) {
-        showToast(`Lưu ý: Giá nhập (${formatVnd(val)}) thấp hơn giá gốc (${formatVnd(cost)}) — hệ thống tự giữ tối thiểu bằng giá gốc.`);
-      }
-      btn.disabled = true;
-      btn.textContent = 'Đang lưu...';
-      try {
-        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: Math.round(val) } }, 'Đã cập nhật giá gói thành công!');
-      } catch (err) {
-        showToast(`Lỗi: ${err.message}`);
-        btn.disabled = false;
-        btn.textContent = '✓ Cập nhật';
-      }
-    });
-  });
-
-  document.querySelectorAll('[data-reset-pkg-override]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const key = btn.dataset.resetPkgOverride;
-      btn.disabled = true;
-      try {
-        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: null } }, 'Đã đặt lại gói về chế độ giá tự động!');
-      } catch (err) {
-        showToast(`Lỗi: ${err.message}`);
-        btn.disabled = false;
-      }
-    });
-  });
+  bindPackageRows();
 
   // --- TAB 3: FRUITS ---
   let activeFruitBarMode = state.adminOverview?.settings?.categoryMarkupModes?.fruit_by_fruit === 'percent' ? 'percent' : 'fixed';
@@ -3792,13 +3803,15 @@ function bindAdminPricingEvents() {
   });
 
   document.getElementById('admFruitFilterSelect')?.addEventListener('change', (e) => {
+    state.listLimits.priceFruits = 20;
     state.adminFruitFilter = e.target.value;
     renderCurrentView();
   });
 
   const searchIn = document.getElementById('admFruitSearchInput');
   searchIn?.addEventListener('input', (e) => {
-    state.adminFruitSearch = e.target.value;
+    state.listLimits.priceFruits = 20;
+      state.adminFruitSearch = e.target.value;
     if (admFruitSearchTimer && typeof clearTimeout === 'function') clearTimeout(admFruitSearchTimer);
     admFruitSearchTimer = setTimeout(() => {
       const tbody = document.getElementById('admFruitTbody');
@@ -4145,7 +4158,7 @@ function renderAdminCtvPageHtml() {
             </tr>
           </thead>
           <tbody>
-            ${ctvs
+            ${ctvs.slice(0, pageLimit('accounts'))
               .map(
                 (u) => `
               <tr>
@@ -4180,6 +4193,7 @@ function renderAdminCtvPageHtml() {
             `
               )
               .join('')}
+            ${moreButton('accounts', ctvs.length, 7)}
           </tbody>
         </table>
       </div>
@@ -4247,9 +4261,6 @@ function bindAdminCtvEvents() {
       btn.disabled = false;
     }
   });
-  document.querySelectorAll('[data-reset-ctv]').forEach(button => button.addEventListener('click', async () => {
-    openResetCtvPasswordModal(button.dataset.resetCtv);
-  }));
   document.getElementById('btnCreateCtvSubmit')?.addEventListener('click', async () => {
     const name = document.getElementById('newCtvName')?.value || '';
     const username = document.getElementById('newCtvUsername')?.value || '';
@@ -4267,13 +4278,20 @@ function bindAdminCtvEvents() {
     }
   });
 
-  document.querySelectorAll('[data-topup-ctv]').forEach((btn) => {
+  bindAccountRows();
+}
+
+function bindAccountRows(scope = document) {
+  scope.querySelectorAll('[data-reset-ctv]').forEach(button => button.addEventListener('click', async () => {
+    openResetCtvPasswordModal(button.dataset.resetCtv);
+  }));
+  scope.querySelectorAll('[data-topup-ctv]').forEach((btn) => {
     btn.addEventListener('click', () => {
       openTopupCtvModal(btn.dataset.topupCtv, btn.dataset.ctvName);
     });
   });
 
-  document.querySelectorAll('[data-lock-ctv]').forEach((btn) => {
+  scope.querySelectorAll('[data-lock-ctv]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.lockCtv;
       const locked = btn.dataset.locked === '1';
@@ -4288,7 +4306,7 @@ function bindAdminCtvEvents() {
     });
   });
 
-  document.querySelectorAll('[data-del-ctv]').forEach((btn) => {
+  scope.querySelectorAll('[data-del-ctv]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       if (!confirm('Ngừng tài khoản CTV này? Các phiên sẽ bị thu hồi; số dư và lịch sử vẫn được giữ để đối soát.')) return;
       try {
@@ -4567,6 +4585,33 @@ function bindAdminSystemEvents() {
 // GLOBAL EVENTS & BOOTSTRAP
 // ============================================================================
 function bindGlobalEvents() {
+  document.addEventListener('click', async event => {
+    const btn = event.target.closest('[data-list-more]');
+    if (!btn || btn.disabled) return;
+    const key = btn.dataset.listMore;
+    const view = state.currentView;
+    btn.disabled = true;
+    state.listLimits[key] = Number(btn.dataset.shown) + 20;
+    if (key === 'modalPackages') renderCreateOrderModalBody();
+    else if (view === 'admin_monitor') await loadAdminMonitor();
+    else if (key === 'orderList') {
+      await loadOrders();
+      if (view === state.currentView) renderCurrentView();
+    } else if (['pricePackages','priceFruits','accounts'].includes(key)) {
+      const tbody = btn.closest('tbody');
+      const template = document.createElement('template');
+      template.innerHTML = key === 'accounts' ? renderAdminCtvPageHtml() : renderAdminPricingPageHtml();
+      const index = [...document.querySelectorAll('#mainViewContainer tbody')].indexOf(tbody);
+      const batch = document.createDocumentFragment();
+      const rendered = template.content.querySelectorAll('tbody')[index];
+      for (const row of [...rendered.rows].slice(tbody.rows.length - 1)) batch.append(row);
+      const bind = { accounts: bindAccountRows, priceFruits: bindAdminFruitRowEvents, pricePackages: bindPackageRows };
+      bind[key](batch);
+      btn.closest('tr').replaceWith(batch);
+    } else renderCurrentView();
+    btn.disabled = false;
+  });
+
   // Catalog auto-sync schedule: Admin every 1 min, CTV every 10 min (zero lag; pre-order modal ALWAYS live-syncs!).
   let lastClientCatalogSyncAt = Date.now();
   setInterval(async () => {

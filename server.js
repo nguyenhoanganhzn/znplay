@@ -527,6 +527,40 @@ if (process.env.DATABASE_URL) {
   if (loaded.migrated) await saveDb(db);
 }
 
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+// Sunday 00:00 in Vietnam corresponds to Saturday 17:00 UTC.
+function vietnamWeekStart(now = Date.now()) {
+  const anchor = Date.UTC(1970, 0, 3, 17);
+  return anchor + Math.floor((now - anchor) / WEEK_MS) * WEEK_MS;
+}
+
+function isPastOrderHistory(order, cutoff) {
+  return Date.parse(order.createdAt) < cutoff && ['completed', 'cancelled'].includes(order.status)
+    && !order.requiresReview && !order.refundPending && !order.cancelRequested;
+}
+
+function pruneWeekHistory(cutoff) {
+  const orders = db.localOrders.filter(order => !isPastOrderHistory(order, cutoff));
+  const events = db.auditLog.filter(event => !(Date.parse(event.createdAt) < cutoff));
+  if (orders.length === db.localOrders.length && events.length === db.auditLog.length) return false;
+  db.localOrders = orders;
+  db.auditLog = events;
+  return true;
+}
+
+let cleanedWeek = vietnamWeekStart();
+if (pruneWeekHistory(cleanedWeek)) await saveDb(db);
+
+async function rollWeekIfNeeded() {
+  const cutoff = vietnamWeekStart();
+  if (cleanedWeek === cutoff) return;
+  cleanedWeek = cutoff;
+  orderCache = {};
+  if (pruneWeekHistory(cutoff)) await saveDb(db);
+}
+
+app.use('/api', (req, res, next) => rollWeekIfNeeded().then(() => next(), next));
+
 function pushAuditRecord(actor, action, details = {}) {
   db.auditLog.unshift({
     id: crypto.randomUUID(), actorId: actor.id, actorName: actor.name,
@@ -2671,7 +2705,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     };
 
     db.localOrders.unshift(localOrder);
-    orderCache = {};
+    orderCache = { previous: orderCache.result || orderCache.previous };
     const debit = db.transactions.find(t => t.id === intent.id);
     if (debit) { debit.type = 'order_debit'; debit.note = `Tạo đơn ${localOrder.categoryName}: ${localOrder.summary}`; }
     intent.status = 'completed';
@@ -2716,17 +2750,17 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
 // ORDERS LIST & LIVE TELEMETRY SYNC (STRICT ISOLATION FOR CTV!)
 // ============================================================================
 const orderPaths = [
-  '/api/fruit-coin-orders?page=1&per_page=25&status_group=active&include_summary=1',
-  '/api/fruit-coin-orders?page=1&per_page=15&status_group=completed',
-  '/api/buff-tim-orders?page=1&per_page=25&status_group=active&include_summary=1',
-  '/api/buff-tim-orders?page=1&per_page=15&status_group=completed',
-  '/api/buff-sao-orders?page=1&per_page=25&status_group=active&include_summary=1',
-  '/api/buff-sao-orders?page=1&per_page=15&status_group=completed',
-  '/api/guestbook-orders?page=1&per_page=25',
-  '/api/farm-gift-orders?page=1&per_page=25',
-  '/api/mail-gift-orders?page=1&per_page=25',
-  '/api/weather-buff-orders?page=1&per_page=25&status_group=active&include_summary=1',
-  '/api/weather-buff-orders?page=1&per_page=15&status_group=completed',
+  '/api/fruit-coin-orders?page=1&per_page=100&status_group=active&include_summary=1',
+  '/api/fruit-coin-orders?page=1&per_page=100&status_group=completed',
+  '/api/buff-tim-orders?page=1&per_page=100&status_group=active&include_summary=1',
+  '/api/buff-tim-orders?page=1&per_page=100&status_group=completed',
+  '/api/buff-sao-orders?page=1&per_page=100&status_group=active&include_summary=1',
+  '/api/buff-sao-orders?page=1&per_page=100&status_group=completed',
+  '/api/guestbook-orders?page=1&per_page=100',
+  '/api/farm-gift-orders?page=1&per_page=100',
+  '/api/mail-gift-orders?page=1&per_page=100',
+  '/api/weather-buff-orders?page=1&per_page=100&status_group=active&include_summary=1',
+  '/api/weather-buff-orders?page=1&per_page=100&status_group=completed',
 ];
 
 const ORDER_FRESH_MS = 15000;
@@ -2750,11 +2784,40 @@ async function loadRemoteOrders(force = false) {
   finally { cache.pending = null; }
 }
 
+async function fetchOrderGroup(path, previous) {
+  const rows = new Map();
+  let first;
+  try {
+    for (let page = 1; ; page++) {
+      const response = await hnApiCall(path.replace('page=1&', `page=${page}&`));
+      const data = response?.data;
+      if (!Array.isArray(data?.data) || (data.current_page != null && Number(data.current_page) !== page)) {
+        throw new Error('Trang đơn nguồn không hợp lệ.');
+      }
+      first ??= response;
+      const before = rows.size;
+      for (const order of data.data) if (order?.id != null) rows.set(String(order.id), order);
+      if (page > 1 && rows.size === before && data.data.length) throw new Error('Trang đơn nguồn bị lặp.');
+      if (data.last_page != null ? page >= Number(data.last_page) : !data.next_page_url) break;
+      if (!data.data.length) throw new Error('Trang đơn nguồn bị thiếu.');
+    }
+    if (first.data.total != null && Number(first.data.total) !== rows.size) {
+      throw new Error('Tổng số đơn nguồn thay đổi trong khi tải.');
+    }
+    return { page: { ...first, data: { ...first.data, data: [...rows.values()] } }, partial: false };
+  } catch {
+    for (const order of previous?.data?.data || []) if (!rows.has(String(order.id))) rows.set(String(order.id), order);
+    const source = first || previous;
+    return { page: source && { ...source, data: { ...source.data, data: [...rows.values()] } }, partial: true };
+  }
+}
+
 async function fetchRemoteOrderPages(cache) {
-  const responses = await Promise.allSettled(orderPaths.map(path => hnApiCall(path)));
-  const partial = responses.some(r => r.status === 'rejected');
-  const pages = responses.map((r, i) => r.status === 'fulfilled' ? r.value : cache.result?.pages[i]);
+  const groups = await Promise.all(orderPaths.map((path, i) => fetchOrderGroup(path, (cache.result || cache.previous)?.pages[i])));
+  const pages = groups.map(group => group.page);
+  const partial = groups.some(group => group.partial);
   cache.result = { pages, partial };
+  delete cache.previous;
   const finishedAt = Date.now();
   cache.until = finishedAt + (partial ? 2000 : ORDER_FRESH_MS);
   cache.staleUntil = finishedAt + (partial ? 5000 : ORDER_STALE_MS);
@@ -2772,7 +2835,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     if (force) orderCache.lastForceAt = now;
 
     if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
-      return res.json({ success: true, orders: [], partial: false });
+      return res.json({ success: true, orders: [], partial: false, page: { totalCount: 0, activeCount: 0, filteredCount: 0 } });
     }
     const remote = await loadRemoteOrders(force);
 
@@ -2817,6 +2880,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     for (const lo of db.localOrders) {
       if (lo.remoteOrderId) {
         const rem = remoteMap.get(`${lo.category}:${lo.remoteOrderId}`);
+        if (rem) matchedRemoteKeys.add(`${rem._category}:${rem.id}`);
         if (rem && lo.status !== 'cancelled') {
           lo.status = rem.status || lo.status;
           lo.isActive = rem.is_active ?? lo.isActive;
@@ -2839,17 +2903,32 @@ app.get('/api/orders', requireAuth, async (req, res) => {
                 }
               : { customerId: null, gameProfileId: null, nickname: 'Chưa gán khách', suid: '' };
           } else if (rem.customer) {
+            lo.customer ??= {};
             lo.customer.nickname = rem.customer.nickname || lo.customer.nickname;
             lo.customer.suid = rem.customer.suid || lo.customer.suid;
           }
-          matchedRemoteKeys.add(`${rem._category}:${rem.id}`);
         }
       }
     }
 
-    // Build list: hide cancelled orders so they never clutter UI or skew stats; CTV only sees own orders!
+    const cutoff = vietnamWeekStart();
+    // Once the source confirms its full list, remove last week's orders that it has cleared.
+    if (!remote.partial) {
+      const retained = db.localOrders.filter(o => !(Date.parse(o.createdAt) < cutoff && o.remoteOrderId
+        && !o.requiresReview && !o.cancelRequested && !o.refundPending
+        && !remoteMap.has(`${o.category}:${o.remoteOrderId}`)));
+      if (retained.length !== db.localOrders.length) {
+        db.localOrders = retained;
+        req.needsSave = true;
+      }
+    }
+    if (db.localOrders.some(o => isPastOrderHistory(o, cutoff))) {
+      pruneWeekHistory(cutoff);
+      req.needsSave = true;
+    }
+    // Scope the list before including source-only orders for administrators.
     let results = db.localOrders
-      .filter((lo) => lo.status !== 'cancelled' && (isAdmin || lo.placedBy?.id === user.id))
+      .filter((lo) => isAdmin || lo.placedBy?.id === user.id)
       .map((lo) => ({
         id: lo.id,
         remoteOrderId: lo.remoteOrderId,
@@ -2890,6 +2969,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         if (key.startsWith('any:')) continue;
         if (matchedRemoteKeys.has(key)) continue;
 
+        if (isPastOrderHistory({ createdAt: rem.created_at, status: rem.status }, cutoff)) continue;
         const cat = rem._category;
         const cost = Number(rem.total_price || 0);
         let summary = '';
@@ -2925,7 +3005,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         }
 
         results.push({
-          id: `HN-${rem.id}`,
+          id: `HN-${cat}-${rem.id}`,
           remoteOrderId: rem.id,
           category: cat,
           categoryName: CATEGORY_METADATA[cat]?.menuLabel || cat,
@@ -2941,7 +3021,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           sellPrice: cost,
           placedBy: {
             id: 'usr_admin_1',
-            name: rem.creator?.name || 'Admin (Gốc)',
+            name: rem.creator?.name || 'HoanNguyen',
             role: 'admin',
           },
           status: rem.status || 'assigned',
@@ -2959,6 +3039,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       }
     }
 
+    const totalCount = results.length;
+    const activeCount = results.filter(o => !['completed','cancelled'].includes(o.status) && o.isActive).length;
     if (categoryFilter && categoryFilter !== 'all') {
       if (categoryFilter === 'fruit_all') {
         results = results.filter((o) => o.category === 'fruit_coin' || o.category === 'fruit_by_fruit');
@@ -2969,9 +3051,34 @@ app.get('/api/orders', requireAuth, async (req, res) => {
 
     results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+    let page;
+    if (req.query.limit !== undefined) {
+      const stats = { total_orders: results.length, completed_orders: 0, active_orders: 0, inactive_orders: 0,
+        total_units: 0, completed_units: 0, active_units: 0, inactive_units: 0 };
+      for (const o of results) {
+        stats.total_units += Number(o.totalCnt || 0);
+        stats.completed_units += Number(o.completedCnt || 0);
+        if (o.status === 'completed') stats.completed_orders++;
+        else if (o.status !== 'cancelled') {
+          stats[o.isActive ? 'active_orders' : 'inactive_orders']++;
+          stats[o.isActive ? 'active_units' : 'inactive_units'] += Math.max(0, o.totalCnt - o.completedCnt);
+        }
+      }
+      const q = String(req.query.q || '').trim().toLowerCase();
+      results = results.filter(o => {
+        if (req.query.active === '1' && !o.isActive || req.query.active === '0' && o.isActive) return false;
+        if (req.query.progress === 'completed' && o.status !== 'completed') return false;
+        if (req.query.progress === 'running' && ['completed','cancelled'].includes(o.status)) return false;
+        return !q || [o.customer?.nickname, o.customer?.suid, o.remoteOrderId, o.id, o.weather?.trackUrl].some(v => String(v ?? '').toLowerCase().includes(q));
+      });
+      page = { totalCount, activeCount, categoryStats: stats, filteredCount: results.length };
+      results = results.slice(0, listLimit(req.query.limit));
+    }
+
     res.json({
       success: true,
       orders: results,
+      page,
       partial: remote.partial,
       remoteSummaries: isAdmin
         ? {
@@ -3024,7 +3131,7 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
       }
     }
     const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}/toggle-active`, 'PUT');
-    orderCache = {};
+    orderCache = { previous: orderCache.result || orderCache.previous };
     if (lo && r?.data) {
       lo.isActive = r.data.is_active ?? !lo.isActive;
       if (r.data.status) lo.status = r.data.status;
@@ -3112,7 +3219,7 @@ app.put('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, fina
     if (!r?.success) {
       return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể gán khách hàng vào đơn này.') });
     }
-    orderCache = {};
+    orderCache = { previous: orderCache.result || orderCache.previous };
     if (ctx.lo) {
       applyWeatherRemoteUpdate(ctx.lo, r.data);
       req.needsSave = true;
@@ -3147,7 +3254,7 @@ app.delete('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, f
     if (!r?.success) {
       return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể gỡ khách hàng khỏi đơn này.') });
     }
-    orderCache = {};
+    orderCache = { previous: orderCache.result || orderCache.previous };
     if (ctx.lo) {
       applyWeatherRemoteUpdate(ctx.lo, r.data);
       req.needsSave = true;
@@ -3223,7 +3330,7 @@ app.put('/api/orders/weather_buff/:remoteId/weathers', requireAuth, financialGua
     if (!r?.success) {
       return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể lưu cấu hình thời tiết cho đơn này.') });
     }
-    orderCache = {};
+    orderCache = { previous: orderCache.result || orderCache.previous };
     if (ctx.lo) {
       applyWeatherRemoteUpdate(ctx.lo, r.data);
       req.needsSave = true;
@@ -3309,7 +3416,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
         });
       }
     }
-    orderCache = {};
+    orderCache = { previous: orderCache.result || orderCache.previous };
 
     let refundedAmount = 0;
     let ownerName = '';
@@ -3386,6 +3493,25 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
 // ============================================================================
 // WEEKLY SETTLEMENTS & TRANSACTION LEDGER
 // ============================================================================
+function walletTotalsByUser() {
+  const totals = new Map();
+  for (const tx of db.transactions) {
+    const row = totals.get(tx.userId) || { totalTopup: 0, totalSpent: 0, held: 0, deducted: 0 };
+    const amount = Number(tx.amount);
+    if (tx.type === 'admin_topup') row.totalTopup += amount;
+    if (tx.type === 'order_debit' || tx.type === 'order_refund') row.totalSpent -= amount;
+    if (tx.type === 'order_hold' || tx.type === 'order_release') row.held -= amount;
+    if (tx.type === 'admin_deduct') row.deducted -= amount;
+    totals.set(tx.userId, row);
+  }
+  return totals;
+}
+
+function listLimit(value) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : 20;
+}
+
 app.get('/api/settlements', requireAuth, async (req, res) => {
   try {
     const user = req.user;
@@ -3401,13 +3527,14 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
         mode: 'admin',
         weekStart,
         hnSettlement: hnSettle?.data || null,
-        localOrders: db.localOrders,
-        transactions: db.transactions.slice(0, 100),
+        localOrders: req.query.limit === undefined ? db.localOrders : undefined,
+        transactionCount: db.transactions.length,
+        transactions: db.transactions.slice(0, listLimit(req.query.limit)),
       });
     } else {
       const myOrders = db.localOrders.filter((o) => o.status !== 'cancelled' && o.placedBy?.id === user.id);
-      const myTrx = db.transactions.filter((t) => t.userId === user.id).slice(0, 100);
-      const totalSpent = Math.max(0, -db.transactions.filter(t => t.userId === user.id && ['order_debit', 'order_hold', 'order_release', 'order_refund'].includes(t.type)).reduce((sum, t) => sum + Number(t.amount || 0), 0));
+      const myTrx = db.transactions.filter((t) => t.userId === user.id);
+      const totalSpent = walletTotalsByUser().get(user.id)?.totalSpent || 0;
       res.json({
         success: true,
         mode: 'ctv',
@@ -3417,8 +3544,9 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
           totalSpent,
           currentBalance: user.balance,
         },
-        orders: myOrders.map(order => publicOrder({ ...order, note: null }, false)),
-        transactions: myTrx,
+        orders: req.query.limit === undefined ? myOrders.map(order => publicOrder({ ...order, note: null }, false)) : undefined,
+        transactionCount: myTrx.length,
+        transactions: myTrx.slice(0, listLimit(req.query.limit)),
       });
     }
   } catch (err) {
@@ -3434,6 +3562,7 @@ app.use('/api/admin', requireAdmin);
 app.use('/api/admin', (req, res, next) => req.method === 'GET' ? next() : financialGuard(req, res, next));
 
 app.get('/api/admin/monitor', (req, res) => {
+  const wallets = walletTotalsByUser();
   const orderStatsByCtv = new Map();
   for (const o of db.localOrders) {
     const uid = o.placedBy?.id;
@@ -3452,13 +3581,14 @@ app.get('/api/admin/monitor', (req, res) => {
     .map(u => {
       const base = sanitizeUser(u);
       const st = orderStatsByCtv.get(u.id) || { orderCount: 0, totalSell: 0, totalProfit: 0, lastOrderAt: null };
-      return { ...base, ...st };
+      return { ...base, ...st, totalTopup: wallets.get(u.id)?.totalTopup || 0, totalSpent: wallets.get(u.id)?.totalSpent || 0 };
     });
   res.json({ success: true, storageHealthy,
-    ctvs,
-    intents: db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),
-    cancellations: db.localOrders.filter(o => o.cancelRequested || o.refundPending).slice(0, 200),
-    events: db.auditLog.slice(0, 200),
+    ctvCount: ctvs.length,
+    ctvs: ctvs.slice(0, listLimit(req.query.ctvs)),
+    intents: req.query.summary === '1' ? undefined : db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),
+    eventCount: Math.min(50, db.auditLog.length),
+    events: db.auditLog.slice(0, Math.min(50, listLimit(req.query.events))),
   });
 });
 
@@ -3490,13 +3620,24 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
   }
 
   const ctvTransactions = db.transactions.filter(t => t.userId === ctv.id);
-  const totalTopup = ctvTransactions
-    .filter(t => t.type === 'admin_topup' && Number(t.amount) > 0)
-    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-  const ctvEvents = db.auditLog
-    .filter(e => e.actorId === ctv.id || e.details?.userId === ctv.id)
-    .slice(0, 200);
+  const wallet = walletTotalsByUser().get(ctv.id) || { totalTopup: 0, totalSpent: 0, held: 0, deducted: 0 };
+  const debitRows = ctvTransactions.filter(t => t.type === 'order_debit');
+  const debits = new Map(debitRows.map(t => [t.id, -Number(t.amount)]));
+  // Early orders have no intent ID. Only link an unambiguous timestamp, amount and description.
+  const claimed = new Set(ctvOrders.map(o => o.intentId).filter(Boolean));
+  const legacyKey = (date, price) => JSON.stringify([date, Number(price)]);
+  const oldOrders = Map.groupBy(ctvOrders.filter(o => !o.intentId), o => legacyKey(o.createdAt, o.sellPrice));
+  const oldDebits = Map.groupBy(debitRows.filter(t => !claimed.has(t.id)), t => legacyKey(t.createdAt, -t.amount));
+  for (const [key, orders] of oldOrders) {
+    const matches = oldDebits.get(key);
+    if (orders.length === 1 && matches?.length === 1 && orders[0].summary && matches[0].note?.endsWith(orders[0].summary)) {
+      debits.set(orders[0].id, -Number(matches[0].amount));
+    }
+  }
+  const ctvEvents = db.auditLog.filter(e => e.actorId === ctv.id || e.details?.userId === ctv.id).slice(0, 50);
+  const query = String(req.query.q || '').trim().toLowerCase();
+  const filtered = ctvOrders.filter(o => (!req.query.category || req.query.category === 'all' || o.category === req.query.category)
+    && (!query || [o.id, o.remoteOrderId, o.summary, o.customer?.nickname, o.customer?.suid].some(v => String(v ?? '').toLowerCase().includes(query))));
 
   res.json({
     success: true,
@@ -3510,16 +3651,22 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       totalSell,
       totalCost,
       totalProfit,
-      totalTopup,
+      ...wallet,
+      unaccountedBalance: Number(ctv.balance || 0) - (wallet.totalTopup - wallet.totalSpent - wallet.held - wallet.deducted),
       lastOrderAt: ctvOrders[0]?.createdAt || null,
     },
-    orders: ctvOrders.slice(0, 300).map(o => ({
+    filteredCount: filtered.length,
+    transactionCount: ctvTransactions.length,
+    eventCount: ctvEvents.length,
+    orders: filtered.slice(0, listLimit(req.query.orders)).map(o => ({
       id: o.id,
       remoteOrderId: o.remoteOrderId,
       category: o.category,
       categoryName: CATEGORY_METADATA[o.category]?.menuLabel || o.categoryName || o.category,
       summary: o.summary,
       customer: o.customer || null,
+      debit: debits.get(o.intentId || o.id) ?? null,
+      refundedAmount: Number(o.refundedAmount || 0),
       sellPrice: Number(o.sellPrice || 0),
       costPrice: Number(o.costPrice || 0),
       markupAmount: Number(o.markupAmount || 0),
@@ -3530,8 +3677,8 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       trackUrl: o.weather?.trackUrl || null,
       createdAt: o.createdAt,
     })),
-    transactions: ctvTransactions.slice(0, 200),
-    events: ctvEvents,
+    transactions: ctvTransactions.slice(0, listLimit(req.query.transactions)),
+    events: ctvEvents.slice(0, listLimit(req.query.events)),
   });
 });
 
@@ -3656,11 +3803,12 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
     }
   } catch {}
 
+  const wallets = walletTotalsByUser();
   const ctvList = db.users
     .filter((u) => u.role === 'ctv')
     .map((u) => {
       const ctvOrders = db.localOrders.filter((o) => o.placedBy?.id === u.id);
-      const totalSpent = ctvOrders.reduce((s, o) => s + Number(o.sellPrice || 0) - Number(o.refundedAmount || 0), 0);
+      const totalSpent = wallets.get(u.id)?.totalSpent || 0;
       const totalProfit = ctvOrders.reduce((s, o) => s + Number(o.sellPrice || 0) - Number(o.refundedAmount || 0) - Number(o.costPrice || 0) + Number(o.sourceRefunded || 0), 0);
       return {
         ...sanitizeUser(u),
@@ -3829,6 +3977,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
   settingsVersion += 1;
   catalogResponseCache.clear();
   orderCache = {};
+  pruneWeekHistory(vietnamWeekStart());
   req.auditDetails = { restoredUsers: db.users.length, restoredOrders: db.localOrders.length, restoredTransactions: db.transactions.length };
   req.needsSave = true;
   res.json({
@@ -4190,6 +4339,13 @@ app.get('*', (req, res) => {
 });
 
 const httpServer = app.listen(PORT, HOST, async () => {
+  function scheduleWeekCleanup() {
+    const timer = setTimeout(() => {
+      rollWeekIfNeeded().catch(error => console.error('Weekly history cleanup:', error.message)).finally(scheduleWeekCleanup);
+    }, vietnamWeekStart() + WEEK_MS - Date.now() + 1);
+    timer.unref?.();
+  }
+  scheduleWeekCleanup();
   ensureProtectedAssets();
   console.log(`ZnStudio Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
   try {

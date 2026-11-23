@@ -44,7 +44,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
       app.listen = () => {}; // Avoid the production listener and startup login.
       return app;
     },
-    fs: fakeFs, path, crypto, zlib, esbuild,
+    fs: fakeFs, path, crypto, zlib, esbuild, Date: options.clock || Date,
     fileURLToPath: () => path.join(root, 'server.js'),
     process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
     fetch: upstreamFetch, WebSocket: options.WebSocket, setTimeout, clearTimeout,
@@ -1115,8 +1115,8 @@ test('admin per-CTV monitor endpoint returns isolated orders, wallet transaction
     seed(data) {
       data.users.push({ id: 'seller2', username: 'seller2', password: 'seller2-test-password', role: 'ctv', name: 'Seller Two', balance: 20000 });
       data.localOrders.push(
-        { id: 'ord-s1', remoteOrderId: 101, category: 'buff_tim', categoryName: 'Buff Tim', summary: 'Buff 100 Tim', customer: { nickname: 'KhachA', suid: '111' }, sellPrice: 15000, costPrice: 10000, markupAmount: 5000, status: 'completed', isActive: false, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, createdAt: '2026-11-22T10:00:00Z' },
-        { id: 'ord-s2', remoteOrderId: 202, category: 'buff_sao', categoryName: 'Buff Sao', summary: 'Buff 50 Sao', customer: { nickname: 'KhachB', suid: '222' }, sellPrice: 12000, costPrice: 8000, markupAmount: 4000, status: 'pending', isActive: true, placedBy: { id: 'seller2', name: 'Seller Two', role: 'ctv' }, createdAt: '2026-11-22T10:05:00Z' }
+        { id: 'ord-s1', remoteOrderId: 101, category: 'buff_tim', categoryName: 'Buff Tim', summary: 'Buff 100 Tim', customer: { nickname: 'KhachA', suid: '111' }, sellPrice: 15000, costPrice: 10000, markupAmount: 5000, status: 'completed', isActive: false, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, createdAt: new Date().toISOString() },
+        { id: 'ord-s2', remoteOrderId: 202, category: 'buff_sao', categoryName: 'Buff Sao', summary: 'Buff 50 Sao', customer: { nickname: 'KhachB', suid: '222' }, sellPrice: 12000, costPrice: 8000, markupAmount: 4000, status: 'pending', isActive: true, placedBy: { id: 'seller2', name: 'Seller Two', role: 'ctv' }, createdAt: new Date().toISOString() }
       );
       data.transactions.push(
         { id: 'tx-s1', userId: 'seller', type: 'admin_topup', amount: 50000, balanceAfter: 50000, note: 'Nap cho seller 1', createdAt: '2026-11-22T09:00:00Z' },
@@ -1389,4 +1389,81 @@ test('order category and history tables omit sending, completed, failed, and not
     }
     assert.doesNotMatch(histTbody, /SECRET_ORDER_NOTE_/);
   }
+});
+
+test('monitor uses the complete ledger, caps activity at 50 and finds orders beyond the first page', async t => {
+  const server = await startTestServer(t, undefined, { seed(db) {
+    const createdAt = new Date().toISOString();
+    db.auditLog = Array.from({ length: 65 }, (_, i) => ({ id: String(i), actorId: 'seller', createdAt }));
+    db.localOrders = Array.from({ length: 321 }, (_, i) => ({ id: `order-${i}`, intentId: `intent-${i}`, category: 'buff_tim',
+      placedBy: { id: 'seller' }, summary: `package-${i}`, sellPrice: 100, createdAt }));
+    db.transactions = db.localOrders.map(o => ({ id: o.intentId, userId: 'seller', amount: -100, type: 'order_debit', createdAt }));
+    for (const [type, amount] of [['admin_topup',50000], ['admin_deduct',-500], ['order_refund',60], ['order_hold',-200], ['order_release',100]]) {
+      db.transactions.unshift({ id: crypto.randomUUID(), userId: 'seller', type, amount, createdAt });
+    }
+    db.users[1].balance = 17360;
+  } });
+  const token = (await server.login('owner','owner-test-password')).body.token;
+  const get = async path => (await server.request('/api/admin/monitor' + path, 'GET', token)).body;
+  const overview = await get('');
+  assert.equal(overview.events.length, 20);
+  assert.equal((await get('?events=80')).events.length, 50);
+  assert.equal(overview.ctvs[0].totalSpent, 32040);
+  const first = await get('/ctv/seller');
+  assert.equal(first.summary.totalTopup, 50000);
+  assert.equal(first.summary.balance, 17360);
+  assert.equal(first.summary.held, 100);
+  assert.equal(first.summary.deducted, 500);
+  assert.equal(first.orders.length, 20);
+  assert.equal(first.summary.orderCount, 321);
+  const more = await get('/ctv/seller?orders=40');
+  assert.equal(more.orders.length, 40);
+  assert.equal(more.summary.totalSpent, first.summary.totalSpent);
+  const hit = await get('/ctv/seller?q=package-320');
+  assert.deepEqual(hit.orders.map(o => [o.id,o.debit]), [['order-320',100]]);
+});
+
+test('remote pagination merges all source pages and retains known orders on an interrupted refresh', async t => {
+  let outage = false;
+  const server = await startTestServer(t, async url => {
+    const u = new URL(url);
+    const match = u.pathname.endsWith('guestbook-orders');
+    const page = Number(u.searchParams.get('page'));
+    if (outage && match && page === 2) throw new Error('Unavailable');
+    return { ok: true, status: 200, json: async () => ({ data: { current_page: page, last_page: match ? 2 : 1,
+      data: match ? Array.from({ length: 17 }, (_, i) => ({ id: i + 1 + (page - 1) * 17, created_at: new Date().toISOString() })) : [] } }) };
+  });
+  const token = (await server.login('owner','owner-test-password')).body.token;
+  const get = async query => (await server.request('/api/orders?' + query, 'GET', token)).body;
+  const first = await get('limit=20');
+  assert.equal(first.partial, false);
+  assert.equal(first.orders.length, 20);
+  assert.equal(first.page.totalCount, 34);
+  assert.equal((await get('limit=40')).orders.length, 34);
+  assert.equal((await get('limit=20&q=34')).orders[0].remoteOrderId, 34);
+  outage = true;
+  const partial = await get('refresh=1&limit=40');
+  assert.equal(partial.partial, true);
+  assert.equal(new Set(partial.orders.map(o => o.id)).size, 34);
+});
+
+test('Sunday midnight Vietnam time clears previous history and preserves open orders, balances and all ledger entries', async t => {
+  const boundary = Date.parse('2026-11-28T17:00:00Z');
+  let now = boundary - 1000;
+  class Clock extends Date { static now() { return now; } }
+  const server = await startTestServer(t, undefined, { clock: Clock, seed(db) {
+    const old = new Date(now).toISOString();
+    db.localOrders = ['completed','pending','cancelled'].map((status, i) => ({ id: String(i), status, createdAt: old }));
+    db.localOrders.push({ id: 'new', status: 'completed', createdAt: new Date(boundary).toISOString() });
+    db.transactions = [{ id: 'deposit', type: 'admin_topup', userId: 'seller', amount: 50000, createdAt: old }];
+    db.auditLog = [{ id: 'old', createdAt: old }, { id: 'new', createdAt: new Date(boundary).toISOString() }];
+  } });
+  assert.equal(server.db.localOrders.length, 4);
+  now = boundary;
+  await server.request('/api/ping');
+  await server.request('/api/ping');
+  assert.deepEqual(Array.from(server.db.localOrders, o => o.id), ['1','new']);
+  assert.deepEqual(Array.from(server.db.auditLog, e => e.id), ['new']);
+  assert.equal(server.db.transactions.length, 1);
+  assert.equal(server.db.users[1].balance, 50000);
 });

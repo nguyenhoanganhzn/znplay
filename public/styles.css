@@ -1297,3 +1297,10 @@ button.pkg-picker-card, .dashboard-category {
     position: static;
   }
 }
+
+.list-more { display: block; margin: 12px auto; }
+.list-more span { opacity: .75; font-variant-numeric: tabular-nums; }
+.wallet-value { display: block; margin-top: 6px; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+.wallet-balance { color: #4ade80; font-weight: 700; }
+.monitor-tabs { margin: 16px 0; }
+#monitorCtvOrderSearch, #monitorCtvCatFilter { width: auto; max-width: 100%; }

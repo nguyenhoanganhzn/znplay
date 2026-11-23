@@ -191,6 +191,11 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
       <td>${esc(formatAuditAction(e.action))}</td><td>${esc(formatAuditDetails(e.details))}</td></tr>`).join(''));
   }
 
+  function walletCards(totals) {
+    const fields = [['Tổng đã nạp', 'totalTopup'], ['Tổng đã sử dụng (sau hoàn tiền)', 'totalSpent'], ['Tổng còn lại', 'balance']];
+    return `<div class="stats-three-grid">${fields.map(([label, key]) => `<div class="stat-subcard"><span class="tool-note">${label}</span><strong class="wallet-value">${totals?.[key] == null ? '—' : money(totals[key])}</strong></div>`).join('')}</div>`;
+  }
+
   function renderSelectedCtvDetailHtml() {
     const id = state.adminMonitorCtvId;
     if (!id) return '';
@@ -220,7 +225,7 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
         <td>${money(t.balanceAfter)}</td><td>${esc(t.note || '—')}</td></tr>`).join('')) + moreButton(tab, d.transactionCount, 0, d.transactions.length);
     }
     return panel(`Đối soát · ${esc(d.ctv.name)}`, `
-      <div class="stats-three-grid">${[['Tổng đã nạp',sum.totalTopup],['Đã dùng sau hoàn tiền',sum.totalSpent],['Số dư còn lại',sum.balance]].map(([label,n]) => `<div class="stat-subcard"><span class="tool-note">${label}</span><strong class="wallet-value">${money(n)}</strong></div>`).join('')}</div>
+      ${walletCards(sum)}
       ${sum.held || sum.deducted ? `<p class="tool-note">Đang giữ cho đơn ${money(sum.held)} · Admin đã trừ ví ${money(sum.deducted)}</p>` : ''}
       ${sum.unaccountedBalance ? `<p class="tool-warning">Chênh lệch giữa số dư ví và sổ giao dịch: ${money(sum.unaccountedBalance)}. Tổng đã nạp và đã dùng chỉ gồm giao dịch có ghi nhận.</p>` : ''}
       <div class="tool-actions monitor-tabs">${Object.entries(labels).map(([key,label]) => button(label,'data-ctv-detail-tab',key,key === tab ? 'btn-violet' : 'btn-frost')).join('')}
@@ -233,7 +238,8 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     const rows = data.ctvs.map(u => `<tr><td><strong>${esc(u.name)}</strong><div class="tool-note">${esc(u.username)}</div></td>
       <td>${money(u.totalTopup)}</td><td>${money(u.totalSpent)}</td><td class="wallet-balance">${money(u.balance)}</td><td>${Number(u.orderCount || 0)}</td>
       <td>${button(u.id === state.adminMonitorCtvId ? 'Đang xem' : 'Xem đơn', 'data-select-ctv', u.id, u.id === state.adminMonitorCtvId ? 'btn-violet' : 'btn-frost')}</td></tr>`).join('');
-    return panel('Ví và đơn hàng của CTV', `${!data.storageHealthy ? '<p class="tool-warning">Lỗi ghi dữ liệu ví.</p>' : ''}
+    return panel('Tổng ví của toàn bộ CTV', walletCards(data.walletTotals), 'id="monitorWalletTotals"')
+      + panel('Ví và đơn hàng của CTV', `${!data.storageHealthy ? '<p class="tool-warning">Lỗi ghi dữ liệu ví.</p>' : ''}
       <div class="tool-actions">${button('Làm mới', 'data-refresh-monitor', '')}</div>
       ${table(['CTV','Tổng đã nạp','Đã dùng sau hoàn tiền','Còn lại','Số đơn','Chi tiết'], rows)}${moreButton('ctvs', data.ctvCount, 0, data.ctvs.length)}`)
       + renderSelectedCtvDetailHtml()

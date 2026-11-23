@@ -3583,7 +3583,14 @@ app.get('/api/admin/monitor', (req, res) => {
       const st = orderStatsByCtv.get(u.id) || { orderCount: 0, totalSell: 0, totalProfit: 0, lastOrderAt: null };
       return { ...base, ...st, totalTopup: wallets.get(u.id)?.totalTopup || 0, totalSpent: wallets.get(u.id)?.totalSpent || 0 };
     });
+  const walletTotals = { totalTopup: 0, totalSpent: 0, balance: 0 };
+  for (const ctv of ctvs) {
+    walletTotals.totalTopup += ctv.totalTopup;
+    walletTotals.totalSpent += ctv.totalSpent;
+    walletTotals.balance += Number(ctv.balance ?? 0);
+  }
   res.json({ success: true, storageHealthy,
+    walletTotals,
     ctvCount: ctvs.length,
     ctvs: ctvs.slice(0, listLimit(req.query.ctvs)),
     intents: req.query.summary === '1' ? undefined : db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),

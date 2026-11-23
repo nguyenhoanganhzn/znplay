@@ -1402,10 +1402,30 @@ test('monitor uses the complete ledger, caps activity at 50 and finds orders bey
       db.transactions.unshift({ id: crypto.randomUUID(), userId: 'seller', type, amount, createdAt });
     }
     db.users[1].balance = 17360;
+    for (let i = 0; i < 20; i++) {
+      db.users.push({ id: `other-${i}`, role: 'ctv', balance: 0 });
+    }
+    db.users.at(-1).balance = 700;
+    db.users.at(-1).isLocked = true;
+    db.transactions.push(
+      { id: 'last-topup', userId: 'other-19', type: 'admin_topup', amount: 1000, createdAt },
+      { id: 'last-debit', userId: 'other-19', type: 'order_debit', amount: -300, createdAt },
+      { id: 'owner-topup', userId: 'owner', type: 'admin_topup', amount: 9000, createdAt }
+    );
   } });
   const token = (await server.login('owner','owner-test-password')).body.token;
   const get = async path => (await server.request('/api/admin/monitor' + path, 'GET', token)).body;
   const overview = await get('');
+  assert.equal(overview.ctvs.length, 20);
+  assert.equal(overview.ctvCount, 21);
+  assert.deepEqual(overview.walletTotals, { totalTopup: 51000, totalSpent: 32340, balance: 18060 });
+  assert.deepEqual((await get('?ctvs=40')).walletTotals, overview.walletTotals);
+  const client = createClient();
+  client.state.adminMonitor = overview;
+  const html = vm.runInContext('renderAdminMonitorHtml()', client.context);
+  const totalsPanel = html.split('</section>')[0];
+  assert.match(totalsPanel, /Tổng ví của toàn bộ CTV/);
+  for (const amount of ['51.000đ', '32.340đ', '18.060đ']) assert.ok(totalsPanel.includes(amount));
   assert.equal(overview.events.length, 20);
   assert.equal((await get('?events=80')).events.length, 50);
   assert.equal(overview.ctvs[0].totalSpent, 32040);

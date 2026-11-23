@@ -13,3 +13,4 @@ Thumbs.db
 .local-tools/
 release/
 .vscode/settings.json
+znstudio-backup-*.json

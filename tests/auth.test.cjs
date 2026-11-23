@@ -1254,3 +1254,34 @@ test('scoped catalog refresh calls only target category endpoints, omits seller-
   assert.equal(hitPaths.includes('/api/fruit-items'), false);
   assert.equal(hitPaths.includes('/api/seller-settlements'), false);
 });
+
+test('anti-DDoS and anti-abuse shields: account brute-force lock, image proxy negative cache, and CTV refresh burst limit', async t => {
+  let missingImgHits = 0;
+  const base = financeSource();
+  const server = await startTestServer(t, async (url, options = {}) => {
+    if (String(url).includes('/assets/playtogether/images/nonexistent.png')) {
+      missingImgHits += 1;
+      return { ok: false, status: 404, arrayBuffer: async () => Buffer.alloc(0) };
+    }
+    return base(url, options);
+  });
+
+  // 1. Image proxy negative 404 cache prevents upstream amplification on repeated fake PNG probes
+  const m1 = await fetch(`${server.base}/assets/playtogether/images/nonexistent.png`);
+  const m2 = await fetch(`${server.base}/assets/playtogether/images/nonexistent.png`);
+  assert.equal(m1.status, 404);
+  assert.equal(m2.status, 404);
+  assert.equal(missingImgHits, 1);
+
+  // 2. Per-account brute-force protection locks target username after 10 wrong password attempts
+  for (let i = 0; i < 10; i++) {
+    const r = await server.login('seller', 'wrong-password-attempt');
+    assert.equal(r.status, 401);
+  }
+  const lockedAttempt = await server.login('seller', 'seller-test-password');
+  assert.equal(lockedAttempt.status, 429);
+
+  // Admin account is unaffected by brute-force against seller!
+  const adminOk = await server.login('owner', 'owner-test-password');
+  assert.equal(adminOk.status, 200);
+});

@@ -37,6 +37,36 @@ app.use((req, res, next) => {
   }
   next();
 });
+// Global Application-Layer DDoS & Flood Shield (bounded Map, zero memory leak)
+const globalIpHits = new Map();
+function checkBoundedBucket(map, key, maxHits, windowMs, maxSize = 2000) {
+  const now = Date.now();
+  if (map.size > maxSize) {
+    for (const [k, v] of map) if (now > v.resetAt) map.delete(k);
+    if (map.size > maxSize) map.delete(map.keys().next().value);
+  }
+  const entry = map.get(key) || { count: 0, resetAt: now + windowMs };
+  if (now > entry.resetAt) {
+    entry.count = 0;
+    entry.resetAt = now + windowMs;
+  }
+  entry.count += 1;
+  map.set(key, entry);
+  return { allowed: entry.count <= maxHits, remaining: Math.max(0, maxHits - entry.count), retrySec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) };
+}
+
+app.use((req, res, next) => {
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  const hit = checkBoundedBucket(globalIpHits, ip, 600, 60000, 3000);
+  if (!hit.allowed) {
+    res.setHeader('Retry-After', String(hit.retrySec));
+    return res.status(429).json({
+      success: false,
+      message: 'Hệ thống ghi nhận quá nhiều yêu cầu từ địa chỉ này. Vui lòng thử lại sau ít giây.',
+    });
+  }
+  next();
+});
 app.use((req, res, next) => {
   if (req.path === '/api/admin/backup/import') return next();
   return express.json({ limit: '256kb' })(req, res, next);
@@ -259,20 +289,26 @@ function verifyPasswordAsync(plain, stored) {
 }
 
 const loginAttempts = new Map();
+const loginAccountFailures = new Map();
 function checkLoginRateLimit(ip) {
+  return checkBoundedBucket(loginAttempts, ip, 20, 60000, 1500).allowed;
+}
+function isLoginAccountThrottled(loginKey) {
   const now = Date.now();
-  if (loginAttempts.size > 1000) {
-    for (const [k, v] of loginAttempts) if (now > v.resetAt) loginAttempts.delete(k);
-    if (loginAttempts.size > 1000) loginAttempts.delete(loginAttempts.keys().next().value);
-  }
-  const entry = loginAttempts.get(ip) || { count: 0, resetAt: now + 60000 };
+  const entry = loginAccountFailures.get(loginKey);
+  if (!entry) return false;
   if (now > entry.resetAt) {
-    entry.count = 0;
-    entry.resetAt = now + 60000;
+    loginAccountFailures.delete(loginKey);
+    return false;
   }
-  entry.count += 1;
-  loginAttempts.set(ip, entry);
-  return entry.count <= 25;
+  return entry.count >= 10;
+}
+function recordLoginAccountFailure(loginKey) {
+  if (!loginKey) return;
+  checkBoundedBucket(loginAccountFailures, loginKey, 10, 5 * 60000, 1500);
+}
+function clearLoginAccountFailure(loginKey) {
+  if (loginKey) loginAccountFailures.delete(loginKey);
 }
 
 // ============================================================================
@@ -1021,24 +1057,37 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, tim
 // ============================================================================
 // WEBSOCKET HELPER FOR IN-GAME PLAYER SEARCH & PROFILE DETAIL
 // ============================================================================
+let activeWsSearches = 0;
+const MAX_CONCURRENT_WS_SEARCHES = 6;
 function searchInGameByWebSocket(nickname, timeoutMs = 12000) {
+  if (activeWsSearches >= MAX_CONCURRENT_WS_SEARCHES) {
+    return Promise.reject(Object.assign(new Error('Hệ thống tìm kiếm nhân vật đang bận, vui lòng thử lại sau 2 giây.'), { status: 503 }));
+  }
+  activeWsSearches += 1;
   return new Promise(async (resolve, reject) => {
+    let settled = false;
+    let ws = null;
+    let timer = null;
+    const finish = (err, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      activeWsSearches = Math.max(0, activeWsSearches - 1);
+      try { ws?.close(); } catch {}
+      if (err) reject(err);
+      else resolve(value);
+    };
     try {
       await loginToHoanNguyen(false);
       if (!db.settings.hoanNguyen.user?.id) await loginToHoanNguyen(true);
-    } catch (error) { reject(error); return; }
+    } catch (error) { finish(error); return; }
     const userId = db.settings.hoanNguyen.user?.id;
-    if (!userId) { reject(new Error('Nguồn chưa xác nhận tài khoản tìm kiếm. Liên hệ admin.')); return; }
+    if (!userId) { finish(new Error('Nguồn chưa xác nhận tài khoản tìm kiếm. Liên hệ admin.')); return; }
     const wsUrl = 'wss://hoannguyenplaytogether.com/api/ws/connect?platform=web&view=seller-fruit-coin-orders';
-    const ws = new WebSocket(wsUrl);
-    let settled = false;
+    ws = new WebSocket(wsUrl);
 
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        try { ws.close(); } catch {}
-        reject(new Error('Tìm kiếm nhân vật quá thời gian chờ, vui lòng thử lại.'));
-      }
+    timer = setTimeout(() => {
+      finish(new Error('Tìm kiếm nhân vật quá thời gian chờ, vui lòng thử lại.'));
     }, timeoutMs);
 
     ws.onopen = () => {
@@ -1053,30 +1102,19 @@ function searchInGameByWebSocket(nickname, timeoutMs = 12000) {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.type === 'profile_search_result') {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            try { ws.close(); } catch {}
-            resolve(Array.isArray(msg.profiles) ? msg.profiles : []);
-          }
+          finish(null, Array.isArray(msg.profiles) ? msg.profiles : []);
         } else if (msg.type === 'error') {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            try { ws.close(); } catch {}
-            reject(new Error(msg.message || 'Lỗi khi tìm kiếm nhân vật trong game'));
-          }
+          finish(new Error(msg.message || 'Lỗi khi tìm kiếm nhân vật trong game'));
         }
       } catch {}
     };
 
     ws.onerror = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        try { ws.close(); } catch {}
-        reject(new Error('Không thể kết nối máy chủ tìm kiếm game'));
-      }
+      finish(new Error('Không thể kết nối máy chủ tìm kiếm game'));
+    };
+
+    ws.onclose = () => {
+      finish(new Error('Kết nối tìm kiếm nhân vật đã đóng bất ngờ, vui lòng thử lại.'));
     };
   });
 }
@@ -1196,13 +1234,27 @@ function sanitizeUser(u) {
 }
 
 // ============================================================================
-// PLAY TOGETHER ASSET PROXY (SERVER-SIDE CACHED — NEVER LEAKS UPSTREAM DOMAIN!)
+// PLAY TOGETHER ASSET PROXY (SERVER-SIDE CACHED + NEGATIVE CACHE + ANTI-ABUSE!)
 // ============================================================================
 const assetProxyCache = new Map();
+const assetNotFoundCache = new Map();
+const assetProxyInflight = new Map();
+const assetMissLimits = new Map();
 const SAFE_ASSET_PATH = /^\/assets\/playtogether\/images\/[A-Za-z0-9_./-]+\.png$/;
+
+function markAssetNotFound(assetPath, ip) {
+  const now = Date.now();
+  if (assetNotFoundCache.size >= 500) {
+    for (const [k, exp] of assetNotFoundCache) if (now > exp) assetNotFoundCache.delete(k);
+    if (assetNotFoundCache.size >= 500) assetNotFoundCache.delete(assetNotFoundCache.keys().next().value);
+  }
+  assetNotFoundCache.set(assetPath, now + 10 * 60000);
+  checkBoundedBucket(assetMissLimits, ip, 30, 5 * 60000, 1500);
+}
+
 app.get('/assets/playtogether/*', async (req, res) => {
   const assetPath = req.path;
-  if (!SAFE_ASSET_PATH.test(assetPath) || assetPath.includes('..')) {
+  if (!SAFE_ASSET_PATH.test(assetPath) || assetPath.includes('..') || assetPath.length > 220) {
     return res.status(404).end();
   }
   const cached = assetProxyCache.get(assetPath);
@@ -1211,15 +1263,44 @@ app.get('/assets/playtogether/*', async (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=604800');
     return res.send(cached);
   }
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  const missEntry = assetMissLimits.get(ip);
+  if (missEntry && Date.now() <= missEntry.resetAt && missEntry.count > 30) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((missEntry.resetAt - Date.now()) / 1000))));
+    return res.status(429).end();
+  }
+  const notFoundUntil = assetNotFoundCache.get(assetPath);
+  if (notFoundUntil && Date.now() < notFoundUntil) {
+    checkBoundedBucket(assetMissLimits, ip, 30, 5 * 60000, 1500);
+    return res.status(404).end();
+  }
+  if (!assetProxyInflight.has(assetPath) && assetProxyInflight.size >= 12) {
+    res.setHeader('Retry-After', '2');
+    return res.status(503).end();
+  }
   try {
-    const baseUrl = db.settings.hoanNguyen?.baseUrl || 'https://hoannguyenplaytogether.com';
-    const upstream = await fetch(`${baseUrl}${assetPath}`, { signal: AbortSignal.timeout(8000) });
-    if (!upstream.ok) return res.status(404).end();
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    const isPng = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
-    if (!isPng || buf.length > 512 * 1024) return res.status(404).end();
-    if (assetProxyCache.size >= 300) assetProxyCache.delete(assetProxyCache.keys().next().value);
-    assetProxyCache.set(assetPath, buf);
+    let job = assetProxyInflight.get(assetPath);
+    if (!job) {
+      const baseUrl = db.settings.hoanNguyen?.baseUrl || 'https://hoannguyenplaytogether.com';
+      job = (async () => {
+        const upstream = await fetch(`${baseUrl}${assetPath}`, { signal: AbortSignal.timeout(6000) });
+        if (!upstream.ok) return null;
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        const isPng = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+        if (!isPng || buf.length > 512 * 1024) return null;
+        if (assetProxyCache.size >= 300) assetProxyCache.delete(assetProxyCache.keys().next().value);
+        assetProxyCache.set(assetPath, buf);
+        return buf;
+      })().finally(() => {
+        assetProxyInflight.delete(assetPath);
+      });
+      assetProxyInflight.set(assetPath, job);
+    }
+    const buf = await job;
+    if (!buf) {
+      markAssetNotFound(assetPath, ip);
+      return res.status(404).end();
+    }
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'public, max-age=604800');
     res.send(buf);
@@ -1265,17 +1346,25 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   if (!loginKey || loginKey.length > 254 || !pwd || pwd.length > 128 || !storageHealthy) {
     return res.status(storageHealthy ? 401 : 503).json({ success: false, message: 'Không thể đăng nhập. Kiểm tra thông tin hoặc liên hệ admin.' });
   }
+  if (isLoginAccountThrottled(loginKey)) {
+    return res.status(429).json({
+      success: false,
+      message: 'Tài khoản này nhập sai mật khẩu quá nhiều lần. Vui lòng đợi 5 phút rồi thử lại.',
+    });
+  }
 
   const user = db.users.find(
     (u) => u.email?.toLowerCase() === loginKey || u.username?.toLowerCase() === loginKey
   );
 
   if (!user || !(await verifyPasswordAsync(pwd, user.password))) {
+    recordLoginAccountFailure(loginKey);
     return res.status(401).json({
       success: false,
       message: 'Tài khoản hoặc mật khẩu không chính xác.',
     });
   }
+  clearLoginAccountFailure(loginKey);
 
   if (user.isLocked) {
     return res.status(403).json({
@@ -1681,6 +1770,7 @@ function sendPackedCatalog(req, res, packed) {
   return res.send(packed.rawBuf);
 }
 
+const ctvRefreshLimits = new Map();
 app.get('/api/catalog', requireAuth, async (req, res) => {
   try {
     const user = req.user;
@@ -1688,6 +1778,17 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     const now = Date.now();
     if (isAdmin) lastAdminActivityAt = now;
     else lastCtvActivityAt = now;
+
+    if (!isAdmin && req.query.refresh === '1') {
+      const rl = checkBoundedBucket(ctvRefreshLimits, user.id, 25, 60000, 1000);
+      if (!rl.allowed) {
+        res.setHeader('Retry-After', String(rl.retrySec));
+        return res.status(429).json({
+          success: false,
+          message: 'Bạn đang làm mới bảng giá quá nhanh. Vui lòng đợi ít giây rồi thử lại.',
+        });
+      }
+    }
 
     const rawScope = typeof req.query.scope === 'string' ? req.query.scope.trim() : '';
     const scope = VALID_CATALOG_SCOPES.has(rawScope) ? rawScope : '';
@@ -2641,7 +2742,10 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const user = req.user;
     const isAdmin = user.role === 'admin';
     const categoryFilter = req.query.category || 'all';
-    const force = req.query.refresh === '1';
+    const now = Date.now();
+    // Anti-spam burst guard: CTV can force-refresh orders at most once every 3s (placing/editing orders clears orderCache immediately).
+    const force = req.query.refresh === '1' && (isAdmin || !orderCache.result || now - (orderCache.lastForceAt || 0) > 3000);
+    if (force) orderCache.lastForceAt = now;
 
     if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
       return res.json({ success: true, orders: [], partial: false });
@@ -4061,7 +4165,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
-app.listen(PORT, HOST, async () => {
+const httpServer = app.listen(PORT, HOST, async () => {
   ensureProtectedAssets();
   console.log(`ZnStudio Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
   try {
@@ -4074,18 +4178,38 @@ app.listen(PORT, HOST, async () => {
   } catch (err) {
     console.warn('Initial HoanNguyen login warning:', err.message);
   }
-  // Background sync: 1 min when Admin is active, 10 min when only CTVs are active (prevents lag & upstream spam).
+  // Background sync & hygiene: 1 min when Admin active, 10 min when CTV active + prune stale sessions/intents.
   const refreshTimer = setInterval(() => {
-    if (catalogPromise) return;
     const now = Date.now();
+    // Clean expired sessions so memory & DB stay lean over months
+    for (const [tok, sess] of Object.entries(db.sessions)) {
+      if (!sess || now - Number(sess.createdAt || 0) > SESSION_TTL_MS) delete db.sessions[tok];
+    }
+    // Prune ancient settled orderIntents (>30 days when >2000 entries); never touch uncertain/processing/requiresReview
+    if (db.orderIntents.length > 2000) {
+      const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+      db.orderIntents = db.orderIntents.filter(
+        i => i.status === 'processing' || i.status === 'uncertain' || i.requiresReview || Date.parse(i.createdAt || '') >= cutoff
+      );
+    }
+    if (catalogPromise) return;
     const age = now - catalogCache.timestamp;
     const adminActive = now - lastAdminActivityAt <= 3 * 60 * 1000;
     const ctvActive = now - lastCtvActivityAt <= 15 * 60 * 1000;
     if (adminActive && age >= ADMIN_CATALOG_FRESH_MS) {
       fetchRawCatalogFromHoanNguyen(true).catch(() => {});
     } else if (ctvActive && age >= CTV_CATALOG_FRESH_MS) {
-      fetchRawCatalogFromHoanNguyen(true).catch(() => {});
+      fetchRawCatalogFromHoanNguyen(true, CTV_CATALOG_FRESH_MS, { includeAdminWeeklyLimit: false }).catch(() => {});
     }
   }, 30000);
   if (typeof refreshTimer.unref === 'function') refreshTimer.unref();
+});
+// Defend against Slowloris / slow-body / hanging proxy connections
+if (httpServer && typeof httpServer === 'object') {
+  httpServer.headersTimeout = 10000;
+  httpServer.requestTimeout = 30000;
+  httpServer.keepAliveTimeout = 65000;
+}
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason?.message || reason);
 });

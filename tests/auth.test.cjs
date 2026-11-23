@@ -1285,3 +1285,73 @@ test('anti-DDoS and anti-abuse shields: account brute-force lock, image proxy ne
   const adminOk = await server.login('owner', 'owner-test-password');
   assert.equal(adminOk.status, 200);
 });
+
+test('order category and history tables omit sending, completed, failed, and note columns with aligned cells', () => {
+  const categories = ['fruit_coin', 'weather_buff', 'buff_sao', 'buff_tim', 'farm_gift', 'mail_gift', 'guestbook'];
+  const sampleOrders = categories.map((cat, idx) => ({
+    id: `ord-${idx + 1}`,
+    remoteOrderId: 900 + idx,
+    category: cat,
+    summary: `Gói ${cat}`,
+    totalCnt: 100,
+    sendingCnt: 12,
+    completedCnt: 40,
+    failedCnt: 3,
+    sellPrice: 25000,
+    costPrice: 20000,
+    markupAmount: 5000,
+    status: 'assigned',
+    isActive: true,
+    note: `SECRET_ORDER_NOTE_${idx}`,
+    createdAt: '2026-11-23T06:00:00Z',
+    customer: { nickname: `Player${idx}`, suid: `SUID${idx}`, customerId: idx + 1 },
+    ...(cat === 'weather_buff'
+      ? { weather: { packageQuantity: 10, trackUrl: 'https://thoitietplay.us/track/weather/tok123', slots: [{ customer_id: idx + 1 }], weathers: [{ name: 'Mưa', quantity: 10, completed_cnt: 4 }] } }
+      : {}),
+  }));
+
+  for (const role of ['admin', 'ctv']) {
+    const client = createClient();
+    client.state.user = { id: role, role, name: role.toUpperCase(), balance: 100000 };
+    client.state.catalogData = { systemStatus: {}, processingRates: {} };
+
+    for (const cat of categories) {
+      client.state.orders = [];
+      const emptyHtml = client.context.renderOrderCategoryPageHtml(cat);
+      const thMatches = [...emptyHtml.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi)].map(m => m[1].trim());
+      for (const removed of ['ĐANG GỬI', 'HOÀN THÀNH', 'THẤT BẠI', 'GHI CHÚ']) {
+        assert.equal(thMatches.includes(removed), false, `${role}/${cat} should omit ${removed}`);
+      }
+      const emptyColspan = emptyHtml.match(/<td colspan="(\d+)"/);
+      assert.ok(emptyColspan, `${role}/${cat} empty row should have colspan`);
+      assert.equal(Number(emptyColspan[1]), thMatches.length, `${role}/${cat} empty colspan must match header count`);
+
+      client.state.orders = sampleOrders;
+      const populatedHtml = client.context.renderOrderCategoryPageHtml(cat);
+      const tbodyHtml = populatedHtml.match(/<tbody id="catOrdersTbody">([\s\S]*?)<\/tbody>/)[1];
+      const tdMatches = [...tbodyHtml.matchAll(/<td(?:\s[^>]*)?>/gi)];
+      assert.equal(tdMatches.length, thMatches.length, `${role}/${cat} row td count must match header count`);
+      assert.doesNotMatch(tbodyHtml, /SECRET_ORDER_NOTE_/);
+    }
+
+    client.state.orders = [];
+    const emptyHist = client.context.renderOrderHistoryHtml();
+    const histTh = [...emptyHist.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi)].map(m => m[1].trim());
+    for (const removed of ['ĐANG GỬI', 'HOÀN THÀNH', 'THẤT BẠI', 'GHI CHÚ']) {
+      assert.equal(histTh.includes(removed), false, `${role}/history should omit ${removed}`);
+    }
+    const histEmptyColspan = emptyHist.match(/<td colspan="(\d+)"/);
+    assert.equal(Number(histEmptyColspan[1]), histTh.length);
+
+    client.state.orders = sampleOrders;
+    const histHtml = client.context.renderOrderHistoryHtml();
+    const histTbody = histHtml.match(/<tbody id="histOrdersTbody">([\s\S]*?)<\/tbody>/)[1];
+    const rows = [...histTbody.matchAll(/<tr>([\s\S]*?)<\/tr>/gi)];
+    assert.equal(rows.length, sampleOrders.length);
+    for (const row of rows) {
+      const tds = [...row[1].matchAll(/<td(?:\s[^>]*)?>/gi)];
+      assert.equal(tds.length, histTh.length, `${role}/history row td count must match header count`);
+    }
+    assert.doesNotMatch(histTbody, /SECRET_ORDER_NOTE_/);
+  }
+});

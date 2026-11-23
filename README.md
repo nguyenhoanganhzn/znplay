@@ -103,8 +103,9 @@ Sao lưu dữ liệu riêng trước khi đổi thư mục lưu trữ hoặc tri
   Lưu tối đa 5.000 sự kiện gần nhất, hiển thị 200; nhật ký không ghi mật khẩu/token.
 - Phiên đăng nhập hết hạn sau 12 giờ; khóa hoặc đổi mật khẩu CTV sẽ thu hồi phiên.
   Token trình duyệt được giữ trong sessionStorage của từng tab.
-- Nhóm **Công cụ** có tìm khách hàng để đặt đơn bằng tên hoặc Role ID.
-  Mục trích xuất tên/ID Game để phiên bản sau, chưa mở API hay thao tác thực tế.
+- Trong **Công cụ → Trích xuất ID Game / Tên nhân vật**, nhập tên, Role ID dạng số
+  hoặc mã nhân vật `XXXX-XXXX-XXXX` để tra cứu từ client game của HoanNguyen.
+  Mỗi kết quả có nút sao chép riêng cho tên và từng dạng ID.
 - Buff thời tiết hiện chỉ xem lịch sử, chưa mở tạo đơn mới.
 
 Ứng dụng kết nối nguồn thật: tạo đơn trong lúc thử vẫn có thể phát sinh chi phí

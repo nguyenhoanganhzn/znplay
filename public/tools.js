@@ -1,4 +1,4 @@
-export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml: esc, showToast, formatVnd: money, formatDateVi: date, renderCurrentView, loadOrders }) {
+export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml: esc, showToast, copyTextToClipboard, formatVnd: money, formatDateVi: date, renderCurrentView, loadOrders }) {
   const panel = (title, content, extra = '') => `<section class="glass-panel" ${extra}><div class="panel-title-row"><span class="panel-title-text">${title}</span></div>${content}</section>`;
   const button = (label, attribute, id, cls = 'btn-frost') => `<button type="button" class="${cls}" ${attribute}="${esc(id)}">${label}</button>`;
 
@@ -25,6 +25,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
     if (/^PUT \/orders\/weather_buff\/\d+\/weathers$/.test(a)) return '☁️ Lưu cấu hình thời tiết';
     if (/^POST \/orders\/weather_buff\/\d+\/share-link$/.test(a)) return '🔗 Lấy link theo dõi thời tiết';
     if (a === 'POST /customer/search-ingame') return '🔍 Tìm nhân vật trong game';
+    if (a === 'POST /tools/identity') return 'Tra cứu ID Game / Tên nhân vật';
     if (a === 'POST /customer/select-ingame') return '✓ Chọn nhân vật khách hàng';
     if (a === 'POST /customer/resolve-role-id') return '🆔 Tra cứu khách theo Role ID';
     if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return '💰 Admin nạp / trừ ví CTV';
@@ -60,10 +61,74 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
   }
 
   function renderIdentityToolsHtml() {
-    return panel('2. Trích xuất tên nhân vật / ID Game', '<p class="tool-note">Chưa mở. Tính năng này sẽ được bổ sung ở phiên bản sau.</p>');
+    return panel('Tra cứu nhân vật', `
+      <form id="identityForm" class="customer-search-fields" role="search">
+        <select name="mode" class="input-box" aria-label="Tra cứu theo">
+          <option value="name">Theo tên nhân vật</option>
+          <option value="id">Theo ID Game</option>
+        </select>
+        <input name="query" class="input-box" aria-label="Tên nhân vật" placeholder="Nhập tên nhân vật trong game" maxlength="80" required autocomplete="off" spellcheck="false">
+        <button class="btn-violet" type="submit">Tra cứu</button>
+      </form>
+      <p id="identityStatus" class="tool-note" role="status"></p>
+      <div id="identityResults" class="identity-results"></div>`);
   }
 
-  function bindIdentityToolsEvents() {}
+  function bindIdentityToolsEvents() {
+    const form = document.getElementById('identityForm');
+    const status = document.getElementById('identityStatus');
+    const results = document.getElementById('identityResults');
+    const { mode, query } = form.elements;
+    const submit = form.querySelector('[type="submit"]');
+    let revision = 0;
+    function reset() {
+      revision++;
+      status.textContent = '';
+      results.replaceChildren();
+      submit.disabled = false;
+    }
+    mode.addEventListener('change', () => {
+      reset();
+      query.value = '';
+      query.placeholder = mode.value === 'id' ? 'Nhập ID dạng số hoặc XXXX-XXXX-XXXX' : 'Nhập tên nhân vật trong game';
+      query.setAttribute('aria-label', mode.value === 'id' ? 'ID Game' : 'Tên nhân vật');
+      query.focus();
+    });
+    query.addEventListener('input', reset);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      reset();
+      const term = query.value.trim();
+      if (!term) { status.textContent = query.placeholder; query.focus(); return; }
+      const request = revision;
+      submit.disabled = true;
+      status.textContent = 'Đang tìm nhân vật trên nguồn game…';
+      try {
+        const { players } = await apiFetch('/api/tools/identity', 'POST', { mode: mode.value, query: term });
+        if (request !== revision || !form.isConnected) return;
+        status.textContent = players.length ? `Tìm thấy ${players.length} nhân vật.` : `Không tìm thấy nhân vật khớp với “${term}”.`;
+        const row = (label, value, copyLabel) => `<div class="identity-field">
+          <div><span class="tool-note">${label}</span><strong>${esc(value)}</strong></div>
+          ${button(copyLabel, 'data-identity-copy', value)}</div>`;
+        results.innerHTML = players.map(player => `<article class="stat-subcard">
+          ${row('Tên nhân vật', player.nickname, 'Sao chép tên')}
+          ${player.gameCode ? row('ID Game · mã nhân vật', player.gameCode, 'Sao chép mã') : ''}
+          ${row('Role ID · dạng số', player.roleId, 'Sao chép ID')}
+        </article>`).join('');
+      } catch (error) {
+        if (request === revision) status.textContent = error.message;
+      } finally {
+        if (request === revision) submit.disabled = false;
+      }
+    });
+    results.addEventListener('click', async event => {
+      const target = event.target.closest('[data-identity-copy]');
+      if (!target) return;
+      const copied = await copyTextToClipboard(target.dataset.identityCopy);
+      showToast(copied ? 'Đã sao chép.' : 'Trình duyệt chưa cho phép sao chép. Hãy chọn và sao chép trực tiếp.');
+    });
+  }
 
   async function loadAdminMonitorCtvDetail(ctvId, silent = false) {
     if (state.user?.role !== 'admin' || !ctvId) return;

@@ -47,7 +47,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     fs: fakeFs, path, crypto, zlib, esbuild,
     fileURLToPath: () => path.join(root, 'server.js'),
     process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
-    fetch: upstreamFetch,
+    fetch: upstreamFetch, WebSocket: options.WebSocket, setTimeout, clearTimeout,
   });
   context.express.json = express.json;
   context.express.static = express.static;
@@ -555,14 +555,49 @@ test('CTV cannot enumerate saved source customers, read stock internals, monitor
   assert.equal((await server.request('/api/settlements', 'GET', seller.body.token)).body.orders.length, 0);
 });
 
-test('deferred identity tool has no active input or backend operation', async t => {
-  const { context } = createClient();
-  const rendered = vm.runInContext('renderIdentityToolsHtml()', context);
-  assert.match(rendered, /Chưa mở/);
-  assert.doesNotMatch(rendered, /<form|<input/);
-  const server = await startTestServer(t);
-  const result = await server.request('/api/tools/identity', 'POST', '', { mode: 'name', query: 'unused' });
-  assert.equal(result.status, 404);
+test('identity lookup round-trips exact IDs via the game client without an order or wallet debit', async t => {
+  const id = '773738358679819896';
+  const gameCode = 'H3D5-A6RJ-VUYC';
+  const nickname = 'Nhân vật thử';
+  let sent = [];
+  let mismatch = false;
+  class GameSocket {
+    constructor() { queueMicrotask(() => this.onopen()); }
+    close() {}
+    send(raw) {
+      const req = JSON.parse(raw);
+      sent.push(req);
+      const frame = req.type === 'profile_search'
+        ? { type: 'profile_search_result', profiles: req.search_nickname === nickname ? [{ Nickname: nickname, suid: id }] : [] }
+        : { type: 'request_profile_result', profile: { UserSuid: mismatch ? '123' : id, Profile: { Nickname: nickname, suid: id } } };
+      // Exercise upstream clients that send the SUID as a JSON number.
+      this.onmessage({ data: JSON.stringify(frame).replaceAll('"' + id + '"', id) });
+    }
+  }
+  const server = await startTestServer(t, undefined, { WebSocket: GameSocket, seed(db) {
+    db.settings.hoanNguyen.user = { id: 7 };
+    db.users[1].balance = 0;
+  } });
+  const url = '/api/tools/identity';
+  assert.equal((await server.request(url, 'POST', '', { mode: 'name', query: nickname })).status, 401);
+  const { token } = (await server.login('seller', 'seller-test-password')).body;
+  const lookup = (mode, query) => server.request(url, 'POST', token, { mode, query });
+  for (const [mode, query] of [['name', nickname], ['id', id], ['id', gameCode.toLowerCase()]]) {
+    const r = await lookup(mode, query);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.players, [{ nickname, roleId: id, gameCode }]);
+  }
+  assert.deepEqual(sent.slice(1).map(message => message.suid), [id, id]);
+  assert.deepEqual((await lookup('name', 'Absent')).body.players, []);
+  const calls = sent.length;
+  for (const invalid of ['0000-0000-0000', '0', '18446744073709551616']) {
+    assert.equal((await lookup('id', invalid)).status, 400);
+  }
+  assert.equal(sent.length, calls);
+  mismatch = true;
+  assert.equal((await lookup('id', id)).status, 502);
+  assert.equal(server.db.localOrders.length, 0);
+  assert.equal(server.db.transactions.length, 0);
 });
 
 test('Render Free permits CTV credit, positive initial balances and purchases without a persistent disk', async t => {
@@ -600,7 +635,7 @@ test('new tools sidebar, source script policy and monitoring HTML reject injecte
   const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
   assert.match(html, /CÔNG CỤ/);
   assert.match(html, /data-view="identity_tools"/);
-  assert.doesNotMatch(html, /data-view="customers"/);
+  assert.doesNotMatch(html, /data-view="(?:customers|user_search)"/);
   const { context, state } = createClient();
   state.adminMonitor = { storageHealthy: true, financialReady: true, ctvs: [{ name: '<img src=x onerror=alert(1)>', username: '<script>', balance: 0 }], events: [] };
   const rendered = vm.runInContext('renderAdminMonitorHtml()', context);

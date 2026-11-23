@@ -1057,119 +1057,110 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, tim
 // ============================================================================
 // WEBSOCKET HELPER FOR IN-GAME PLAYER SEARCH & PROFILE DETAIL
 // ============================================================================
+const PROFILE_SOCKET_URL = 'wss://hoannguyenplaytogether.com/api/ws/connect?platform=web&view=seller-fruit-coin-orders';
 let activeWsSearches = 0;
 const MAX_CONCURRENT_WS_SEARCHES = 6;
-function searchInGameByWebSocket(nickname, timeoutMs = 12000) {
+
+async function queryGameClient(request, timeoutMs) {
   if (activeWsSearches >= MAX_CONCURRENT_WS_SEARCHES) {
-    return Promise.reject(Object.assign(new Error('Hệ thống tìm kiếm nhân vật đang bận, vui lòng thử lại sau 2 giây.'), { status: 503 }));
+    throw Object.assign(new Error('Máy chủ tìm kiếm đang bận. Vui lòng thử lại sau.'), { status: 503 });
   }
-  activeWsSearches += 1;
-  return new Promise(async (resolve, reject) => {
-    let settled = false;
-    let ws = null;
-    let timer = null;
-    const finish = (err, value) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      activeWsSearches = Math.max(0, activeWsSearches - 1);
-      try { ws?.close(); } catch {}
-      if (err) reject(err);
-      else resolve(value);
-    };
-    try {
-      await loginToHoanNguyen(false);
-      if (!db.settings.hoanNguyen.user?.id) await loginToHoanNguyen(true);
-    } catch (error) { finish(error); return; }
+  activeWsSearches++;
+  try {
+    await loginToHoanNguyen(false);
+    if (!db.settings.hoanNguyen.user?.id) await loginToHoanNguyen(true);
     const userId = db.settings.hoanNguyen.user?.id;
-    if (!userId) { finish(new Error('Nguồn chưa xác nhận tài khoản tìm kiếm. Liên hệ admin.')); return; }
-    const wsUrl = 'wss://hoannguyenplaytogether.com/api/ws/connect?platform=web&view=seller-fruit-coin-orders';
-    ws = new WebSocket(wsUrl);
+    if (!userId) throw new Error('Nguồn chưa xác nhận tài khoản tìm kiếm. Liên hệ admin.');
 
-    timer = setTimeout(() => {
-      finish(new Error('Tìm kiếm nhân vật quá thời gian chờ, vui lòng thử lại.'));
-    }, timeoutMs);
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'profile_search',
-        search_nickname: nickname.trim(),
-        user_id: userId,
-      }));
-    };
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === 'profile_search_result') {
-          finish(null, Array.isArray(msg.profiles) ? msg.profiles : []);
-        } else if (msg.type === 'error') {
-          finish(new Error(msg.message || 'Lỗi khi tìm kiếm nhân vật trong game'));
-        }
-      } catch {}
-    };
-
-    ws.onerror = () => {
-      finish(new Error('Không thể kết nối máy chủ tìm kiếm game'));
-    };
-
-    ws.onclose = () => {
-      finish(new Error('Kết nối tìm kiếm nhân vật đã đóng bất ngờ, vui lòng thử lại.'));
-    };
-  });
-}
-
-function requestProfileDetailByWebSocket(suid, timeoutMs = 12000) {
-  return new Promise((resolve, reject) => {
-    const wsUrl = 'wss://hoannguyenplaytogether.com/api/ws/connect?platform=web&view=seller-fruit-coin-orders';
-    const ws = new WebSocket(wsUrl);
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        try { ws.close(); } catch {}
-        reject(new Error('Không nhận được chi tiết hồ sơ từ máy chủ game'));
-      }
-    }, timeoutMs);
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'request_profile',
-        suid: String(suid),
-      }));
-    };
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === 'request_profile_result' && msg.profile) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            try { ws.close(); } catch {}
-            resolve(msg.profile);
-          }
-        } else if (msg.type === 'error' && msg.request_context === 'request_profile') {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            try { ws.close(); } catch {}
-            reject(new Error(msg.message || 'Không thể lấy thông tin chi tiết nhân vật'));
-          }
-        }
-      } catch {}
-    };
-
-    ws.onerror = () => {
-      if (!settled) {
+    return await new Promise((resolve, reject) => {
+      const ws = new WebSocket(PROFILE_SOCKET_URL);
+      const timer = setTimeout(() => finish(new Error('Nguồn game phản hồi quá chậm. Vui lòng thử lại.')), timeoutMs);
+      let settled = false;
+      function finish(error, value) {
+        if (settled) return;
         settled = true;
         clearTimeout(timer);
         try { ws.close(); } catch {}
-        reject(new Error('Lỗi kết nối khi lấy chi tiết hồ sơ'));
+        if (error) reject(error);
+        else resolve(value);
       }
-    };
-  });
+      ws.onopen = () => {
+        try { ws.send(JSON.stringify({ ...request, user_id: userId })); }
+        catch { finish(new Error('Không gửi được yêu cầu tới nguồn game.')); }
+      };
+      ws.onerror = ws.onclose = () => finish(new Error('Mất kết nối với nguồn game. Vui lòng thử lại.'));
+      ws.onmessage = event => {
+        let msg;
+        try {
+          // Some clients serialize 64-bit IDs as JSON numbers. Read their original digits.
+          msg = JSON.parse(event.data, (key, value, context) =>
+            (key === 'suid' || key === 'UserSuid') && typeof value === 'number' ? context.source : value);
+        } catch { return; }
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'error' && (!msg.request_context || msg.request_context === request.type)) {
+          finish(new Error(msg.message || 'Nguồn game chưa trả được kết quả.'));
+        } else if (msg.type === request.type + '_result') {
+          if (request.type === 'profile_search' && Array.isArray(msg.profiles)) finish(null, msg.profiles);
+          else if (request.type === 'request_profile' && msg.profile?.Profile &&
+              String(msg.profile.UserSuid ?? msg.profile.Profile.suid) === request.suid &&
+              String(msg.profile.Profile.suid ?? request.suid) === request.suid) finish(null, msg.profile);
+          else finish(new Error('Hồ sơ nguồn trả về không khớp với yêu cầu. Vui lòng thử lại.'));
+        }
+      };
+    });
+  } finally {
+    activeWsSearches--;
+  }
+}
+
+function searchInGameByWebSocket(nickname, timeoutMs = 12000) {
+  return queryGameClient({ type: 'profile_search', search_nickname: nickname.trim() }, timeoutMs);
+}
+
+function requestProfileDetailByWebSocket(suid, timeoutMs = 12000) {
+  return queryGameClient({ type: 'request_profile', suid: String(suid) }, timeoutMs);
+}
+
+const GAME_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+const GAME_CODE_PATTERN = /^([2-9A-HJ-NP-Z]{4})[- ]?([2-9A-HJ-NP-Z]{4})[- ]?([2-9A-HJ-NP-Z]{4})$/;
+
+// The display code packs the low seven bytes of the SUID in little-endian order,
+// followed by its high nibble. Each group of five bits is one display character.
+function gameCodeFromId(id) {
+  let value = BigInt(id);
+  if (value >= (1n << 60n)) return null;
+  let packed = 0n;
+  for (let i = 0; i < 7; i++) {
+    packed = (packed << 8n) | (value & 255n);
+    value >>= 8n;
+  }
+  packed = (packed << 4n) | value;
+  let code = '';
+  for (let i = 0; i < 12; i++) {
+    code = GAME_CODE_ALPHABET[Number(packed & 31n)] + code;
+    packed >>= 5n;
+  }
+  return code.match(/.{4}/g).join('-');
+}
+
+function numericGameId(input) {
+  if (/^\d{1,20}$/.test(input)) {
+    const n = BigInt(input);
+    return n > 0n && n < (1n << 64n) ? n.toString() : null;
+  }
+  const groups = GAME_CODE_PATTERN.exec(input.toUpperCase());
+  if (!groups) return null;
+  let packed = 0n;
+  for (const char of groups.slice(1).join('')) {
+    packed = (packed << 5n) | BigInt(GAME_CODE_ALPHABET.indexOf(char));
+  }
+  let value = packed & 15n;
+  packed >>= 4n;
+  for (let i = 0; i < 7; i++) {
+    value = (value << 8n) | (packed & 255n);
+    packed >>= 8n;
+  }
+  return value > 0n ? value.toString() : null;
 }
 
 // ============================================================================
@@ -2066,8 +2057,41 @@ app.get('/api/catalog/fruit-stock/:id', requireAuth, requireAdmin, async (req, r
 });
 
 // ============================================================================
-// CUSTOMER SEARCH & PROFILE RESOLUTION (REQUIRES CTV POSITIVE BALANCE!)
+// PLAYER LOOKUP & CUSTOMER SEARCH
 // ============================================================================
+app.post('/api/tools/identity', requireAuth, limitInteractive, async (req, res) => {
+  const { mode, query } = req.body || {};
+  const term = typeof query === 'string' ? query.trim() : '';
+  if (!['name', 'id'].includes(mode) || !term || term.length > 80) {
+    return res.status(400).json({ success: false, message: 'Nhập tên nhân vật hoặc ID Game hợp lệ.' });
+  }
+  try {
+    let profiles;
+    if (mode === 'id') {
+      const id = numericGameId(term);
+      if (!id) return res.status(400).json({ success: false, message: 'Nhập ID dạng số hoặc mã nhân vật dạng XXXX-XXXX-XXXX.' });
+      const detail = await requestProfileDetailByWebSocket(id);
+      profiles = [{ ...detail.Profile, suid: id }];
+    } else {
+      profiles = await searchInGameByWebSocket(term);
+    }
+    const players = [];
+    const seen = new Set();
+    for (const profile of profiles.slice(0, 100)) {
+      const id = String(profile?.suid ?? '');
+      const nickname = profile?.Nickname ?? profile?.nickname;
+      if (!/^\d{1,20}$/.test(id) || !numericGameId(id) || typeof nickname !== 'string' || !nickname.trim() || seen.has(id)) continue;
+      players.push({ nickname, roleId: id, gameCode: gameCodeFromId(id) });
+      seen.add(id);
+    }
+    if (profiles.length && !players.length) throw new Error('Hồ sơ nguồn trả về thiếu tên hoặc ID nhân vật.');
+    req.auditDetails = { resultCount: players.length, ...(mode === 'id' ? { roleId: term } : { nickname: term }) };
+    res.json({ success: true, players });
+  } catch (error) {
+    res.status(error.status === 503 ? 503 : 502).json({ success: false, message: publicError(req, error, 'Chưa tra cứu được nhân vật từ nguồn game.') });
+  }
+});
+
 app.post('/api/customer/search-ingame', requireAuth, limitInteractive, async (req, res) => {
   try {
     const { nickname } = req.body || {};

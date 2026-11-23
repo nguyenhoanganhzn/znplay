@@ -1146,6 +1146,25 @@ select.input-box {
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
+#identityStatus:not(:empty) { margin: 16px 0 10px; }
+.identity-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 12px;
+}
+.identity-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.identity-field strong {
+  display: block;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .tool-form-column, .tool-form-column label:not(.tool-check) {
   display: grid;
   gap: 6px;

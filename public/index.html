@@ -204,21 +204,21 @@
     <div class="app-main">
       <!-- Top Navbar -->
       <header class="top-navbar">
-        <div style="display:flex;align-items:center;gap:12px;">
-          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Mở menu" aria-controls="appSidebar">☰</button>
+        <div class="navbar-heading">
+          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Menu điều hướng" aria-controls="appSidebar" aria-expanded="false">☰</button>
           <div style="font-weight:600;color:var(--color-pure-white);font-size:15px;" id="topNavbarViewTitle">
             Đơn Trái cây & Xu nông trại
           </div>
         </div>
 
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div class="navbar-details">
           <!-- Wallet / Weekly Limit Pill (Matches Screenshot 1 Top-Right) -->
           <div class="wallet-pill-box" id="topWalletPill">
             <span id="topWalletText">Số dư ví: 0đ</span>
           </div>
 
           <!-- User Profile & Logout -->
-          <div style="display:flex;align-items:center;gap:8px;">
+          <div class="navbar-account">
             <span class="badge-tag violet" id="topUserNameBadge">—</span>
             <button type="button" class="btn-frost" id="btnTopLogout" style="font-size:12px;padding:6px 10px;">
               Đăng xuất
@@ -238,8 +238,8 @@
        UNIVERSAL MODAL DIALOG (+ THÊM ĐƠN HÀNG, KHO TRÁI CÂY, BẢNG GIÁ, NẠP VÍ)
        ======================================================================== -->
   <div class="modal-overlay" id="appModalOverlay" style="display:none;">
-    <div class="modal-box" id="appModalBox">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+    <div class="modal-box" id="appModalBox" role="dialog" aria-modal="true" aria-labelledby="appModalTitle">
+      <div class="modal-heading">
         <h3 style="font-family:var(--font-display);font-size:18px;font-weight:600;color:#fff;" id="appModalTitle">
           Thêm đơn hàng
         </h3>
@@ -247,7 +247,6 @@
           ✕ Đóng
         </button>
       </div>
-      <div style="height:1px;background:var(--color-glass-edge);"></div>
       <div id="appModalBody" style="display:flex;flex-direction:column;gap:16px;"></div>
     </div>
   </div>

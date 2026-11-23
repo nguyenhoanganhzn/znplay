@@ -96,12 +96,14 @@ body::before {
   z-index: 900;
   background: radial-gradient(circle at 50% 15%, rgba(102, 58, 243, 0.22) 0%, rgba(5, 6, 15, 0.98) 65%);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  overflow-y: auto;
   justify-content: center;
   padding: 20px;
 }
 
 .auth-gate-card {
+  margin-block: auto;
   width: 100%;
   max-width: 430px;
   background: rgba(8, 10, 23, 0.96);
@@ -321,8 +323,8 @@ body::before {
   border: none;
   background: rgba(186, 214, 247, 0.08);
   color: #fff;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 44px;
+  height: 44px;
   border-radius: 8px;
   cursor: pointer;
   font-size: 18px;
@@ -359,6 +361,8 @@ body::before {
    ========================================================================== */
 
 .glass-panel {
+  min-width: 0;
+  overflow-wrap: anywhere;
   background: rgba(18, 22, 41, 0.78);
   backdrop-filter: blur(12px);
   border-radius: 16px;
@@ -512,7 +516,6 @@ body::before {
   cursor: pointer;
   box-shadow: rgba(255, 255, 255, 0.2) 0 1px 1px 0 inset, 0 4px 14px rgba(102, 58, 243, 0.4);
   transition: all 0.16s ease;
-  white-space: nowrap;
 }
 
 .btn-violet:hover:not(:disabled) {
@@ -541,7 +544,6 @@ body::before {
   font-weight: 500;
   cursor: pointer;
   transition: all 0.16s ease;
-  white-space: nowrap;
 }
 
 .btn-frost:hover:not(:disabled) {
@@ -555,7 +557,26 @@ body::before {
   box-shadow: rgba(156, 127, 249, 0.5) 0 0 0 1px inset;
 }
 
+.btn-frost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-frost, .btn-violet {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--color-blueprint-blue);
+  outline-offset: 2px;
+}
+
 .input-box {
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   border: none;
   border-radius: 6px;
@@ -627,6 +648,8 @@ select.input-box {
 }
 
 .table-wrap {
+  min-width: 0;
+  overflow-wrap: normal;
   width: 100%;
   overflow-x: auto;
   border-radius: 10px;
@@ -714,8 +737,9 @@ select.input-box {
 .modal-box {
   width: 100%;
   max-width: 640px;
-  max-height: 92vh;
-  overflow-y: auto;
+  max-height: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
   background: rgba(10, 13, 28, 0.98);
   border-radius: 16px;
   padding: 24px;
@@ -723,6 +747,48 @@ select.input-box {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.modal-heading, .navbar-heading, .navbar-details, .navbar-account {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.modal-heading {
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-glass-edge);
+}
+
+.modal-heading button, #btnTopLogout {
+  flex: none;
+}
+
+#appModalBody {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3px;
+}
+
+#appModalBody > * {
+  flex-shrink: 0;
+}
+
+.navbar-details {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.navbar-account {
+  gap: 8px;
+}
+
+.navbar-account, .navbar-heading, .wallet-pill-box {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .modal-box.wide {
@@ -799,7 +865,8 @@ select.input-box {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 380px;
+  max-width: min(380px, calc(100% - 40px));
+  overflow-wrap: anywhere;
 }
 
 .toast-item {
@@ -923,7 +990,7 @@ select.input-box {
 
 .pricing-cat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr));
   gap: 14px;
 }
 
@@ -1039,4 +1106,175 @@ select.input-box {
   color: var(--color-fog-veil);
   max-width: 360px;
   line-height: 1.5;
+}
+
+.action-row, .tool-actions, .order-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.align-end {
+  justify-content: flex-end;
+}
+
+.detail-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.order-mode-options {
+  align-items: stretch;
+}
+
+.fruit-order-fields, .weather-add-fields, .customer-search-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.weather-add-fields {
+  grid-template-columns: minmax(0, 1fr) 100px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.customer-search-fields {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.tool-form-column, .tool-form-column label:not(.tool-check) {
+  display: grid;
+  gap: 6px;
+}
+
+.tool-form-column {
+  gap: 14px;
+}
+
+.tool-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tool-note {
+  color: var(--color-moon-mist);
+  font-size: 12px;
+}
+
+.tool-actions + .tool-note {
+  margin-block: 10px 14px;
+}
+
+.tool-warning {
+  padding: 12px 14px;
+  border-radius: 10px;
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+button.pkg-picker-card, .dashboard-category {
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  border: 0;
+  cursor: pointer;
+}
+
+@media (max-width: 860px) {
+  .btn-frost, .btn-violet, .sidebar-item, .mutation-tile,
+  .pricing-mode-btn, .pricing-preset-chip, .input-box {
+    min-height: 44px;
+  }
+
+  .app-sidebar {
+    visibility: hidden;
+    overscroll-behavior: contain;
+  }
+
+  .app-sidebar.is-open {
+    visibility: visible;
+  }
+
+  .switch-btn::before {
+    content: "";
+    position: absolute;
+    inset: -12px -3px;
+  }
+}
+
+@media (max-width: 600px) {
+  .top-navbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 6px 12px;
+  }
+
+  .navbar-heading, .navbar-details {
+    gap: 8px;
+  }
+
+  .navbar-details {
+    justify-content: space-between;
+  }
+
+  .navbar-account {
+    margin-inline-start: auto;
+  }
+
+  .wallet-pill-box {
+    padding: 5px 10px;
+  }
+
+  .glass-panel, .modal-box {
+    padding: 16px;
+  }
+
+  .modal-overlay {
+    padding: 8px;
+  }
+
+  .modal-box {
+    gap: 8px;
+  }
+
+  .modal-heading {
+    padding-bottom: 8px;
+  }
+
+  .fruit-order-fields, .customer-search-fields, .order-mode-options {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .weather-add-fields {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .weather-add-fields select {
+    grid-column: 1 / -1;
+  }
+
+  .order-submit-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .input-box {
+    font-size: 16px;
+  }
+}
+
+@media (max-height: 500px) and (max-width: 860px) {
+  .top-navbar {
+    position: static;
+  }
 }

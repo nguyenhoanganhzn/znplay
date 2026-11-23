@@ -214,7 +214,7 @@ export function createToolViews({ state, apiFetch, createRequestKey, escapeHtml:
             <span class="badge-tag violet">@${esc(ctv.username || '')}</span>
             ${ctv.isLocked ? '<span class="badge-tag red">Đã khóa</span>' : online ? '<span class="badge-tag green">Đang hoạt động</span>' : '<span class="badge-tag">Ngoại tuyến</span>'}
           </div>
-          <div style="display:flex;gap:8px;">
+          <div class="action-row">
             ${button('↻ Tải lại CTV', 'data-refresh-ctv-detail', ctvId)}
             ${button('✕ Đóng chi tiết', 'data-close-ctv-detail', '')}
           </div>

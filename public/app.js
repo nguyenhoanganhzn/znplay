@@ -628,6 +628,13 @@ async function loadAdminOverview() {
 // ============================================================================
 // VIEW ROUTER & RENDERER
 // ============================================================================
+function setMobileMenuOpen(open) {
+  document.getElementById('appSidebar')?.classList.toggle('is-open', open);
+  document.getElementById('sidebarBackdrop')?.classList.toggle('is-open', open);
+  const toggle = document.getElementById('btnToggleMobileSidebar');
+  if (toggle) toggle.ariaExpanded = String(open);
+}
+
 function switchView(viewKey) {
   if (!state.user) return;
   if (!Object.hasOwn(VIEW_TITLES, viewKey) || (viewKey.startsWith('admin_') && state.user.role !== 'admin')) {
@@ -641,9 +648,7 @@ function switchView(viewKey) {
   if (titleEl) {
     titleEl.textContent = VIEW_TITLES[viewKey] || 'ZnStudio';
   }
-  // Close mobile sidebar if open
-  document.getElementById('appSidebar')?.classList.remove('is-open');
-  document.getElementById('sidebarBackdrop')?.classList.remove('is-open');
+  setMobileMenuOpen(false);
 
   if (['admin_ctv', 'admin_system', 'admin_pricing'].includes(viewKey) && !state.adminOverview) {
     const container = document.getElementById('mainViewContainer');
@@ -1159,7 +1164,7 @@ function renderOrderTableRowHtml(o) {
       <td>
         ${
           o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview
-            ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
+            ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" role="switch" aria-checked="${Boolean(o.isActive)}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
             : '—'
         }
       </td>
@@ -1454,7 +1459,7 @@ function renderCreateOrderModalBody() {
     categoryFormHtml = `
       <div>
         <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Hình thức đặt đơn Trái cây:</label>
-        <div style="display:flex;gap:8px;">
+        <div class="order-mode-options">
           <button type="button" class="btn-frost ${isByCoin ? 'is-active' : ''}" id="modalTabByCoin" style="flex:1;">
             🪙 Gửi Xu Nông Trại (Theo Gói)
           </button>
@@ -1475,16 +1480,16 @@ function renderCreateOrderModalBody() {
                 const isSel = Number(state.modalOrder.coin_price_package_id) === Number(p.id);
                 const tObj = p.prices_by_tier?.[state.modalOrder.min_coin_filter] || p;
                 return `
-                  <div class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-coin-pkg="${p.id}">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-coin-pkg="${p.id}">
+                    <span style="display:flex;justify-content:space-between;align-items:center;">
                       <strong style="color:#fff;font-size:14px;">${formatNum(p.coin_quantity || p.quantity)} Xu</strong>
                       ${p.is_on_sale ? `<span class="badge-tag amber">Sale</span>` : ''}
-                    </div>
-                    <div style="display:flex;align-items:baseline;gap:8px;">
+                    </span>
+                    <span style="display:flex;align-items:baseline;gap:8px;">
                       <span style="font-weight:700;color:#5eead4;font-size:15px;">${formatVnd(tObj.total_price)}</span>
                       ${p.is_on_sale ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(tObj.original_price)}</span>` : ''}
-                    </div>
-                  </div>
+                    </span>
+                  </button>
                 `;
               })
               .join('')}
@@ -1506,7 +1511,7 @@ function renderCreateOrderModalBody() {
         </div>
       `
           : `
-        <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;">
+        <div class="fruit-order-fields">
           <div>
             <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn loại trái cây (${fruits.length} loại):</label>
             <select id="modalFruitItemSelect" class="input-box">
@@ -1529,7 +1534,7 @@ function renderCreateOrderModalBody() {
 
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chế độ đột biến:</label>
-          <div style="display:flex;gap:8px;">
+          <div class="order-mode-options">
             <button type="button" class="btn-frost ${state.modalOrder.fruit_variant_mode === 'regular' ? 'is-active' : ''}" id="modalFruitModeReg" style="flex:1;">
               Chỉ trái thường
             </button>
@@ -1580,16 +1585,16 @@ function renderCreateOrderModalBody() {
               .map((p) => {
                 const isSel = Number(state.modalOrder.price_package_id) === Number(p.id);
                 return `
-                  <div class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-std-pkg="${p.id}">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-std-pkg="${p.id}">
+                    <span style="display:flex;justify-content:space-between;align-items:center;">
                       <strong style="color:#fff;font-size:14px;">${catKey === 'weather_buff' ? '☁️ ' : ''}${formatNum(p.quantity)} ${unitTxt}</strong>
                       ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Còn ${p.sale.slots_remaining} slot</span>` : ''}
-                    </div>
-                    <div style="display:flex;align-items:baseline;gap:8px;">
+                    </span>
+                    <span style="display:flex;align-items:baseline;gap:8px;">
                       <span style="font-weight:700;color:#5eead4;font-size:15px;">${formatVnd(p.total_price)}</span>
                       ${p.is_on_sale ? `<span style="text-decoration:line-through;font-size:11px;color:var(--color-fog-veil);">${formatVnd(p.original_price)}</span>` : ''}
-                    </div>
-                  </div>
+                    </span>
+                  </button>
                 `;
               })
               .join('')}
@@ -1675,7 +1680,7 @@ function renderCreateOrderModalBody() {
       <div style="background:rgba(255,255,255,0.02);padding:14px;border-radius:12px;box-shadow:var(--shadow-subtle);display:flex;flex-direction:column;gap:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
           <strong style="color:#fff;font-size:13px;">1. Chọn khách hàng Play Together</strong>
-          <div style="display:flex;gap:6px;">
+          <div class="action-row">
             <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'ingame' ? 'is-active' : ''}" data-mcust-tab="ingame" style="padding:4px 10px;font-size:11px;">
               Tìm theo Tên (Trong Game)
             </button>
@@ -1691,7 +1696,7 @@ function renderCreateOrderModalBody() {
         ${
           cust
             ? `
-          <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(102,58,243,0.18);padding:10px 14px;border-radius:8px;box-shadow:rgba(156,127,249,0.5) 0 0 0 1px inset;">
+          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;background:rgba(102,58,243,0.18);padding:10px 14px;border-radius:8px;box-shadow:rgba(156,127,249,0.5) 0 0 0 1px inset;">
             <div>
               <div style="font-weight:600;color:#fff;font-size:14px;">✓ ${escapeHtml(cust.nickname)}</div>
               <div style="font-size:11px;color:var(--color-moon-mist);">SUID: ${escapeHtml(cust.suid || '—')} ${cust.region ? `· ${escapeHtml(cust.region)}` : ''}</div>
@@ -1732,7 +1737,7 @@ function renderCreateOrderModalBody() {
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng tiền thanh toán:</div>
         <div style="font-size:22px;font-weight:700;color:#fbbf24;" id="modalTotalPriceText">0đ</div>
       </div>
-      <div style="display:flex;gap:10px;">
+      <div class="action-row order-submit-actions">
         <button type="button" class="btn-frost" id="btnModalCancel">Hủy</button>
         <button type="button" class="btn-violet" id="btnModalSaveOrder" ${!isWorking ? 'disabled' : ''}>
           ${catKey === 'weather_buff' ? 'Xác Nhận Tạo Gói →' : 'Lưu & Chạy Đơn Hàng →'}
@@ -1970,7 +1975,7 @@ async function runModalCustomerSearch() {
       resultsEl.innerHTML = list
         .map(
           (p, i) => `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
             <div>
               <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
               <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
@@ -2027,7 +2032,7 @@ async function runModalCustomerSearch() {
       resultsEl.innerHTML = list
         .map(
           (c) => `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
             <div>
               <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
               <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
@@ -2150,7 +2155,7 @@ async function submitModalOrder(confirmDuplicate = false) {
                 <input type="text" class="input-box" id="createdWbLinkInput" readonly value="${escapeHtml(wbUrl)}" />
                 <button type="button" class="btn-violet" id="btnCopyCreatedWbLink" style="white-space:nowrap;">📋 Copy link</button>
               </div>
-              <div style="display:flex;justify-content:flex-end;gap:8px;">
+              <div class="action-row align-end">
                 <a href="${escapeHtml(wbUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="text-decoration:none;">↗ Mở link</a>
                 <button type="button" class="btn-violet" id="btnDoneCreatedWb">Xong</button>
               </div>
@@ -2214,7 +2219,7 @@ function openWeatherSlotModal(order) {
       ${
         hasCust
           ? `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:rgba(102,58,243,0.16);border-radius:10px;border:1px solid rgba(167,139,250,0.35);">
+        <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:rgba(102,58,243,0.16);border-radius:10px;border:1px solid rgba(167,139,250,0.35);">
           <div>
             <div style="font-size:11px;color:var(--color-moon-mist);">Khách hiện tại:</div>
             <div style="font-weight:600;color:#fff;">${escapeHtml(order.customer?.nickname || '—')} <span style="font-weight:400;font-size:11px;color:var(--color-fog-veil);">(SUID: ${escapeHtml(order.customer?.suid || '—')})</span></div>
@@ -2269,7 +2274,7 @@ function openWeatherSlotModal(order) {
           const list = r.profiles || [];
           stEl.textContent = `Tìm thấy ${list.length} nhân vật:`;
           resEl.innerHTML = list.map((p, i) => `
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
               <div>
                 <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
                 <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
@@ -2316,7 +2321,7 @@ function openWeatherSlotModal(order) {
           const list = r.customers || [];
           stEl.textContent = `Hiển thị ${list.length} khách hàng:`;
           resEl.innerHTML = list.map((c) => `
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
+            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.04);border-radius:8px;">
               <div>
                 <strong style="color:#fff;">${escapeHtml(c.nickname || `Khách #${c.id}`)}</strong>
                 <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(c.suid || '—')}</div>
@@ -2435,7 +2440,7 @@ async function openWeatherConfigModal(order) {
 
       <div style="background:rgba(255,255,255,0.03);padding:12px;border-radius:10px;display:flex;flex-direction:column;gap:10px;">
         <div style="font-size:12px;color:var(--color-moon-mist);font-weight:600;">Thêm loại thời tiết vào danh sách chạy:</div>
-        <div style="display:grid;grid-template-columns:1fr 100px auto;gap:8px;align-items:center;">
+        <div class="weather-add-fields">
           <select id="wbTypeSelect" class="input-box">
             ${activeTypes.map(t => `<option value="${t.id}" ${Number(t.id) === Number(selectedTypeId) ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
           </select>
@@ -2457,7 +2462,7 @@ async function openWeatherConfigModal(order) {
           draft.length === 0
             ? `<div style="text-align:center;padding:20px;color:var(--color-fog-veil);font-size:12.5px;">Chưa chọn loại thời tiết nào. Hãy chọn loại thời tiết và bấm <strong>+ Thêm</strong> ở trên.</div>`
             : draft.map((line, idx) => `
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;background:rgba(255,255,255,0.04);border-radius:9px;">
+              <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;background:rgba(255,255,255,0.04);border-radius:9px;">
                 <div style="display:flex;align-items:center;gap:8px;">
                   ${line.icon ? `<img src="${escapeHtml(line.icon)}" alt="" style="width:22px;height:22px;object-fit:contain;" />` : '<span>☁️</span>'}
                   <div>
@@ -2480,7 +2485,7 @@ async function openWeatherConfigModal(order) {
         }
       </div>
 
-      <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:6px;">
+      <div class="action-row align-end" style="padding-top:6px;">
         <button type="button" class="btn-frost" id="btnWbCancelConfig">Hủy</button>
         <button type="button" class="btn-violet" id="btnWbSaveConfig" ${draft.length === 0 || isOver ? 'disabled' : ''}>💾 Lưu cấu hình thời tiết</button>
       </div>
@@ -2810,17 +2815,17 @@ function renderDashboardOverviewHtml() {
         ${catCards
           .map(
             (c) => `
-          <div class="stat-subcard" style="cursor:pointer;" data-dash-goto="${c.key}">
-            <div style="display:flex;align-items:center;justify-content:space-between;">
+          <button type="button" class="stat-subcard dashboard-category" data-dash-goto="${c.key}">
+            <span style="display:flex;align-items:center;justify-content:space-between;">
               <strong style="color:#fff;font-size:15px;">${c.icon} ${escapeHtml(c.name)}</strong>
               <span class="system-status-chip ${c.working ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                 ● ${c.working ? 'Hoạt động' : 'Tạm ngưng'}
               </span>
-            </div>
-            <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+            </span>
+            <span style="display:flex;justify-content:flex-end;margin-top:6px;">
               <span class="btn-frost" style="padding:5px 12px;font-size:11px;">Mở danh mục →</span>
-            </div>
-          </div>
+            </span>
+          </button>
         `
           )
           .join('')}
@@ -3018,7 +3023,7 @@ function renderUserSearchPageHtml() {
         <span class="panel-title-text">1. Tìm khách hàng để đặt đơn</span>
       </div>
       <div class="customer-search-fields">
-        <select id="pageUserSearchMode" class="input-box" style="max-width:150px;"><option value="name">Tên nhân vật</option><option value="id">Role ID</option></select>
+        <select id="pageUserSearchMode" class="input-box"><option value="name">Tên nhân vật</option><option value="id">Role ID</option></select>
         <input type="text" id="pageUserSearchInput" class="input-box" placeholder="Nhập tên nhân vật trong game (VD: Kitty, Yvelzz)..." />
         <button type="button" class="btn-violet" id="btnPageUserSearch">🔍 Tìm trong Game</button>
       </div>
@@ -3056,7 +3061,7 @@ function bindUserSearchPageEvents() {
         .map(
           (p, idx) => `
           <div class="stat-subcard">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
               <div>
                 <div style="font-weight:700;color:#fff;font-size:15px;">${escapeHtml(p.Nickname)}</div>
                 <div style="font-size:12px;color:var(--color-moon-mist);">Khu vực: ${escapeHtml(p.RegionName || p.Region || 'VN')} · Lv.${p.AchievementLevel ?? 1}</div>
@@ -4046,7 +4051,7 @@ function openAdminMutationPricingModal(fruitId) {
         </tbody>
       </table>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:10px;">
+    <div class="action-row align-end">
       <button type="button" class="btn-frost" id="btnCloseMutModal">Đóng</button>
       <button type="button" class="btn-violet" id="btnSaveMutPrices">✓ Cập nhật giá đột biến</button>
     </div>
@@ -4430,7 +4435,7 @@ function openTopupCtvModal(ctvId, ctvName) {
       <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Ghi chú:</label>
       <input type="text" id="modalTopupNote" class="input-box" value="Admin nạp tiền ví CTV" />
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:10px;">
+    <div class="action-row align-end">
       <button type="button" class="btn-violet" id="btnConfirmTopupSubmit">Xác nhận cập nhật →</button>
     </div>
   `;
@@ -4532,7 +4537,7 @@ function renderAdminSystemPageHtml() {
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Mật khẩu nguồn API (Để trống nếu giữ nguyên):</label>
           <input type="password" id="admSrcPassword" class="input-box" autocomplete="new-password" placeholder="••••••••" />
         </div>
-        <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <div class="action-row align-end">
           <button type="button" class="btn-frost" id="btnAdmReconnectSrc">↻ Đồng bộ & Kết nối lại Token</button>
           <button type="button" class="btn-violet" id="btnAdmSaveSrc">Lưu cấu hình nguồn</button>
         </div>
@@ -4754,12 +4759,18 @@ function bindGlobalEvents() {
 
   // Mobile sidebar toggle
   document.getElementById('btnToggleMobileSidebar')?.addEventListener('click', () => {
-    document.getElementById('appSidebar')?.classList.toggle('is-open');
-    document.getElementById('sidebarBackdrop')?.classList.toggle('is-open');
+    setMobileMenuOpen(!document.getElementById('appSidebar')?.classList.contains('is-open'));
   });
   document.getElementById('sidebarBackdrop')?.addEventListener('click', () => {
-    document.getElementById('appSidebar')?.classList.remove('is-open');
-    document.getElementById('sidebarBackdrop')?.classList.remove('is-open');
+    setMobileMenuOpen(false);
+  });
+
+  window.matchMedia?.('(max-width: 860px)').addEventListener('change', () => setMobileMenuOpen(false));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && document.getElementById('appSidebar')?.classList.contains('is-open')) {
+      setMobileMenuOpen(false);
+      document.getElementById('btnToggleMobileSidebar')?.focus();
+    }
   });
 
   // Modal close

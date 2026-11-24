@@ -2795,12 +2795,112 @@ const orderPaths = [
   '/api/weather-buff-orders?page=1&per_page=100&status_group=completed',
 ];
 
+const ORDER_CATEGORY_GROUPS = {
+  fruit_all: { activeIdx: [0], completedIdx: [1], all: [0, 1] },
+  fruit_coin: { activeIdx: [0], completedIdx: [1], all: [0, 1] },
+  fruit_by_fruit: { activeIdx: [0], completedIdx: [1], all: [0, 1] },
+  buff_tim: { activeIdx: [2], completedIdx: [3], all: [2, 3] },
+  buff_sao: { activeIdx: [4], completedIdx: [5], all: [4, 5] },
+  guestbook: { activeIdx: [6], completedIdx: [], all: [6] },
+  farm_gift: { activeIdx: [7], completedIdx: [], all: [7] },
+  mail_gift: { activeIdx: [8], completedIdx: [], all: [8] },
+  weather_buff: { activeIdx: [9], completedIdx: [10], all: [9, 10] },
+};
+
+const ORDER_ACTIVE_FRESH_MS = 10000;
+const ORDER_COMPLETED_FRESH_MS = 60000;
 const ORDER_FRESH_MS = 15000;
 const ORDER_STALE_MS = 90000;
 let orderCache = {};
-async function loadRemoteOrders(force = false) {
+
+function ensureOrderCacheMeta(cache) {
+  if (!cache.pages) {
+    cache.pages = (cache.result?.pages || cache.previous?.pages || Array(orderPaths.length).fill(null)).slice();
+  }
+  if (!cache.groupPartial) {
+    cache.groupPartial = Array(orderPaths.length).fill(false);
+  }
+  if (!cache.groupUpdatedAt) {
+    cache.groupUpdatedAt = Array(orderPaths.length).fill(0);
+  }
+  if (!cache.groupPending) {
+    cache.groupPending = new Map();
+  }
+}
+
+async function refreshOrderIndices(cache, indices, force = false, freshMsByIdx = null) {
+  ensureOrderCacheMeta(cache);
+  const now = Date.now();
+  const tasks = indices.map((idx) => {
+    const freshMs = typeof freshMsByIdx === 'function' ? freshMsByIdx(idx) : ORDER_ACTIVE_FRESH_MS;
+    const updatedAt = cache.groupUpdatedAt[idx] || 0;
+    const hasPage = Boolean(cache.pages[idx]);
+    if (!force && hasPage && !cache.groupPartial[idx] && now - updatedAt < freshMs) {
+      return Promise.resolve();
+    }
+    const existing = cache.groupPending.get(idx);
+    if (existing) return existing;
+    const job = fetchOrderGroup(orderPaths[idx], cache.pages[idx])
+      .then((group) => {
+        cache.pages[idx] = group.page;
+        cache.groupPartial[idx] = Boolean(group.partial);
+        cache.groupUpdatedAt[idx] = group.partial ? Date.now() - freshMs + 2000 : Date.now();
+      })
+      .finally(() => {
+        cache.groupPending.delete(idx);
+      });
+    cache.groupPending.set(idx, job);
+    return job;
+  });
+  await Promise.all(tasks);
+}
+
+function hasMissingActiveLocalOrders(categoryFilter, activePages) {
+  const activeIds = new Set();
+  for (const page of activePages) {
+    const list = Array.isArray(page?.data?.data) ? page.data.data : [];
+    for (const item of list) {
+      if (item?.id != null) activeIds.add(String(item.id));
+    }
+  }
+  return db.localOrders.some((lo) => {
+    if (!lo.remoteOrderId || ['completed', 'cancelled'].includes(lo.status)) return false;
+    const matchesCat = categoryFilter === 'fruit_all'
+      ? (lo.category === 'fruit_coin' || lo.category === 'fruit_by_fruit')
+      : lo.category === categoryFilter;
+    return matchesCat && !activeIds.has(String(lo.remoteOrderId));
+  });
+}
+
+async function loadRemoteOrders(force = false, { category = 'all', liveProgress = false } = {}) {
   const cache = orderCache;
   const now = Date.now();
+  const groupSpec = ORDER_CATEGORY_GROUPS[category];
+
+  // Lightweight scoped category sync: refreshes only the 1-2 endpoints for the viewed category,
+  // coalesced across all CTVs/Admin so Render Free and HoanNguyen stay ultra-light.
+  if (groupSpec) {
+    ensureOrderCacheMeta(cache);
+    if (liveProgress && !force) {
+      await refreshOrderIndices(cache, groupSpec.activeIdx, false, () => ORDER_ACTIVE_FRESH_MS);
+      const needsCompleted = groupSpec.completedIdx.length > 0 && (
+        groupSpec.completedIdx.some((i) => !cache.pages[i] || now - (cache.groupUpdatedAt[i] || 0) >= ORDER_COMPLETED_FRESH_MS) ||
+        hasMissingActiveLocalOrders(category, groupSpec.activeIdx.map((i) => cache.pages[i]))
+      );
+      if (needsCompleted) {
+        await refreshOrderIndices(cache, groupSpec.completedIdx, true, () => ORDER_COMPLETED_FRESH_MS);
+      }
+    } else {
+      const freshFor = (idx) => (groupSpec.completedIdx.includes(idx) ? ORDER_COMPLETED_FRESH_MS : ORDER_ACTIVE_FRESH_MS);
+      await refreshOrderIndices(cache, groupSpec.all, force, freshFor);
+      if (!force && groupSpec.completedIdx.length > 0 && hasMissingActiveLocalOrders(category, groupSpec.activeIdx.map((i) => cache.pages[i]))) {
+        await refreshOrderIndices(cache, groupSpec.completedIdx, true, () => ORDER_COMPLETED_FRESH_MS);
+      }
+    }
+    const partial = groupSpec.all.some((i) => Boolean(cache.groupPartial[i]));
+    return { pages: cache.pages, partial, scoped: true };
+  }
+
   if (!force && cache.result) {
     if (cache.until > now) return cache.result;
     if (cache.staleUntil > now) {
@@ -2845,12 +2945,16 @@ async function fetchOrderGroup(path, previous) {
 }
 
 async function fetchRemoteOrderPages(cache) {
-  const groups = await Promise.all(orderPaths.map((path, i) => fetchOrderGroup(path, (cache.result || cache.previous)?.pages[i])));
+  ensureOrderCacheMeta(cache);
+  const groups = await Promise.all(orderPaths.map((path, i) => fetchOrderGroup(path, cache.pages[i] || (cache.result || cache.previous)?.pages?.[i])));
   const pages = groups.map(group => group.page);
   const partial = groups.some(group => group.partial);
-  cache.result = { pages, partial };
-  delete cache.previous;
   const finishedAt = Date.now();
+  cache.pages = pages.slice();
+  cache.groupPartial = groups.map(g => Boolean(g.partial));
+  cache.groupUpdatedAt = groups.map(g => (g.partial ? finishedAt - ORDER_ACTIVE_FRESH_MS + 2000 : finishedAt));
+  cache.result = { pages, partial, scoped: false };
+  delete cache.previous;
   cache.until = finishedAt + (partial ? 2000 : ORDER_FRESH_MS);
   cache.staleUntil = finishedAt + (partial ? 5000 : ORDER_STALE_MS);
   return cache.result;
@@ -2861,15 +2965,17 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const user = req.user;
     const isAdmin = user.role === 'admin';
     const categoryFilter = req.query.category || 'all';
+    const liveProgress = req.query.live === '1';
     const now = Date.now();
     // Anti-spam burst guard: CTV can force-refresh orders at most once every 3s (placing/editing orders clears orderCache immediately).
     const force = req.query.refresh === '1' && (isAdmin || !orderCache.result || now - (orderCache.lastForceAt || 0) > 3000);
     if (force) orderCache.lastForceAt = now;
 
     if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
-      return res.json({ success: true, orders: [], partial: false, page: { totalCount: 0, activeCount: 0, filteredCount: 0 } });
+      return res.json({ success: true, serverTime: now, orders: [], partial: false, page: { totalCount: 0, activeCount: 0, filteredCount: 0 } });
     }
-    const remote = await loadRemoteOrders(force);
+    const useScoped = Boolean(ORDER_CATEGORY_GROUPS[categoryFilter]) && (!isAdmin || liveProgress);
+    const remote = await loadRemoteOrders(force, { category: useScoped ? categoryFilter : 'all', liveProgress });
 
     // Fetch live active & completed orders from HoanNguyen across all endpoints
     const [
@@ -2945,7 +3051,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
 
     const cutoff = vietnamWeekStart();
     // Once the source confirms its full list, remove last week's orders that it has cleared.
-    if (!remote.partial) {
+    if (!remote.partial && !remote.scoped) {
       const retained = db.localOrders.filter(o => !(Date.parse(o.createdAt) < cutoff && o.remoteOrderId
         && !o.weatherDeletePending && !o.requiresReview && !o.cancelRequested && !o.refundPending
         && !remoteMap.has(`${o.category}:${o.remoteOrderId}`)));

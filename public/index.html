@@ -17,7 +17,7 @@
   <div class="auth-gate-screen" id="authGateScreen" style="display:flex;">
     <form class="auth-gate-card" id="gateLoginForm">
       <div style="display:flex;align-items:center;gap:14px;">
-        <img src="/logo.jpg" alt="ZnStudio Logo" class="brand-logo-img brand-logo-lg" />
+        <img src="/logo.jpg" alt="Biểu tượng ZnStudio" class="brand-logo-img brand-logo-lg" />
         <div>
           <div class="brand-title" style="font-size:23px;">ZnStudio</div>
           <div style="font-size:12px;color:var(--color-fog-veil);">Hệ thống quản lý & chạy đơn Play Together</div>
@@ -30,7 +30,7 @@
         <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;" for="gateLoginId">
           Email hoặc Tên đăng nhập
         </label>
-        <input type="text" id="gateLoginId" class="input-box" placeholder="Nhập username hoặc email..."
+        <input type="text" id="gateLoginId" class="input-box" placeholder="Nhập tên đăng nhập hoặc email..."
           autocomplete="username" />
       </div>
 
@@ -63,7 +63,7 @@
     <aside class="app-sidebar" id="appSidebar">
       <div class="sidebar-brand">
         <a href="#" class="brand-logo-wrap" id="brandHomeLink">
-          <img src="/logo.jpg" alt="ZnStudio Logo" class="brand-logo-img" />
+          <img src="/logo.jpg" alt="Biểu tượng ZnStudio" class="brand-logo-img" />
           <span class="brand-title">ZnStudio</span>
         </a>
         <span class="badge-tag violet" id="sidebarRoleBadge">CTV</span>
@@ -199,26 +199,26 @@
       <!-- Top Navbar -->
       <header class="top-navbar">
         <div class="navbar-heading">
-          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Menu điều hướng" aria-controls="appSidebar" aria-expanded="false">☰</button>
-          <div style="font-weight:600;color:var(--color-pure-white);font-size:15px;" id="topNavbarViewTitle">
+          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Mở danh mục điều hướng" aria-controls="appSidebar" aria-expanded="false">☰</button>
+          <div class="navbar-view-title" id="topNavbarViewTitle">
             Đơn Trái cây & Xu nông trại
           </div>
         </div>
 
         <div class="navbar-details">
-          <button type="button" class="btn-frost navbar-reload-btn" id="btnTopReloadPage" title="Tải lại trang">
+          <button type="button" class="btn-frost navbar-reload-btn" id="btnTopReloadPage" title="Tải lại trang" aria-label="Tải lại trang">
             <span aria-hidden="true">↻</span>
-            <span>Tải lại trang</span>
+            <span class="navbar-reload-label">Tải lại trang</span>
           </button>
 
-          <!-- Wallet / Weekly Limit Pill (Matches Screenshot 1 Top-Right) -->
+          <!-- Wallet / Weekly Limit Pill -->
           <div class="wallet-pill-box" id="topWalletPill">
             <span id="topWalletText">Số dư ví: 0đ</span>
           </div>
 
           <!-- User Profile & Logout -->
           <div class="navbar-account">
-            <span class="badge-tag violet" id="topUserNameBadge">—</span>
+            <span class="badge-tag violet navbar-user-badge" id="topUserNameBadge">—</span>
             <button type="button" class="btn-frost" id="btnTopLogout" style="font-size:12px;padding:6px 10px;">
               Đăng xuất
             </button>

@@ -23,18 +23,18 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (/^PUT \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return '👤 Gán / Đổi khách Buff Thời Tiết';
     if (/^DELETE \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return '👤 Gỡ khách Buff Thời Tiết';
     if (/^PUT \/orders\/weather_buff\/\d+\/weathers$/.test(a)) return '☁️ Lưu cấu hình thời tiết';
-    if (/^POST \/orders\/weather_buff\/\d+\/share-link$/.test(a)) return '🔗 Lấy link theo dõi thời tiết';
+    if (/^POST \/orders\/weather_buff\/\d+\/share-link$/.test(a)) return '🔗 Lấy liên kết theo dõi thời tiết';
     if (a === 'POST /customer/search-ingame') return '🔍 Tìm nhân vật trong game';
     if (a === 'POST /tools/identity') return 'Tra cứu ID Game / Tên nhân vật';
     if (a === 'POST /customer/select-ingame') return '✓ Chọn nhân vật khách hàng';
-    if (a === 'POST /customer/resolve-role-id') return '🆔 Tra cứu khách theo Role ID';
-    if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return '💰 Admin nạp / trừ ví CTV';
-    if (/^PUT \/admin\/ctv\/[^/]+$/.test(a)) return '⚙️ Admin cập nhật tài khoản CTV';
-    if (a === 'POST /admin/ctv') return '➕ Admin tạo tài khoản CTV';
-    if (a === 'POST /admin/maintenance') return '🛠️ Admin bật / tắt chế độ bảo trì';
-    if (a === 'POST /admin/notify-update') return '🔄 Admin kích hoạt tự động cập nhật (F5) cho CTV';
-    if (/^DELETE \/admin\/ctv\/[^/]+$/.test(a)) return '🗑️ Admin xóa tài khoản CTV';
-    if (/^POST \/admin\/orders\/[^/]+\/refund$/.test(a)) return '↩️ Admin hoàn tiền đối soát';
+    if (a === 'POST /customer/resolve-role-id') return '🆔 Tra cứu khách theo mã ID nhân vật';
+    if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return '💰 Quản trị nạp / trừ ví CTV';
+    if (/^PUT \/admin\/ctv\/[^/]+$/.test(a)) return '⚙️ Quản trị cập nhật tài khoản CTV';
+    if (a === 'POST /admin/ctv') return '➕ Quản trị tạo tài khoản CTV';
+    if (a === 'POST /admin/maintenance') return '🛠️ Quản trị bật / tắt chế độ bảo trì';
+    if (a === 'POST /admin/notify-update') return '🔄 Quản trị kích hoạt tự động tải lại cho CTV';
+    if (/^DELETE \/admin\/ctv\/[^/]+$/.test(a)) return '🗑️ Quản trị xóa tài khoản CTV';
+    if (/^POST \/admin\/orders\/[^/]+\/refund$/.test(a)) return '↩️ Quản trị hoàn tiền đối soát';
     return a;
   }
 
@@ -48,13 +48,13 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (details.amount !== undefined) parts.push(`Số tiền: ${Number(details.amount) >= 0 ? '+' : ''}${money(details.amount)}`);
     if (details.balanceAfter !== undefined) parts.push(`Sau GD: ${money(details.balanceAfter)}`);
     if (details.nickname) parts.push(`Tên tìm: ${details.nickname}${details.resultCount !== undefined ? ` (${details.resultCount} KQ)` : ''}`);
-    if (details.roleId) parts.push(`Role ID: ${details.roleId}`);
+    if (details.roleId) parts.push(`ID nhân vật: ${details.roleId}`);
     if (details.suid) parts.push(`SUID: ${details.suid}`);
     if (details.totalQty !== undefined) parts.push(`Tổng thời tiết: ${details.totalQty} lần`);
     if (details.passwordReset) parts.push('Đặt lại mật khẩu');
     if (details.isLocked === true) parts.push('Đã khóa tài khoản');
     if (details.note) parts.push(`Ghi chú: ${details.note}`);
-    if (details.status && Number(details.status) >= 400) parts.push(`HTTP ${details.status}`);
+    if (details.status && Number(details.status) >= 400) parts.push(`Mã lỗi ${details.status}`);
     if (parts.length > 0) return parts.join(' · ');
     const raw = JSON.stringify(details);
     return raw === '{}' ? '—' : raw;
@@ -115,7 +115,7 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
           results.innerHTML = visible.map(player => `<article class="stat-subcard">
             ${row('Tên nhân vật', player.nickname, 'Sao chép tên')}
             ${player.gameCode ? row('ID Game · mã nhân vật', player.gameCode, 'Sao chép mã') : ''}
-            ${row('Role ID · dạng số', player.roleId, 'Sao chép ID')}
+            ${row('ID nhân vật · dạng số', player.roleId, 'Sao chép ID')}
           </article>`).join('');
         });
       } catch (error) {

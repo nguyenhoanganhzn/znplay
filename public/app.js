@@ -14,6 +14,7 @@ const state = {
   loadingOrders: false,
   lastOrdersSig: '',
   lastCatalogSig: '',
+  lastOrdersSyncAt: 0,
   remoteSummaries: {},
 
   // Active Sidebar View
@@ -423,6 +424,7 @@ function clearAuthState() {
   state.loadingOrders = false;
   state.lastOrdersSig = '';
   state.lastCatalogSig = '';
+  state.lastOrdersSyncAt = 0;
   state.lastScopeSyncAt = {};
   state.remoteSummaries = {};
   state.orders = [];
@@ -577,7 +579,7 @@ function updateShellAuthUI() {
   const walletText = document.getElementById('topWalletText');
 
   if (roleBadge) {
-    roleBadge.textContent = isAdmin ? 'ADMIN' : 'CTV';
+    roleBadge.textContent = isAdmin ? 'QUẢN TRỊ' : 'CTV';
     roleBadge.className = `badge-tag ${isAdmin ? 'violet' : 'green'}`;
   }
   // CTV NEVER sees the Admin menu section!
@@ -596,7 +598,7 @@ function updateShellAuthUI() {
         walletText.innerHTML = `Đã dùng: <strong style="color:#fbbf24;">${formatCompactVnd(wl.spent)}</strong> · Hạn mức: <strong style="color:#4ade80;">${formatCompactVnd(wl.limit)}</strong>`;
       } else {
         walletPill.className = 'wallet-pill-box';
-        walletText.innerHTML = `Quyền: <strong style="color:#4ade80;">Quản trị viên (Admin)</strong>`;
+        walletText.innerHTML = `Quyền: <strong style="color:#4ade80;">Quản trị viên</strong>`;
       }
     } else {
       const bal = Number(state.user.balance || 0);
@@ -723,7 +725,27 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
 // LOAD ORDERS & ADMIN OVERVIEW
 // ============================================================================
 let orderRequest = 0;
-async function loadOrders(forceRefresh = false) {
+function hasRunningOrdersInView() {
+  if (!state.user) return false;
+  if (!ORDER_VIEWS.includes(state.currentView) && state.currentView !== 'order_history' && state.currentView !== 'dashboard') {
+    return false;
+  }
+  return (state.orders || []).some(
+    (o) => o && o.isActive && !['completed', 'cancelled', 'canceled'].includes(String(o.status || '').toLowerCase()) && !o.requiresReview
+  );
+}
+
+function renderCurrentViewPreservingScroll() {
+  const container = document.getElementById('mainViewContainer');
+  const prevScrollX = container?.querySelector?.('.table-wrap')?.scrollLeft || 0;
+  renderCurrentView();
+  if (prevScrollX > 0) {
+    const nextWrap = document.getElementById('mainViewContainer')?.querySelector?.('.table-wrap');
+    if (nextWrap) nextWrap.scrollLeft = prevScrollX;
+  }
+}
+
+async function loadOrders(forceRefresh = false, { live = false } = {}) {
   if (!state.user) return false;
   const requestToken = state.token;
   const version = ++orderRequest;
@@ -733,9 +755,10 @@ async function loadOrders(forceRefresh = false) {
   state.loadingOrders = true;
   try {
     const filter = ORDER_VIEWS.includes(view);
-    const query = `category=${category}&limit=${pageLimit('orderList')}&q=${encodeURIComponent(state.orderSearch)}&active=${filter ? state.orderActiveFilter : 'all'}&progress=${filter ? state.orderProgressFilter : 'all'}`;
+    const query = `category=${category}&limit=${pageLimit('orderList')}&q=${encodeURIComponent(state.orderSearch)}&active=${filter ? state.orderActiveFilter : 'all'}&progress=${filter ? state.orderProgressFilter : 'all'}${live ? '&live=1' : ''}`;
     const r = await apiFetch(`/api/orders?${query}${forceRefresh ? '&refresh=1' : ''}`);
     if (r.success && current()) {
+      state.lastOrdersSyncAt = Date.now();
       state.orderClockOffset = (r.serverTime ?? Date.now()) - Date.now();
       const nextOrders = r.orders || [];
       const sig = JSON.stringify([nextOrders, r.page, r.partial, r.remoteSummaries]);
@@ -954,7 +977,7 @@ function renderOrderCategoryPageHtml(catKey) {
   let footerButtonsHtml = '';
   if (catKey === 'fruit_coin') {
     footerButtonsHtml = `
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">
+      <div class="cat-footer-actions">
         <button type="button" class="btn-frost" id="btnViewFruitWarehouse">📦 Xem kho trái cây</button>
         <button type="button" class="btn-frost" id="btnViewCoinWarehouse">🪙 Xem kho xu</button>
         <button type="button" class="btn-frost" id="btnViewCategoryPrices">🏷️ Xem bảng giá gói xu</button>
@@ -962,7 +985,7 @@ function renderOrderCategoryPageHtml(catKey) {
     `;
   } else if (['buff_tim', 'buff_sao', 'guestbook', 'mail_gift', 'farm_gift', 'weather_buff'].includes(catKey)) {
     footerButtonsHtml = `
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">
+      <div class="cat-footer-actions">
         <button type="button" class="btn-frost" id="btnViewCategoryPrices">🏷️ Xem bảng giá ${escapeHtml(VIEW_TITLES[catKey])}</button>
       </div>
     `;
@@ -1049,10 +1072,10 @@ function renderOrderCategoryPageHtml(catKey) {
         <div style="font-size:13px;font-weight:700;color:#c4b5fd;margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
         <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--color-moon-mist);line-height:1.7;">
           <li><strong>Bước 1:</strong> Bấm <strong>+ Thêm Đơn Hàng</strong> để mua gói số lần thời tiết trước (chưa cần chọn khách khi tạo gói).</li>
-          <li><strong>Bước 2:</strong> Sau khi tạo đơn, chọn khách và ít nhất một thời tiết để chạy đơn, hoặc bấm <strong>📋 Copy link</strong> gửi link công khai cho khách tự xem & chỉnh.</li>
+          <li><strong>Bước 2:</strong> Sau khi tạo đơn, chọn khách và ít nhất một thời tiết để chạy đơn, hoặc bấm <strong>📋 Sao chép liên kết</strong> gửi liên kết công khai cho khách tự xem & chỉnh.</li>
           <li>Sau khi bật đơn vẫn đổi được khách. Khách mới nhận phần thời tiết còn lại. Phần thời tiết đã chạy xong thì không đổi được.</li>
           <li>Đơn chưa hoàn thành, <strong>tạo quá 3 tiếng thì không xóa được</strong> (chỉ hỗ trợ xóa đơn trống chưa gán khách, chưa chọn thời tiết trong vòng 3 tiếng kể từ lúc tạo).</li>
-          <li style="color:#fbbf24;font-weight:600;">Hãy cân nhắc trước khi lên đơn vì Admin chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</li>
+          <li style="color:#fbbf24;font-weight:600;">Hãy cân nhắc trước khi lên đơn vì Quản trị viên chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</li>
         </ul>
       </div>
     `
@@ -1061,7 +1084,14 @@ function renderOrderCategoryPageHtml(catKey) {
 
     <div class="glass-panel">
       <div class="panel-title-row">
-        <span class="panel-title-text">Quản lý đơn hàng</span>
+        <div class="panel-title-left">
+          <span class="panel-title-text">Quản lý đơn hàng</span>
+          ${
+            catOrders.some((o) => o.isActive && !['completed', 'cancelled', 'canceled'].includes(String(o.status || '').toLowerCase()))
+              ? `<span class="live-sync-pill" title="Tự động cập nhật tiến độ đơn đang chạy mỗi 12 giây"><span class="live-sync-dot"></span>Tự động cập nhật tiến độ</span>`
+              : ''
+          }
+        </div>
         <button type="button" class="btn-violet" id="btnOpenAddOrderModal">
           + Thêm Đơn Hàng
         </button>
@@ -1080,8 +1110,8 @@ function renderOrderCategoryPageHtml(catKey) {
         <div>
           <select id="catOrderActiveSelect" class="input-box">
             <option value="all" ${state.orderActiveFilter === 'all' ? 'selected' : ''}>Lọc theo trạng thái: Tất cả</option>
-            <option value="1" ${state.orderActiveFilter === '1' ? 'selected' : ''}>Đang bật (Active)</option>
-            <option value="0" ${state.orderActiveFilter === '0' ? 'selected' : ''}>Đang tắt (Paused)</option>
+            <option value="1" ${state.orderActiveFilter === '1' ? 'selected' : ''}>Đang bật</option>
+            <option value="0" ${state.orderActiveFilter === '0' ? 'selected' : ''}>Đang tắt</option>
           </select>
         </div>
         <div>
@@ -1105,7 +1135,7 @@ function renderOrderCategoryPageHtml(catKey) {
               <th>TRẠNG THÁI</th>
               <th>BẬT/TẮT</th>
               <th>TẠO LÚC</th>
-              ${catKey === 'weather_buff' ? '<th>LINK / THAO TÁC</th>' : state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
+              ${catKey === 'weather_buff' ? '<th>LIÊN KẾT / THAO TÁC</th>' : state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
             </tr>
           </thead>
           <tbody id="catOrdersTbody">
@@ -1156,6 +1186,33 @@ function renderCatOrdersTbodyHtml(catKey) {
     + moreButton('orderList', state.orderPage?.filteredCount ?? filteredOrders.length, colSpan, Math.min(filteredOrders.length, pageLimit('orderList')));
 }
 
+function renderOrderStatusBadge(o) {
+  const st = String(o.status || '').trim().toLowerCase();
+  if (st === 'cancelled' || st === 'canceled') return '<span class="badge-tag red">Đã hủy</span>';
+  if (st === 'completed' || st === 'done' || st === 'finished') return '<span class="badge-tag green">Hoàn thành</span>';
+  if (st === 'failed' || st === 'error') return '<span class="badge-tag red">Lỗi đơn</span>';
+  if (st === 'paused' || st === 'stopped' || st === 'inactive') return '<span class="badge-tag amber">Tạm dừng</span>';
+  if (st === 'pending') return '<span class="badge-tag amber">Chờ xử lý</span>';
+  if (st === 'queued' || st === 'waiting') return '<span class="badge-tag amber">Đang chờ</span>';
+  if (st === 'assigned' || st === 'processing' || st === 'running' || st === 'in_progress' || st === 'sending') {
+    return o.isActive === false
+      ? '<span class="badge-tag amber">Tạm dừng</span>'
+      : '<span class="badge-tag violet">Đang chạy</span>';
+  }
+  return o.isActive === false
+    ? '<span class="badge-tag amber">Tạm dừng</span>'
+    : '<span class="badge-tag violet">Đang xử lý</span>';
+}
+
+function formatOnlineStatusVi(status) {
+  const raw = String(status || '').trim();
+  if (!raw) return '';
+  const low = raw.toLowerCase();
+  if (low === 'online') return 'Đang trực tuyến';
+  if (low === 'offline') return 'Ngoại tuyến';
+  return raw;
+}
+
 function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
   const isAdmin = state.user?.role === 'admin';
   const pct =
@@ -1163,10 +1220,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
       ? Math.min(100, Math.round((Number(o.completedCnt || 0) / Number(o.totalCnt)) * 100))
       : 0;
 
-  const statusBadge =
-    o.status === 'cancelled' ? `<span class="badge-tag red">Đã hủy</span>` : o.status === 'completed'
-      ? `<span class="badge-tag green">Hoàn thành</span>`
-      : `<span class="badge-tag violet">${escapeHtml(o.status || 'assigned')}</span>`;
+  const statusBadge = renderOrderStatusBadge(o);
 
   // Admin sees cost & profit tooltip; CTV ONLY sees o.sellPrice!
   const adminNote =
@@ -1233,23 +1287,23 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
         }
       </div>
     `
-    : `<span class="badge-tag">${escapeHtml(o.summary)}</span>`;
+    : `<span class="badge-tag order-summary-badge">${escapeHtml(o.summary)}</span>`;
 
   const wbTrackUrl = isWeather ? String(o.weather?.trackUrl || '') : '';
   const lastCellHtml = isWeather
     ? `
       <td>
-        <div style="display:flex;flex-direction:column;gap:5px;min-width:128px;">
+        <div style="display:flex;flex-direction:column;gap:5px;min-width:136px;">
           ${
             o.remoteOrderId && o.status !== 'cancelled'
               ? `
                 <div style="display:flex;align-items:center;gap:5px;">
                   <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;white-space:nowrap;" data-copy-weather-link="${escapeHtml(o.remoteOrderId)}" data-track-url="${escapeHtml(wbTrackUrl)}">
-                    📋 Copy link
+                    📋 Sao chép liên kết
                   </button>
                   ${
                     wbTrackUrl
-                      ? `<a href="${escapeHtml(wbTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="padding:5px 8px;font-size:11px;text-decoration:none;" title="Mở link theo dõi">↗</a>`
+                      ? `<a href="${escapeHtml(wbTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="padding:5px 8px;font-size:11px;text-decoration:none;white-space:nowrap;" title="Mở liên kết theo dõi">↗</a>`
                       : ''
                   }
                 </div>
@@ -1263,9 +1317,9 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
           }
           ${
             isAdmin && o.remoteOrderId && o.status !== 'cancelled'
-              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">${o.weatherDeletePending ? 'Đối soát xóa đơn' : 'Hủy tại nguồn'}</button></div>`
+              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">${o.weatherDeletePending ? 'Đối soát xóa đơn' : 'Hủy tại nguồn'}</button></div>`
               : o.weatherDeletePending ? '<span class="tool-note">Chờ đối soát xóa đơn</span>'
-              : Number.isFinite(o.weatherDeleteAt) ? `<div><button type="button" class="btn-frost" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${o.weatherDeleteAt}" ${Number.isFinite(o.weatherDeleteUntil) ? `data-expire-at="${o.weatherDeleteUntil}"` : ''} disabled>Xóa đơn</button></div>` : ''
+              : Number.isFinite(o.weatherDeleteAt) ? `<div><button type="button" class="btn-frost" style="white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${o.weatherDeleteAt}" ${Number.isFinite(o.weatherDeleteUntil) ? `data-expire-at="${o.weatherDeleteUntil}"` : ''} disabled>Xóa đơn</button></div>` : ''
           }
         </div>
       </td>
@@ -1275,7 +1329,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
       <td>
         ${
           o.remoteOrderId && o.status !== 'cancelled'
-            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
+            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
             : '—'
         }
       </td>
@@ -1286,10 +1340,10 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
 
   return `
     <tr>
-      <td>${customerCellHtml}${isAdmin && o.placedBy ? `<div class="tool-note">${o.source !== 'znplay' ? 'Nguồn' : o.placedBy.role === 'ctv' ? 'CTV' : 'Admin'} · ${escapeHtml(o.placedBy.name)}</div>` : ''}</td>
+      <td>${customerCellHtml}${isAdmin && o.placedBy ? `<div class="tool-note">${o.source !== 'znplay' ? 'Nguồn' : o.placedBy.role === 'ctv' ? 'CTV' : 'Quản trị'} · ${escapeHtml(o.placedBy.name)}</div>` : ''}</td>
       <td>${packageCellHtml}</td>
-      <td><strong>${formatNum(o.totalCnt || 0)}</strong></td>
-      <td>
+      <td style="white-space:nowrap;"><strong>${formatNum(o.totalCnt || 0)}</strong></td>
+      <td style="white-space:nowrap;">
         <div style="font-weight:600;color:#fbbf24;">${formatVnd(o.sellPrice)}</div>
         ${adminNote}
       </td>
@@ -1298,7 +1352,10 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
           ? ''
           : `
             <td>
-              <div style="font-size:12px;font-weight:600;">${pct}%</div>
+              <div class="progress-cell" title="Đã hoàn thành ${formatNum(o.completedCnt || 0)} / ${formatNum(o.totalCnt || 0)}">
+                <span class="progress-pct ${pct >= 100 ? 'is-done' : ''}">${pct}%</span>
+                <div class="progress-track"><div class="progress-fill ${pct >= 100 ? 'is-done' : ''}" style="width:${pct}%"></div></div>
+              </div>
             </td>
           `
       }
@@ -1429,10 +1486,10 @@ function bindOrderRowActionButtons() {
       btn.disabled = true;
       try {
         if (!url) {
-          btn.textContent = '⏳ Đang lấy link...';
+          btn.textContent = '⏳ Đang lấy liên kết...';
           const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/share-link`, 'POST');
           url = String(res?.url || '').trim();
-          if (!url) throw new Error('Không lấy được link theo dõi.');
+          if (!url) throw new Error('Không lấy được liên kết theo dõi.');
           btn.dataset.trackUrl = url;
           const ord = state.orders.find((o) => o.category === 'weather_buff' && String(o.remoteOrderId) === String(remId));
           if (ord) {
@@ -1441,16 +1498,16 @@ function bindOrderRowActionButtons() {
         }
         const copied = await copyTextToClipboard(url);
         if (copied) {
-          showToast('Đã copy link theo dõi thời tiết!');
-          btn.textContent = '✓ Đã copy';
+          showToast('Đã sao chép liên kết theo dõi thời tiết!');
+          btn.textContent = '✓ Đã sao chép';
           setTimeout(() => { btn.textContent = origLabel; btn.disabled = false; }, 1600);
         } else {
-          window.prompt('Copy link theo dõi thời tiết:', url);
+          window.prompt('Sao chép liên kết theo dõi thời tiết:', url);
           btn.textContent = origLabel;
           btn.disabled = false;
         }
       } catch (err) {
-        showToast(err.message || 'Không copy được link.');
+        showToast(err.message || 'Không sao chép được liên kết.');
         btn.textContent = origLabel;
         btn.disabled = false;
       }
@@ -1470,7 +1527,7 @@ function bindOrderRowActionButtons() {
           const nowServer = Date.now() + (state.orderClockOffset || 0);
           const left = Math.ceil((Number(btn.dataset.unlockAt) - nowServer) / 1000);
           btn.disabled = left > 0;
-          btn.textContent = left > 0 ? `Xóa sau ${left}s` : 'Xóa đơn';
+          btn.textContent = left > 0 ? `Xóa sau ${left} giây` : 'Xóa đơn';
           if (left > 0) {
             setTimeout(tick, 1000);
           } else if (Number.isFinite(expireAt)) {
@@ -1658,7 +1715,7 @@ function renderCreateOrderModalBody() {
                   <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-coin-pkg="${p.id}">
                     <span style="display:flex;justify-content:space-between;align-items:center;">
                       <strong style="color:#fff;font-size:14px;">${formatNum(p.coin_quantity || p.quantity)} Xu</strong>
-                      ${p.is_on_sale ? `<span class="badge-tag amber">Sale</span>` : ''}
+                      ${p.is_on_sale ? `<span class="badge-tag amber">Giảm giá</span>` : ''}
                     </span>
                     <span style="display:flex;align-items:baseline;gap:8px;">
                       <span style="font-weight:700;color:#5eead4;font-size:15px;">${formatVnd(tObj.total_price)}</span>
@@ -1763,7 +1820,7 @@ function renderCreateOrderModalBody() {
                   <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-std-pkg="${p.id}">
                     <span style="display:flex;justify-content:space-between;align-items:center;">
                       <strong style="color:#fff;font-size:14px;">${catKey === 'weather_buff' ? '☁️ ' : ''}${formatNum(p.quantity)} ${unitTxt}</strong>
-                      ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Còn ${p.sale.slots_remaining} slot</span>` : ''}
+                      ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Còn ${p.sale.slots_remaining} suất</span>` : ''}
                     </span>
                     <span style="display:flex;align-items:baseline;gap:8px;">
                       <span style="font-weight:700;color:#5eead4;font-size:15px;">${formatVnd(p.total_price)}</span>
@@ -1861,7 +1918,7 @@ function renderCreateOrderModalBody() {
               Tìm theo Tên (Trong Game)
             </button>
             <button type="button" class="btn-frost ${state.modalOrder.customerTab === 'roleid' ? 'is-active' : ''}" data-mcust-tab="roleid" style="padding:4px 10px;font-size:11px;">
-              Theo Role ID
+              Theo mã ID nhân vật
             </button>
             ${state.user.role === 'admin' ? `<button type="button" class="btn-frost ${state.modalOrder.customerTab === 'saved' ? 'is-active' : ''}" data-mcust-tab="saved" style="padding:4px 10px;font-size:11px;">
               Khách đã lưu
@@ -1890,7 +1947,7 @@ function renderCreateOrderModalBody() {
                 state.modalOrder.customerTab === 'ingame'
                   ? 'Nhập tên nhân vật cần tìm trong game...'
                   : state.modalOrder.customerTab === 'roleid'
-                  ? 'Nhập mã Role ID (XXXX-XXXX-XXXX)...'
+                  ? 'Nhập mã ID nhân vật (XXXX-XXXX-XXXX)...'
                   : 'Nhập tên hoặc SUID khách quen...'
               }"
             />
@@ -2158,7 +2215,7 @@ async function runModalCustomerSearch() {
               <div>
                 <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
                 <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
-                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+                <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)}${p.Online_Status ? ` · ${escapeHtml(formatOnlineStatusVi(p.Online_Status))}` : ''}</div>
               </div>
               <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-pick-ingame="${i}">Chọn</button>
             </div>
@@ -2190,10 +2247,10 @@ async function runModalCustomerSearch() {
     }
   } else if (mode === 'roleid') {
     if (!q) {
-      showToast('Vui lòng nhập Role ID.');
+      showToast('Vui lòng nhập mã ID nhân vật.');
       return;
     }
-    statusEl.textContent = '⏳ Đang kiểm tra Role ID...';
+    statusEl.textContent = '⏳ Đang kiểm tra mã ID nhân vật...';
     try {
       const r = await apiFetch('/api/customer/resolve-role-id', 'POST', { role_id: q });
       if (r.success && r.customer) {
@@ -2331,14 +2388,14 @@ async function submitModalOrder(confirmDuplicate = false) {
           body.innerHTML = `
             <div style="display:flex;flex-direction:column;gap:12px;">
               <div style="font-size:13px;color:var(--color-moon-mist);line-height:1.6;">
-                Đơn gói <strong>${formatNum(r.order?.totalCnt || 0)} lần</strong> đã tạo thành công! Gửi link theo dõi bên dưới cho khách tự chọn nhân vật & thời tiết, hoặc chỉnh trực tiếp trên bảng đơn:
+                Đơn gói <strong>${formatNum(r.order?.totalCnt || 0)} lần</strong> đã tạo thành công! Gửi liên kết theo dõi bên dưới cho khách tự chọn nhân vật & thời tiết, hoặc chỉnh trực tiếp trên bảng đơn:
               </div>
               <div style="display:flex;gap:8px;align-items:center;">
                 <input type="text" class="input-box" id="createdWbLinkInput" readonly value="${escapeHtml(wbUrl)}" />
-                <button type="button" class="btn-violet" id="btnCopyCreatedWbLink" style="white-space:nowrap;">📋 Copy link</button>
+                <button type="button" class="btn-violet" id="btnCopyCreatedWbLink" style="white-space:nowrap;">📋 Sao chép liên kết</button>
               </div>
               <div class="action-row align-end">
-                <a href="${escapeHtml(wbUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="text-decoration:none;">↗ Mở link</a>
+                <a href="${escapeHtml(wbUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="text-decoration:none;">↗ Mở liên kết</a>
                 <button type="button" class="btn-violet" id="btnDoneCreatedWb">Xong</button>
               </div>
             </div>
@@ -2346,8 +2403,8 @@ async function submitModalOrder(confirmDuplicate = false) {
           body.querySelector('#btnCopyCreatedWbLink')?.addEventListener('click', async (ev) => {
             const ok = await copyTextToClipboard(wbUrl);
             if (ok) {
-              showToast('Đã copy link theo dõi thời tiết!');
-              ev.currentTarget.textContent = '✓ Đã copy';
+              showToast('Đã sao chép liên kết theo dõi thời tiết!');
+              ev.currentTarget.textContent = '✓ Đã sao chép';
             }
           });
           body.querySelector('#btnDoneCreatedWb')?.addEventListener('click', () => {
@@ -2413,11 +2470,11 @@ function openWeatherSlotModal(order) {
       }
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button type="button" class="btn-frost ${tab === 'ingame' ? 'is-active' : ''}" data-wb-cust-tab="ingame" style="padding:5px 11px;font-size:12px;">Tìm theo Tên (Trong Game)</button>
-        <button type="button" class="btn-frost ${tab === 'roleid' ? 'is-active' : ''}" data-wb-cust-tab="roleid" style="padding:5px 11px;font-size:12px;">Theo Role ID</button>
+        <button type="button" class="btn-frost ${tab === 'roleid' ? 'is-active' : ''}" data-wb-cust-tab="roleid" style="padding:5px 11px;font-size:12px;">Theo mã ID nhân vật</button>
         ${state.user?.role === 'admin' ? `<button type="button" class="btn-frost ${tab === 'saved' ? 'is-active' : ''}" data-wb-cust-tab="saved" style="padding:5px 11px;font-size:12px;">Khách đã lưu</button>` : ''}
       </div>
       <div style="display:flex;gap:8px;">
-        <input type="text" id="wbCustSearchInput" class="input-box" placeholder="${tab === 'ingame' ? 'Nhập tên nhân vật trong game...' : tab === 'roleid' ? 'Nhập Role ID (XXXX-XXXX-XXXX)...' : 'Nhập tên hoặc SUID khách quen...'}" />
+        <input type="text" id="wbCustSearchInput" class="input-box" placeholder="${tab === 'ingame' ? 'Nhập tên nhân vật trong game...' : tab === 'roleid' ? 'Nhập mã ID nhân vật (XXXX-XXXX-XXXX)...' : 'Nhập tên hoặc SUID khách quen...'}" />
         <button type="button" class="btn-violet" id="btnWbCustSearch">Tìm</button>
       </div>
       <div id="wbCustSearchStatus" style="font-size:12px;color:var(--color-fog-veil);"></div>
@@ -2461,7 +2518,7 @@ function openWeatherSlotModal(order) {
                 <div>
                   <strong style="color:#fff;">${escapeHtml(p.Nickname)}</strong>
                   <span class="badge-tag violet" style="margin-left:6px;">${escapeHtml(p.RegionName || p.Region || 'VN')}</span>
-                  <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)} · ${escapeHtml(p.Online_Status || '')}</div>
+                  <div style="font-size:11px;color:var(--color-fog-veil);">SUID: ${escapeHtml(p.suid)}${p.Online_Status ? ` · ${escapeHtml(formatOnlineStatusVi(p.Online_Status))}` : ''}</div>
                 </div>
                 <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11px;" data-wb-pick-ingame="${i}">Gán khách</button>
               </div>
@@ -2488,8 +2545,8 @@ function openWeatherSlotModal(order) {
           stEl.textContent = `Lỗi: ${err.message}`;
         }
       } else if (tab === 'roleid') {
-        if (!q) { showToast('Vui lòng nhập Role ID.'); return; }
-        stEl.textContent = '⏳ Đang kiểm tra Role ID...';
+        if (!q) { showToast('Vui lòng nhập mã ID nhân vật.'); return; }
+        stEl.textContent = '⏳ Đang kiểm tra mã ID nhân vật...';
         try {
           const r = await apiFetch('/api/customer/resolve-role-id', 'POST', { role_id: q });
           if (r.success && r.customer?.customerId) {
@@ -2774,7 +2831,7 @@ async function openFruitWarehouseModal() {
 
   body.innerHTML = `
     <input type="text" id="whFruitFilterInput" class="input-box" placeholder="🔍 Tìm tên trái cây trong kho (${fruits.length} loại)..." />
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;max-height:420px;overflow-y:auto;padding:2px;" id="whFruitGrid"></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,155px),1fr));gap:10px;max-height:420px;overflow-y:auto;padding:2px;" id="whFruitGrid"></div>
   `;
 
   const grid = body.querySelector('#whFruitGrid');
@@ -2900,7 +2957,7 @@ async function openCategoryPriceListModal(catKey) {
       body.innerHTML = `<div class="pkg-picker-list">${visible.map(pkg => `<div class="pkg-picker-card">
         <strong>${escapeHtml(pkg.giftName || 'Gói')} · ${formatNum(pkg.quantity || pkg.coin_quantity)} ${units[catKey] || ''}</strong>
         <div>${formatVnd(pkg.total_price)} ${pkg.is_on_sale && pkg.original_price > pkg.total_price ? `<del>${formatVnd(pkg.original_price)}</del>` : ''}</div>
-        ${pkg.is_on_sale && pkg.sale ? `<span class="badge-tag amber">Sale còn ${formatNum(pkg.sale.slots_remaining)} slot</span>` : ''}
+        ${pkg.is_on_sale && pkg.sale ? `<span class="badge-tag amber">Giảm giá · còn ${formatNum(pkg.sale.slots_remaining)} suất</span>` : ''}
       </div>`).join('')}</div>`;
     });
   }
@@ -2956,7 +3013,7 @@ function renderDashboardOverviewHtml() {
       <div class="panel-title-row">
         <span class="panel-title-text">Danh mục Chạy Đơn (Đồng bộ trạng thái thực tế)</span>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:12px;">
         ${catCards
           .map(
             (c) => `
@@ -3329,7 +3386,7 @@ function renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol =
       ${showCategoryCol ? `<td><span class="badge-tag violet">${escapeHtml(p.catLabel)}</span></td>` : ''}
       <td>
         <strong style="color:#fff;">${escapeHtml(p.name)}</strong>
-        ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Sale</span>` : ''}
+        ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Giảm giá</span>` : ''}
         <div style="font-size:11px;color:${sub.custom ? '#fbbf24' : '#5eead4'};margin-top:3px;">
           ${escapeHtml(sub.text)}
         </div>
@@ -4533,7 +4590,7 @@ function renderAdminCtvPageHtml() {
           ${
             isMaintenance
               ? 'Toàn bộ tài khoản CTV đang đăng nhập hiện đang thấy màn hình <strong>"Hệ thống Zn đang bảo trì"</strong> và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
-              : 'Khi bật nút <strong>Bảo trì</strong>, CTV đang đăng nhập sẽ thấy <strong>"Hệ thống Zn đang bảo trì"</strong>. Nút <strong>Cập nhật cho CTV</strong> sẽ tự động F5 toàn bộ CTV (CTV đang off sẽ tự F5 ở lần vào trình duyệt kế tiếp).'
+              : 'Khi bật nút <strong>Bảo trì</strong>, CTV đang đăng nhập sẽ thấy <strong>"Hệ thống Zn đang bảo trì"</strong>. Nút <strong>Cập nhật cho CTV</strong> sẽ tự động tải lại trang cho toàn bộ CTV (CTV đang ngoại tuyến sẽ tự tải lại ở lần vào trình duyệt kế tiếp).'
           }
         </div>
       </div>
@@ -4608,7 +4665,7 @@ function renderAdminCtvPageHtml() {
           <thead>
             <tr>
               <th>TÊN CTV</th>
-              <th>USERNAME / EMAIL</th>
+              <th>TÊN ĐĂNG NHẬP / EMAIL</th>
               <th>SỐ DƯ VÍ HIỆN TẠI</th>
               <th>SỐ ĐƠN ĐÃ ĐẶT</th>
               <th>DOANH SỐ / LÃI THU VỀ</th>
@@ -4845,7 +4902,7 @@ function renderAdminSystemPageHtml() {
       <div class="panel-title-row">
         <span class="panel-title-text">💾 Lưu trữ Dữ liệu & Sao lưu (Chống mất tài khoản CTV)</span>
         <span class="badge-tag ${isPg ? 'green' : storage.isRender ? 'red' : 'amber'}">
-          ${isPg ? '● PostgreSQL (Bền vững — Không mất khi hosting tắt)' : storage.isRender ? '● JSON ổ tạm Render (Sẽ mất khi ngủ/redeploy)' : '● JSON cục bộ (data/db.json)'}
+          ${isPg ? '● PostgreSQL (Bền vững — Không mất khi máy chủ nghỉ)' : storage.isRender ? '● JSON ổ tạm Render (Sẽ mất khi máy chủ nghỉ / triển khai lại)' : '● JSON cục bộ (data/db.json)'}
         </span>
       </div>
       <div style="display:flex;flex-direction:column;gap:14px;">
@@ -4884,9 +4941,9 @@ function renderAdminSystemPageHtml() {
 
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
           <button type="button" class="btn-frost" id="btnExportBackupJson">⬇ Tải bản sao lưu JSON</button>
-          <button type="button" class="btn-frost" id="btnImportBackupJson">⬆ Khôi phục từ file JSON</button>
+          <button type="button" class="btn-frost" id="btnImportBackupJson">⬆ Khôi phục từ tệp JSON</button>
           <input type="file" id="admBackupFileInput" accept="application/json,.json" style="display:none;" />
-          <span style="font-size:11.5px;color:var(--color-fog-veil);">Bản sao lưu không chứa mật khẩu hay token nguồn API.</span>
+          <span style="font-size:11.5px;color:var(--color-fog-veil);">Bản sao lưu không chứa mật khẩu hay mã xác thực nguồn API.</span>
         </div>
       </div>
     </div>
@@ -4909,7 +4966,7 @@ function renderAdminSystemPageHtml() {
           <input type="password" id="admSrcPassword" class="input-box" autocomplete="new-password" placeholder="••••••••" />
         </div>
         <div class="action-row align-end">
-          <button type="button" class="btn-frost" id="btnAdmReconnectSrc">↻ Đồng bộ & Kết nối lại Token</button>
+          <button type="button" class="btn-frost" id="btnAdmReconnectSrc">↻ Đồng bộ & Kết nối lại nguồn</button>
           <button type="button" class="btn-violet" id="btnAdmSaveSrc">Lưu cấu hình nguồn</button>
         </div>
       </div>
@@ -5016,7 +5073,7 @@ function bindAdminSystemEvents() {
       renderCurrentView();
     } finally {
       button.disabled = false;
-      button.textContent = '↻ Đồng bộ & Kết nối lại Token';
+      button.textContent = '↻ Đồng bộ & Kết nối lại nguồn';
     }
   });
 
@@ -5088,6 +5145,17 @@ function bindGlobalEvents() {
     } catch {}
   }, 30000);
 
+  // Adaptive lightweight progress polling: ONLY polls every 12s while user has an active running order
+  // in view (server coalesces scoped active endpoint every 10s -> 1 tiny call shared by all CTVs, 0 calls when idle).
+  setInterval(async () => {
+    if (!state.user || document.hidden || state.maintenanceLocked || state.loadingOrders || isUserTypingOrModalOpen()) return;
+    if (!hasRunningOrdersInView()) return;
+    try {
+      const changed = await loadOrders(false, { live: true });
+      if (changed && !isUserTypingOrModalOpen()) renderCurrentViewPreservingScroll();
+    } catch {}
+  }, 12000);
+
   // Sync session, wallet balance, and live orders every 60s.
   setInterval(async () => {
     if (!state.user || document.hidden) return;
@@ -5100,8 +5168,10 @@ function bindGlobalEvents() {
       if (state.currentView === 'admin_monitor' && state.user?.role === 'admin') {
         await loadAdminMonitor();
       } else if ((ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'order_history') && !isUserTypingOrModalOpen()) {
-        const changed = await loadOrders(false);
-        if (changed && !isUserTypingOrModalOpen()) renderCurrentView();
+        if (Date.now() - (state.lastOrdersSyncAt || 0) >= 10000) {
+          const changed = await loadOrders(false);
+          if (changed && !isUserTypingOrModalOpen()) renderCurrentViewPreservingScroll();
+        }
       }
     } catch {}
   }, 60000);
@@ -5145,12 +5215,19 @@ function bindGlobalEvents() {
     });
   }
 
-  // When returning to tab, refresh only if stale (> 1 min for Admin, > 10 min for CTV).
+  // When returning to tab, refresh orders promptly if stale (>10s) and catalog only if stale (>1 min Admin / >10 min CTV).
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden) return;
       if (state.user?.role !== 'admin') await checkCtvMaintenance();
       if (!state.user || state.maintenanceLocked) return;
+      const onOrderView = ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'order_history';
+      if (onOrderView && !state.loadingOrders && Date.now() - (state.lastOrdersSyncAt || 0) >= 10000) {
+        try {
+          const ordChanged = await loadOrders(false, { live: hasRunningOrdersInView() });
+          if (ordChanged && !isUserTypingOrModalOpen()) renderCurrentViewPreservingScroll();
+        } catch {}
+      }
       const intervalMs = state.user.role === 'admin' ? 60 * 1000 : 10 * 60 * 1000;
       if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
       lastClientCatalogSyncAt = Date.now();

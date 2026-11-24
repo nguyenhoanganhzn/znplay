@@ -1851,3 +1851,75 @@ test('Sunday midnight Vietnam time clears previous history and preserves open or
   assert.equal(server.db.transactions.length, 1);
   assert.equal(server.db.users[1].balance, 50000);
 });
+
+test('CTV scoped live progress sync fetches only active category endpoint and detects completion immediately', async t => {
+  let now = Date.parse('2026-11-24T12:00:00Z');
+  class Clock extends Date { static now() { return now; } }
+  let progress = 37;
+  let finished = false;
+  const hitPaths = [];
+  const server = await startTestServer(t, async url => {
+    const u = new URL(url);
+    hitPaths.push(`${u.pathname}?${u.searchParams.get('status_group') || ''}`);
+    if (u.pathname === '/api/fruit-coin-orders' && u.searchParams.get('status_group') === 'active') {
+      return { ok: true, status: 200, json: async () => ({ data: { current_page: 1, last_page: 1, data: finished ? [] : [{ id: 18294, status: 'assigned', is_active: true, total_cnt: 100, completed_cnt: progress, customer: { nickname: 'Niuubie5', suid: '7829' } }] } }) };
+    }
+    if (u.pathname === '/api/fruit-coin-orders' && u.searchParams.get('status_group') === 'completed') {
+      return { ok: true, status: 200, json: async () => ({ data: { current_page: 1, last_page: 1, data: finished ? [{ id: 18294, status: 'completed', is_active: false, total_cnt: 100, completed_cnt: 100, customer: { nickname: 'Niuubie5', suid: '7829' } }] : [] } }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ data: { current_page: 1, last_page: 1, data: [] } }) };
+  }, {
+    clock: Clock,
+    seed(db) {
+      db.localOrders.push({
+        id: 'ord-fruit-1', remoteOrderId: 18294, category: 'fruit_coin', categoryName: 'Trái cây',
+        summary: 'Gói 10.000.000 Xu', customer: { nickname: 'Niuubie5', suid: '7829' },
+        sellPrice: 3000, status: 'assigned', isActive: true, totalCnt: 100, completedCnt: 0,
+        placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, createdAt: new Date(now).toISOString(),
+      });
+    },
+  });
+
+  const seller = (await server.login('seller', 'seller-test-password')).body.token;
+  // Initial scoped load for fruit_all touches ONLY fruit active + fruit completed (2 calls instead of 11).
+  const first = await server.request('/api/orders?category=fruit_all&limit=20', 'GET', seller);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.orders[0].completedCnt, 37);
+  assert.equal(hitPaths.length, 2);
+
+  // Within 10s, live progress poll uses cache -> 0 upstream calls.
+  now += 5000;
+  progress = 68;
+  const cached = await server.request('/api/orders?category=fruit_all&limit=20&live=1', 'GET', seller);
+  assert.equal(cached.body.orders[0].completedCnt, 37);
+  assert.equal(hitPaths.length, 2);
+
+  // After 10s, live progress poll fetches ONLY the 1 active endpoint (not completed, not other 9 endpoints).
+  now += 6000;
+  const updated = await server.request('/api/orders?category=fruit_all&limit=20&live=1', 'GET', seller);
+  assert.equal(updated.body.orders[0].completedCnt, 68);
+  assert.equal(hitPaths.length, 3);
+  assert.equal(hitPaths[2], '/api/fruit-coin-orders?active');
+
+  // Once order finishes and disappears from active, server detects missing active order & immediately checks completed.
+  now += 11000;
+  finished = true;
+  const done = await server.request('/api/orders?category=fruit_all&limit=20&live=1', 'GET', seller);
+  assert.equal(done.body.orders[0].status, 'completed');
+  assert.equal(done.body.orders[0].completedCnt, 100);
+  assert.equal(hitPaths.length, 5);
+
+  // Rendered UI localizes status badges and filter labels to Vietnamese.
+  const client = createClient();
+  client.state.user = { id: 'seller', role: 'ctv', name: 'Seller', balance: 50000 };
+  client.state.catalogData = { systemStatus: { fruit_coin: true }, processingRates: {} };
+  client.state.orders = [
+    { id: '1', remoteOrderId: 18294, category: 'fruit_coin', summary: 'Gói 10M Xu', sellPrice: 3000, status: 'assigned', isActive: true, totalCnt: 100, completedCnt: 68, createdAt: new Date(now).toISOString(), customer: { nickname: 'Niuubie5', suid: '7829' } },
+    { id: '2', remoteOrderId: 18295, category: 'fruit_coin', summary: 'Gói 5M Xu', sellPrice: 2000, status: 'pending', isActive: false, totalCnt: 100, completedCnt: 0, createdAt: new Date(now).toISOString(), customer: { nickname: 'Player2', suid: '1111' } },
+  ];
+  const html = client.context.renderOrderCategoryPageHtml('fruit_coin');
+  assert.match(html, /Đang chạy/);
+  assert.match(html, /Chờ xử lý/);
+  assert.match(html, /Tự động cập nhật tiến độ/);
+  assert.doesNotMatch(html, />assigned<|>pending<|\(Active\)|\(Paused\)/);
+});

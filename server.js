@@ -2924,42 +2924,48 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     // Scope the list before including source-only orders for administrators.
     let results = db.localOrders
       .filter((lo) => isAdmin || lo.placedBy?.id === user.id)
-      .map((lo) => ({
-        id: lo.id,
-        remoteOrderId: lo.remoteOrderId,
-        category: lo.category,
-        categoryName: CATEGORY_METADATA[lo.category]?.menuLabel || lo.categoryName,
-        summary: lo.summary,
-        customer: lo.customer,
-        sellPrice: lo.sellPrice,
-        costPrice: isAdmin ? lo.costPrice : undefined,
-        markupAmount: isAdmin ? lo.markupAmount : undefined,
-        placedBy: isAdmin ? lo.placedBy : undefined,
-        status: lo.status,
-        isActive: lo.isActive,
-        totalCnt: lo.totalCnt || 0,
-        sendingCnt: lo.sendingCnt || 0,
-        completedCnt: lo.completedCnt || 0,
-        failedCnt: lo.failedCnt || 0,
-        lastAssignedAt: lo.lastAssignedAt || null,
-        note: isAdmin
-          ? lo.note || null
-          : lo.cancelRequested
-          ? 'Đã gửi yêu cầu hủy cho admin.'
-          : lo.requiresReview
-          ? 'Đang được admin đối soát.'
-          : lo.category === 'weather_buff' && lo.note && !/hoannguyen|giá|price/i.test(lo.note)
-          ? lo.note
-          : null,
-        weather: lo.category === 'weather_buff' ? lo.weather || null : undefined,
-        weatherDeletePending: lo.weatherDeletePending || undefined,
-        weatherDeleteAt: !isAdmin && lo.category === 'weather_buff' && lo.status === 'pending' && !lo.weatherDeletePending && !lo.requiresReview && !lo.refundPending && !lo.refundedAmount &&
-          emptyWeatherOrder(remoteMap.get(`weather_buff:${lo.remoteOrderId}`)) ? Date.parse(lo.createdAt) + 15000 : undefined,
-        cancelRequested: !!lo.cancelRequested,
-        requiresReview: !!lo.requiresReview,
-        createdAt: lo.createdAt,
-        source: 'znplay',
-      }));
+      .map((lo) => {
+        const weatherRemote = lo.category === 'weather_buff' ? remoteMap.get(`weather_buff:${lo.remoteOrderId}`) : null;
+        const weatherCreatedMs = lo.category === 'weather_buff' ? weatherOrderCreatedMs(lo, weatherRemote) : NaN;
+        const canCtvDeleteWeather = !isAdmin && lo.category === 'weather_buff' && lo.status === 'pending' && !lo.weatherDeletePending && !lo.requiresReview && !lo.refundPending && !lo.refundedAmount &&
+          emptyWeatherOrder(weatherRemote) && Number.isFinite(weatherCreatedMs) && Date.now() < weatherCreatedMs + WEATHER_DELETE_MAX_AGE_MS;
+        return {
+          id: lo.id,
+          remoteOrderId: lo.remoteOrderId,
+          category: lo.category,
+          categoryName: CATEGORY_METADATA[lo.category]?.menuLabel || lo.categoryName,
+          summary: lo.summary,
+          customer: lo.customer,
+          sellPrice: lo.sellPrice,
+          costPrice: isAdmin ? lo.costPrice : undefined,
+          markupAmount: isAdmin ? lo.markupAmount : undefined,
+          placedBy: isAdmin ? lo.placedBy : undefined,
+          status: lo.status,
+          isActive: lo.isActive,
+          totalCnt: lo.totalCnt || 0,
+          sendingCnt: lo.sendingCnt || 0,
+          completedCnt: lo.completedCnt || 0,
+          failedCnt: lo.failedCnt || 0,
+          lastAssignedAt: lo.lastAssignedAt || null,
+          note: isAdmin
+            ? lo.note || null
+            : lo.cancelRequested
+            ? 'Đã gửi yêu cầu hủy cho admin.'
+            : lo.requiresReview
+            ? 'Đang được admin đối soát.'
+            : lo.category === 'weather_buff' && lo.note && !/hoannguyen|giá|price/i.test(lo.note)
+            ? lo.note
+            : null,
+          weather: lo.category === 'weather_buff' ? lo.weather || null : undefined,
+          weatherDeletePending: lo.weatherDeletePending || undefined,
+          weatherDeleteAt: canCtvDeleteWeather ? weatherCreatedMs + WEATHER_DELETE_MIN_AGE_MS : undefined,
+          weatherDeleteUntil: canCtvDeleteWeather ? weatherCreatedMs + WEATHER_DELETE_MAX_AGE_MS : undefined,
+          cancelRequested: !!lo.cancelRequested,
+          requiresReview: !!lo.requiresReview,
+          createdAt: lo.createdAt,
+          source: 'znplay',
+        };
+      });
 
     // Admin also sees pre-existing orders synced from HoanNguyen
     if (isAdmin) {
@@ -3394,6 +3400,16 @@ app.post('/api/orders/weather_buff/:remoteId/share-link', requireAuth, limitInte
   }
 }));
 
+const WEATHER_DELETE_MIN_AGE_MS = 15 * 1000;
+const WEATHER_DELETE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+
+function weatherOrderCreatedMs(order, row = null) {
+  const localMs = Date.parse(order?.createdAt);
+  const remoteMs = Date.parse(row?.created_at);
+  if (Number.isFinite(localMs) && Number.isFinite(remoteMs)) return Math.min(localMs, remoteMs);
+  return Number.isFinite(localMs) ? localMs : remoteMs;
+}
+
 function emptyWeatherOrder(row) {
   const zero = n => n === 0 || n === '0';
   return row?.status === 'pending' && (row.is_active === false || zero(row.is_active))
@@ -3418,8 +3434,14 @@ async function deleteEmptyWeatherOrder(req, res, order) {
   if (!order || order.placedBy?.role !== 'ctv' || (!admin && order.placedBy.id !== req.user.id)) {
     return reject(403, 'Bạn chỉ có thể xóa đơn Buff Thời Tiết của mình.');
   }
-  const unlockAt = Date.parse(order.createdAt) + 15000;
-  if (!Number.isFinite(unlockAt) || Date.now() < unlockAt) return reject(409, 'Có thể xóa đơn sau 15 giây kể từ khi tạo.');
+  const reconciling = admin && order.weatherDeletePending && req.body?.confirmed_deleted === true;
+  const localCreatedMs = weatherOrderCreatedMs(order);
+  if (!Number.isFinite(localCreatedMs) || Date.now() < localCreatedMs + WEATHER_DELETE_MIN_AGE_MS) {
+    return reject(409, 'Có thể xóa đơn sau 15 giây kể từ khi tạo.');
+  }
+  if (!reconciling && Date.now() >= localCreatedMs + WEATHER_DELETE_MAX_AGE_MS) {
+    return reject(409, 'Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được.');
+  }
   if (order.requiresReview || order.refundPending || order.refundedAmount || (!order.weatherDeletePending && order.status !== 'pending')) {
     return reject(409, 'Trạng thái hiện tại của đơn không cho phép hoàn toàn bộ tiền.');
   }
@@ -3432,13 +3454,16 @@ async function deleteEmptyWeatherOrder(req, res, order) {
   const id = encodeURIComponent(order.remoteOrderId);
   const row = await findSourceWeatherOrder(id, 'active');
   req.auditDetails = { category: order.category, remoteOrderId: order.remoteOrderId, userId: owner.id };
-  const reconciling = admin && order.weatherDeletePending && req.body?.confirmed_deleted === true;
   if (reconciling && !emptyWeatherOrder(row) && (row || await findSourceWeatherOrder(id, 'completed'))) {
     delete order.weatherDeletePending;
     orderCache = {};
     return reject(409, 'Đơn vẫn tồn tại và đã thay đổi tại nguồn. Đã đóng yêu cầu xóa và giữ nguyên ví CTV.');
   }
   if (!reconciling || row) {
+    const effectiveCreatedMs = weatherOrderCreatedMs(order, row);
+    if (!reconciling && (!Number.isFinite(effectiveCreatedMs) || Date.now() >= effectiveCreatedMs + WEATHER_DELETE_MAX_AGE_MS)) {
+      return reject(409, 'Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được.');
+    }
     if (!emptyWeatherOrder(row)) return reject(409, order.weatherDeletePending
       ? 'Yêu cầu xóa cần admin kiểm tra tại nguồn để đối soát.' : 'Chỉ có thể xóa đơn chưa chạy, chưa gán khách và chưa chọn thời tiết.');
     if (!canRefund()) return reject(409, 'Ví hoặc đơn đã thay đổi. Vui lòng làm mới.');

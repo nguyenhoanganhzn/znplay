@@ -1156,6 +1156,23 @@ test('empty weather deletion enforces ownership and age, rechecks the source and
   order.createdAt = new Date(Date.now() - 15001).toISOString();
   const listing = await server.request('/api/orders?category=weather_buff', 'GET', seller);
   assert.equal(listing.body.orders[0].weatherDeleteAt, Date.parse(order.createdAt) + 15000);
+  assert.equal(listing.body.orders[0].weatherDeleteUntil, Date.parse(order.createdAt) + 3 * 60 * 60 * 1000);
+  // Weather orders older than 3 hours cannot be deleted by CTV and do not expose weatherDeleteAt
+  const prevCreatedAt = order.createdAt;
+  order.createdAt = new Date(Date.now() - 3 * 60 * 60 * 1000 - 1000).toISOString();
+  const expiredListing = await server.request('/api/orders?category=weather_buff&refresh=1', 'GET', seller);
+  assert.equal(expiredListing.body.orders[0].weatherDeleteAt, undefined);
+  assert.equal(expiredListing.body.orders[0].weatherDeleteUntil, undefined);
+  const expiredDel = await del();
+  assert.equal(expiredDel.status, 409);
+  assert.match(expiredDel.body.message, /quá 3 tiếng/);
+  assert.equal(deletes, 0);
+  // Also blocked if source created_at is older than 3 hours even when local createdAt is fresh
+  order.createdAt = prevCreatedAt;
+  row.created_at = new Date(Date.now() - 3 * 60 * 60 * 1000 - 5000).toISOString();
+  assert.equal((await del()).status, 409);
+  assert.equal(deletes, 0);
+  delete row.created_at;
   for (const [key, value] of Object.entries({ status: 'assigned', is_active: true, completed_cnt: 1, failed_cnt: 1,
     sending_cnt: 1, remote_ref: 'started', casting: {}, slots: [{ customer_id: 55 }], weathers: [{ quantity: 1 }] })) {
     const prev = row[key];

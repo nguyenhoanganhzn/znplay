@@ -1036,8 +1036,10 @@ function renderOrderCategoryPageHtml(catKey) {
         <div style="font-size:13px;font-weight:700;color:#c4b5fd;margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
         <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--color-moon-mist);line-height:1.7;">
           <li><strong>Bước 1:</strong> Bấm <strong>+ Thêm Đơn Hàng</strong> để mua gói số lần thời tiết trước (chưa cần chọn khách khi tạo gói).</li>
-          <li><strong>Bước 2:</strong> Sau khi tạo đơn, hệ thống tự trả <strong>Link theo dõi công khai</strong> ở cột <strong>LINK</strong> — bấm <strong>📋 Copy link</strong> gửi cho khách tự xem & chỉnh, hoặc bấm <strong>👤 Gán khách</strong> + <strong>☁️ Chọn thời tiết</strong> trực tiếp trên bảng rồi bật công tắc chạy.</li>
-          <li>Sau khi bật đơn vẫn có thể <strong>Đổi khách</strong> — khách mới sẽ nhận phần thời tiết còn lại. Phần thời tiết đã chạy xong sẽ cố định không đổi được.</li>
+          <li><strong>Bước 2:</strong> Sau khi tạo đơn, chọn khách và ít nhất một thời tiết để chạy đơn, hoặc bấm <strong>📋 Copy link</strong> gửi link công khai cho khách tự xem & chỉnh.</li>
+          <li>Sau khi bật đơn vẫn đổi được khách. Khách mới nhận phần thời tiết còn lại. Phần thời tiết đã chạy xong thì không đổi được.</li>
+          <li>Đơn chưa hoàn thành, <strong>tạo quá 3 tiếng thì không xóa được</strong> (chỉ hỗ trợ xóa đơn trống chưa gán khách, chưa chọn thời tiết trong vòng 3 tiếng kể từ lúc tạo).</li>
+          <li style="color:#fbbf24;font-weight:600;">Hãy cân nhắc trước khi lên đơn vì Admin chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</li>
         </ul>
       </div>
     `
@@ -1250,7 +1252,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
             isAdmin && o.remoteOrderId && o.status !== 'cancelled'
               ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">${o.weatherDeletePending ? 'Đối soát xóa đơn' : 'Hủy tại nguồn'}</button></div>`
               : o.weatherDeletePending ? '<span class="tool-note">Chờ đối soát xóa đơn</span>'
-              : Number.isFinite(o.weatherDeleteAt) ? `<div><button type="button" class="btn-frost" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${o.weatherDeleteAt}" disabled>Xóa đơn</button></div>` : ''
+              : Number.isFinite(o.weatherDeleteAt) ? `<div><button type="button" class="btn-frost" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${o.weatherDeleteAt}" ${Number.isFinite(o.weatherDeleteUntil) ? `data-expire-at="${o.weatherDeleteUntil}"` : ''} disabled>Xóa đơn</button></div>` : ''
           }
         </div>
       </td>
@@ -1442,17 +1444,35 @@ function bindOrderRowActionButtons() {
   });
 
   document.querySelectorAll('[data-delete-order]').forEach((btn) => {
+      const expireAt = btn.hasAttribute('data-expire-at') ? Number(btn.dataset.expireAt) : NaN;
+      const isExpired = () => Number.isFinite(expireAt) && (Date.now() + (state.orderClockOffset || 0)) >= expireAt;
       if (btn.hasAttribute('data-unlock-at')) {
         const tick = () => {
           if (!btn.isConnected) return;
-          const left = Math.ceil((Number(btn.dataset.unlockAt) - Date.now() - (state.orderClockOffset || 0)) / 1000);
+          if (isExpired()) {
+            (btn.parentElement || btn).remove();
+            return;
+          }
+          const nowServer = Date.now() + (state.orderClockOffset || 0);
+          const left = Math.ceil((Number(btn.dataset.unlockAt) - nowServer) / 1000);
           btn.disabled = left > 0;
           btn.textContent = left > 0 ? `Xóa sau ${left}s` : 'Xóa đơn';
-          if (left > 0) setTimeout(tick, 1000);
+          if (left > 0) {
+            setTimeout(tick, 1000);
+          } else if (Number.isFinite(expireAt)) {
+            const msUntilExpire = expireAt - nowServer;
+            if (msUntilExpire <= 0) (btn.parentElement || btn).remove();
+            else if (msUntilExpire <= 2147483647) setTimeout(tick, Math.min(msUntilExpire + 200, 60000));
+          }
         };
         tick();
       }
       btn.addEventListener('click', async () => {
+        if (isExpired()) {
+          showToast('Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được.');
+          (btn.parentElement || btn).remove();
+          return;
+        }
         const remId = btn.dataset.deleteOrder;
         const cat = btn.dataset.orderCat;
         const ord = state.orders.find((o) => o.category === cat && String(o.remoteOrderId) === String(remId));
@@ -1815,6 +1835,7 @@ function renderCreateOrderModalBody() {
         ? `
       <div style="padding:11px 14px;background:rgba(139,92,246,0.14);border-radius:10px;border:1px solid rgba(167,139,250,0.3);color:#ddd6fe;font-size:12.5px;line-height:1.55;">
         ☁️ <strong>Quy tắc Buff Thời Tiết:</strong> Chọn gói số lần và bấm <strong>Xác Nhận</strong> để tạo đơn trước (chưa cần chọn khách ngay lúc này). Sau khi tạo xong, bấm <strong>👤 Gán khách</strong> và <strong>☁️ Chọn thời tiết</strong> trên bảng đơn rồi bật chạy!
+        <div style="margin-top:6px;color:#fbbf24;font-weight:600;">⚠️ Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được. Hãy cân nhắc trước khi lên đơn vì Admin chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</div>
       </div>
     `
         : `

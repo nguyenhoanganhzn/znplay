@@ -3204,6 +3204,7 @@ function getAllAdminFixedPackages(r) {
         sellPrice: p.total_price,
         profit: p._admin?.profit ?? 0,
         hasOverride: p._admin?.has_custom_override ?? false,
+        customOverride: p._admin?.custom_override || null,
       });
     }
   };
@@ -3227,11 +3228,138 @@ function getAllAdminFixedPackages(r) {
           sellPrice: p.total_price,
           profit: p._admin?.profit ?? 0,
           hasOverride: p._admin?.has_custom_override ?? false,
+          customOverride: p._admin?.custom_override || null,
         });
       }
     }
   }
   return fixedPackages;
+}
+
+const FEATURED_PER_PKG_CATS = new Set(['fruit_coin', 'buff_tim', 'buff_sao']);
+
+function countCategoryOverrides(catKey, adm) {
+  if (catKey === 'fruit_by_fruit') {
+    return Object.keys(adm?.settings?.fruitUnitPrices || {}).length;
+  }
+  const keys = new Set();
+  for (const k of Object.keys(adm?.settings?.packagePriceOverrides || {})) {
+    if (k.startsWith(`${catKey}:`)) keys.add(k);
+  }
+  for (const k of Object.keys(adm?.settings?.packageMarkupOverrides || {})) {
+    if (k.startsWith(`${catKey}:`)) keys.add(k);
+  }
+  return keys.size;
+}
+
+function getPackageEditorInitial(p, cm, modes, percents) {
+  if (p.customOverride?.type === 'markup') {
+    return { mode: p.customOverride.mode === 'percent' ? 'percent' : 'fixed', value: Number(p.customOverride.value ?? 0) };
+  }
+  if (p.customOverride?.type === 'price' || p.hasOverride) {
+    return { mode: 'price', value: Number(p.customOverride?.value ?? p.sellPrice ?? 0) };
+  }
+  const catMode = modes[p.catKey] === 'percent' ? 'percent' : 'fixed';
+  return {
+    mode: catMode,
+    value: catMode === 'percent' ? Number(percents[p.catKey] ?? 0) : Number(cm[p.catKey] ?? 5000),
+  };
+}
+
+function computePackagePreview(cost, mode, rawValue) {
+  const c = Math.max(0, Number(cost || 0));
+  const val = Number(rawValue);
+  if (!Number.isFinite(val) || val < 0) return { sell: c, profit: 0, pct: 0 };
+  let sell;
+  if (mode === 'percent') {
+    const pct = Math.min(500, val);
+    sell = Math.max(c, Math.round(c * (100 + pct) / 100));
+  } else if (mode === 'price') {
+    sell = Math.max(c, Math.round(val));
+  } else {
+    sell = Math.max(c, Math.round(c + val));
+  }
+  const profit = sell - c;
+  const pct = c > 0 ? Math.round((profit / c) * 1000) / 10 : 0;
+  return { sell, profit, pct };
+}
+
+function formatPackageRuleSubtitle(p, cm, modes, percents) {
+  if (p.customOverride?.type === 'markup') {
+    const label = p.customOverride.mode === 'percent'
+      ? `+${p.customOverride.value}% riêng`
+      : `+${formatVnd(p.customOverride.value)} riêng`;
+    return { custom: true, text: `🔒 Chỉnh riêng (${label}) · bỏ qua quy tắc chung` };
+  }
+  if (p.hasOverride) {
+    return { custom: true, text: `🔒 Giá bán cố định riêng (${formatVnd(p.sellPrice)}) · bỏ qua quy tắc chung` };
+  }
+  const ruleText = modes[p.catKey] === 'percent'
+    ? `+${percents[p.catKey] ?? 0}%`
+    : `+${formatVnd(cm[p.catKey] ?? 5000)}`;
+  return { custom: false, text: `Theo quy tắc chung (${ruleText})` };
+}
+
+function renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol = true, idPrefix = 'admPkg' }) {
+  const init = getPackageEditorInitial(p, cm, modes, percents);
+  const sub = formatPackageRuleSubtitle(p, cm, modes, percents);
+  const preview = computePackagePreview(p.costPrice, init.mode, init.value);
+  const safeId = `${idPrefix}_${p.key.replace(':', '_')}`;
+  const unitLabel = init.mode === 'percent' ? '%' : init.mode === 'price' ? 'đ bán' : 'đ cộng thêm';
+  const step = init.mode === 'percent' ? '0.5' : '1000';
+  const maxAttr = init.mode === 'percent' ? 'max="500"' : '';
+  return `
+    <tr data-pkg-row="${p.key}" data-cost="${p.costPrice}" data-mode="${init.mode}" data-has-override="${p.hasOverride ? '1' : '0'}" class="${p.hasOverride ? 'is-custom-pkg-row' : ''}">
+      ${showCategoryCol ? `<td><span class="badge-tag violet">${escapeHtml(p.catLabel)}</span></td>` : ''}
+      <td>
+        <strong style="color:#fff;">${escapeHtml(p.name)}</strong>
+        ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Sale</span>` : ''}
+        <div style="font-size:11px;color:${sub.custom ? '#fbbf24' : '#5eead4'};margin-top:3px;">
+          ${escapeHtml(sub.text)}
+        </div>
+      </td>
+      <td style="white-space:nowrap;">
+        <strong>${formatVnd(p.costPrice)}</strong>
+        ${p.isOnSale && p.costOriginal > p.costPrice ? `<div style="font-size:11px;text-decoration:line-through;color:var(--color-fog-veil);">${formatVnd(p.costOriginal)}</div>` : ''}
+      </td>
+      <td style="min-width:240px;">
+        <div class="pkg-custom-editor">
+          <div class="pricing-mode-switch pkg-mode-switch">
+            <button type="button" class="pricing-mode-btn ${init.mode === 'fixed' ? 'is-active' : ''}" data-pkg-mode-btn="${p.key}" data-mode="fixed">+VNĐ</button>
+            <button type="button" class="pricing-mode-btn ${init.mode === 'percent' ? 'is-active' : ''}" data-pkg-mode-btn="${p.key}" data-mode="percent">+%</button>
+            <button type="button" class="pricing-mode-btn ${init.mode === 'price' ? 'is-active' : ''}" data-pkg-mode-btn="${p.key}" data-mode="price">Giá bán</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input
+              type="number"
+              class="input-box adm-pkg-override-input"
+              data-pkg-key="${p.key}"
+              data-cost="${p.costPrice}"
+              data-has-override="${p.hasOverride ? '1' : '0'}"
+              value="${init.value}"
+              step="${step}"
+              min="0"
+              ${maxAttr}
+              style="min-width:110px;padding:6px 10px;"
+            />
+            <span class="pkg-mode-unit" style="font-size:11px;color:var(--color-moon-mist);white-space:nowrap;">${unitLabel}</span>
+          </div>
+        </div>
+      </td>
+      <td style="white-space:nowrap;">
+        <div id="${safeId}_sell" style="font-weight:700;color:#5eead4;font-size:13.5px;">${formatVnd(preview.sell)}</div>
+        <span class="badge-tag ${preview.profit >= 0 ? 'green' : 'red'}" id="${safeId}_profit" style="margin-top:3px;">
+          ${preview.profit >= 0 ? `+${formatVnd(preview.profit)}` : formatVnd(preview.profit)} (${preview.pct >= 0 ? `+${preview.pct}%` : `${preview.pct}%`})
+        </span>
+      </td>
+      <td>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button type="button" class="btn-violet" style="padding:5px 11px;font-size:11.5px;" data-save-pkg-row="${p.key}">✓ Lưu riêng</button>
+          ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 9px;font-size:11px;" data-reset-pkg-override="${p.key}" title="Gỡ giá riêng để chạy theo quy tắc chung của danh mục">↺ Quy tắc chung</button>` : ''}
+        </div>
+      </td>
+    </tr>
+  `;
 }
 
 function renderAdminPricingPageHtml() {
@@ -3307,9 +3435,9 @@ function renderAdminPricingPageHtml() {
             const pctVal = Number(percents[cat.key] ?? 0);
             const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
             const isWorking = !!sysStatus[cat.key];
-            const overrideCount = cat.isFruitUnit
-              ? Object.keys(fruitOverrides).length
-              : Object.keys(pkgOverrides).filter((k) => k.startsWith(`${cat.key}:`)).length;
+            const overrideCount = countCategoryOverrides(cat.key, adm);
+            const catPkgCount = cat.isFruitUnit ? fruits.length : (pkgCatCounts[cat.key] || 0);
+            const showPerPkgBtn = !cat.isFruitUnit && (FEATURED_PER_PKG_CATS.has(cat.key) || catPkgCount > 0);
             const sample = getCategorySampleItem(cat.key, r?.catalog);
             const sampleSell = sample ? computePreviewSell(sample.cost, mode, fixedVal, pctVal) : 0;
             const sampleProfit = sample ? sampleSell - sample.cost : 0;
@@ -3328,7 +3456,7 @@ function renderAdminPricingPageHtml() {
                     <button type="button" class="pricing-mode-btn ${mode === 'fixed' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="fixed">+VNĐ thủ công</button>
                     <button type="button" class="pricing-mode-btn ${mode === 'percent' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="percent">+% Phần trăm</button>
                   </div>
-                  ${overrideCount > 0 ? `<span class="badge-tag amber">${overrideCount} giá riêng</span>` : `<span class="badge-tag green">Tự động</span>`}
+                  ${overrideCount > 0 ? `<span class="badge-tag amber">🔒 ${overrideCount} gói chỉnh riêng</span>` : `<span class="badge-tag green">Tự động</span>`}
                 </div>
 
                 <div data-cat-fixed-wrap="${cat.key}" style="display:${mode === 'fixed' ? 'flex' : 'none'};flex-direction:column;gap:8px;">
@@ -3371,18 +3499,28 @@ function renderAdminPricingPageHtml() {
                   }
                 </div>
 
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:4px;flex-wrap:wrap;">
+                ${
+                  showPerPkgBtn
+                    ? `
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding-top:2px;">
+                    <button type="button" class="btn-frost pricing-cat-subpkg-btn" data-open-cat-pkgs="${cat.key}" style="width:100%;justify-content:space-between;">
+                      <span>📦 Chỉnh từng gói riêng (${catPkgCount} gói)</span>
+                      <span style="font-size:11px;color:${overrideCount > 0 ? '#fbbf24' : '#c4b5fd'};">${overrideCount > 0 ? `${overrideCount} đã chỉnh riêng →` : 'Mở danh sách →'}</span>
+                    </button>
+                  </div>
+                `
+                    : ''
+                }
+
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:6px;border-top:1px solid rgba(186,215,247,0.08);flex-wrap:wrap;">
                   ${
                     overrideCount > 0
-                      ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#fbbf24;cursor:pointer;">
-                          <input type="checkbox" id="admCatApplyOvr_${cat.key}" checked />
-                          <span>Áp dụng luôn cho ${overrideCount} giá riêng</span>
-                        </label>`
-                      : `<span style="font-size:11px;color:var(--color-fog-veil);">Tất cả đang chạy tự động</span>`
+                      ? `<span style="font-size:11.5px;color:#fbbf24;" title="Khi bấm Cập nhật quy tắc chung, các gói đã chỉnh riêng vẫn giữ nguyên giá riêng">🔒 Giữ nguyên ${overrideCount} gói chỉnh riêng</span>`
+                      : `<span style="font-size:11px;color:var(--color-fog-veil);">Áp dụng chung toàn danh mục</span>`
                   }
                   <div style="display:flex;gap:6px;align-items:center;">
                     ${overrideCount > 0 ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-cat-overrides="${cat.key}">↺ Gỡ giá riêng</button>` : ''}
-                    <button type="button" class="btn-violet" style="padding:6px 14px;font-size:12px;" data-save-single-cat="${cat.key}">
+                    <button type="button" class="btn-violet" style="padding:6px 14px;font-size:12px;" data-save-single-cat="${cat.key}" data-override-count="${overrideCount}">
                       ✓ Cập nhật
                     </button>
                   </div>
@@ -3426,8 +3564,8 @@ function renderAdminPricingPageHtml() {
                 <th>DANH MỤC</th>
                 <th>TÊN GÓI DỊCH VỤ</th>
                 <th>GIÁ GỐC NGUỒN</th>
-                <th>GIÁ BÁN CHO CTV (VNĐ)</th>
-                <th>LÃI ADMIN / ĐƠN</th>
+                <th>CHỈNH CỘNG RIÊNG (+VNĐ / +% / GIÁ BÁN)</th>
+                <th>GIÁ BÁN CTV & LÃI</th>
                 <th>CẬP NHẬT</th>
               </tr>
             </thead>
@@ -3436,48 +3574,7 @@ function renderAdminPricingPageHtml() {
                 filteredPackages.length === 0
                   ? `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Hiện nguồn API chưa mở gói nào cho danh mục này.</td></tr>`
                   : filteredPackages.slice(0, pageLimit('pricePackages'))
-                      .map((p) => {
-                        const pctProfit = p.costPrice > 0 ? Math.round((p.profit / p.costPrice) * 100) : 0;
-                        return `
-                <tr>
-                  <td><span class="badge-tag violet">${escapeHtml(p.catLabel)}</span></td>
-                  <td>
-                    <strong style="color:#fff;">${escapeHtml(p.name)}</strong>
-                    ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Sale</span>` : ''}
-                    <div style="font-size:10.5px;color:${p.hasOverride ? '#fbbf24' : '#5eead4'};margin-top:2px;">
-                      ${p.hasOverride ? 'Giá cố định riêng' : modes[p.catKey] === 'percent' ? `Tự động (+${percents[p.catKey] ?? 0}%)` : `Tự động (+${formatVnd(cm[p.catKey] ?? 5000)})`}
-                    </div>
-                  </td>
-                  <td>
-                    <strong>${formatVnd(p.costPrice)}</strong>
-                    ${p.isOnSale && p.costOriginal > p.costPrice ? `<div style="font-size:11px;text-decoration:line-through;color:var(--color-fog-veil);">${formatVnd(p.costOriginal)}</div>` : ''}
-                  </td>
-                  <td style="min-width:170px;max-width:210px;">
-                    <input
-                      type="number"
-                      class="input-box adm-pkg-override-input"
-                      data-pkg-key="${p.key}"
-                      data-cost="${p.costPrice}"
-                      data-has-override="${p.hasOverride ? '1' : '0'}"
-                      value="${p.sellPrice}"
-                      step="1000"
-                      min="0"
-                    />
-                  </td>
-                  <td>
-                    <span class="badge-tag ${p.profit >= 0 ? 'green' : 'red'}" id="admPkgProfit_${p.key.replace(':', '_')}">
-                      ${p.profit >= 0 ? `+${formatVnd(p.profit)}` : formatVnd(p.profit)} (${pctProfit >= 0 ? `+${pctProfit}%` : `${pctProfit}%`})
-                    </span>
-                  </td>
-                  <td>
-                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                      <button type="button" class="btn-violet" style="padding:5px 12px;font-size:11.5px;" data-save-pkg-row="${p.key}">✓ Cập nhật</button>
-                      ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 10px;font-size:11px;" data-reset-pkg-override="${p.key}">↺ Tự động</button>` : ''}
-                    </div>
-                  </td>
-                </tr>
-              `;
-                      })
+                      .map((p) => renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol: true, idPrefix: 'admPkg' }))
                       .join('')
               }
               ${moreButton('pricePackages', filteredPackages.length, 6)}
@@ -3498,8 +3595,8 @@ function renderAdminPricingPageHtml() {
             ${
               Object.keys(fruitOverrides).length > 0
                 ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#fbbf24;cursor:pointer;">
-                    <input type="checkbox" id="admFruitApplyAllOverrides" checked />
-                    <span>Áp dụng luôn cho ${Object.keys(fruitOverrides).length} trái đang đặt giá riêng</span>
+                    <input type="checkbox" id="admFruitApplyAllOverrides" />
+                    <span>Ghi đè luôn ${Object.keys(fruitOverrides).length} trái đang đặt giá riêng</span>
                   </label>`
                 : ''
             }
@@ -3710,59 +3807,134 @@ function buildCategoryPayload(catKey) {
   } else {
     payload.categoryMarkups = { [catKey]: fixedVal };
   }
-  const applyOvr = document.getElementById(`admCatApplyOvr_${catKey}`);
-  if (applyOvr && applyOvr.checked) {
-    payload.resetCategoryOverrides = [catKey];
-  }
+  // Never reset per-package custom overrides when updating the general category rule.
   return payload;
 }
 
+function collectPackageRowPayload(row) {
+  const key = row?.dataset?.pkgKey || row?.dataset?.pkgRow;
+  const mode = row?.dataset?.mode || 'fixed';
+  const inp = row?.querySelector('.adm-pkg-override-input');
+  if (!key || !inp) return { error: 'Không tìm thấy dữ liệu gói.' };
+  const val = Number(inp.value);
+  const cost = Number(row.dataset.cost || inp.dataset.cost || 0);
+  if (inp.value === '' || !Number.isFinite(val)) {
+    return { error: 'Vui lòng nhập số hợp lệ.' };
+  }
+  if (mode === 'price') {
+    if (val <= 0) return { error: 'Giá bán cố định phải lớn hơn 0đ (hoặc bấm ↺ Quy tắc chung).' };
+    return {
+      key,
+      warnBelowCost: val < cost ? { val, cost } : null,
+      packagePriceOverrides: { [key]: Math.round(val) },
+    };
+  }
+  if (mode === 'percent') {
+    if (val < 0 || val > 500) return { error: 'Phần trăm cộng riêng phải nằm trong khoảng 0 đến 500%.' };
+    return {
+      key,
+      packageMarkupOverrides: { [key]: { mode: 'percent', value: Math.round(val * 100) / 100 } },
+    };
+  }
+  if (val < 0) return { error: 'Số tiền cộng riêng phải lớn hơn hoặc bằng 0đ.' };
+  return {
+    key,
+    packageMarkupOverrides: { [key]: { mode: 'fixed', value: Math.round(val) } },
+  };
+}
+
 let admFruitSearchTimer = null;
-function bindPackageRows(scope = document) {
+function bindPackageRows(scope = document, { idPrefix = 'admPkg', onSaved = null } = {}) {
+  const updateRowPreview = (row) => {
+    const key = row.dataset.pkgRow;
+    const cost = Number(row.dataset.cost || 0);
+    const mode = row.dataset.mode || 'fixed';
+    const inp = row.querySelector('.adm-pkg-override-input');
+    const preview = computePackagePreview(cost, mode, inp?.value ?? 0);
+    const safeId = `${idPrefix}_${key.replace(':', '_')}`;
+    const sellEl = row.querySelector(`#${safeId}_sell`) || document.getElementById(`${safeId}_sell`);
+    const profEl = row.querySelector(`#${safeId}_profit`) || document.getElementById(`${safeId}_profit`);
+    if (sellEl) sellEl.textContent = formatVnd(preview.sell);
+    if (profEl) {
+      profEl.textContent = `${preview.profit >= 0 ? `+${formatVnd(preview.profit)}` : formatVnd(preview.profit)} (${preview.pct >= 0 ? `+${preview.pct}%` : `${preview.pct}%`})`;
+      profEl.className = `badge-tag ${preview.profit >= 0 ? 'green' : 'red'}`;
+    }
+  };
+
+  scope.querySelectorAll('[data-pkg-mode-btn]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('tr[data-pkg-row]');
+      if (!row) return;
+      const nextMode = btn.dataset.mode;
+      const prevMode = row.dataset.mode || 'fixed';
+      if (nextMode === prevMode) return;
+      const cost = Number(row.dataset.cost || 0);
+      const inp = row.querySelector('.adm-pkg-override-input');
+      const prevPreview = computePackagePreview(cost, prevMode, inp?.value ?? 0);
+      row.dataset.mode = nextMode;
+      row.querySelectorAll('[data-pkg-mode-btn]').forEach((b) => b.classList.toggle('is-active', b.dataset.mode === nextMode));
+      if (inp) {
+        if (nextMode === 'percent') {
+          inp.value = cost > 0 ? Math.max(0, Math.min(500, Math.round((prevPreview.profit / cost) * 1000) / 10)) : 0;
+          inp.step = '0.5';
+          inp.max = '500';
+        } else if (nextMode === 'price') {
+          inp.value = prevPreview.sell;
+          inp.step = '1000';
+          inp.removeAttribute('max');
+        } else {
+          inp.value = Math.max(0, prevPreview.profit);
+          inp.step = '1000';
+          inp.removeAttribute('max');
+        }
+        inp.dataset.dirty = '1';
+      }
+      const unitEl = row.querySelector('.pkg-mode-unit');
+      if (unitEl) {
+        unitEl.textContent = nextMode === 'percent' ? '%' : nextMode === 'price' ? 'đ bán' : 'đ cộng thêm';
+      }
+      updateRowPreview(row);
+    });
+  });
+
   scope.querySelectorAll('.adm-pkg-override-input').forEach((inp) => {
     inp.addEventListener('input', () => {
       inp.dataset.dirty = '1';
-      const key = inp.dataset.pkgKey;
-      const cost = Number(inp.dataset.cost || 0);
-      const sell = Number(inp.value || 0);
-      const prof = sell - cost;
-      const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
-      const badge = document.getElementById(`admPkgProfit_${key.replace(':', '_')}`);
-      if (badge) {
-        badge.textContent = `${prof >= 0 ? `+${formatVnd(prof)}` : formatVnd(prof)} (${pctProf >= 0 ? `+${pctProf}%` : `${pctProf}%`})`;
-        badge.className = `badge-tag ${prof >= 0 ? 'green' : 'red'}`;
-      }
+      const row = inp.closest('tr[data-pkg-row]');
+      if (row) updateRowPreview(row);
     });
     inp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        document.querySelector(`[data-save-pkg-row="${inp.dataset.pkgKey}"]`)?.click();
+        const row = inp.closest('tr[data-pkg-row]');
+        row?.querySelector('[data-save-pkg-row]')?.click();
       }
     });
   });
 
   scope.querySelectorAll('[data-save-pkg-row]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const key = btn.dataset.savePkgRow;
-      const inp = document.querySelector(`.adm-pkg-override-input[data-pkg-key="${key}"]`);
-      if (!inp) return;
-      const val = Number(inp.value);
-      const cost = Number(inp.dataset.cost || 0);
-      if (!Number.isFinite(val) || val <= 0) {
-        showToast('Giá bán gói phải lớn hơn 0đ (hoặc bấm ↺ Tự động để gỡ giá riêng).');
+      const row = btn.closest('tr[data-pkg-row]');
+      const built = collectPackageRowPayload(row);
+      if (built.error) {
+        showToast(built.error);
         return;
       }
-      if (val < cost) {
-        showToast(`Lưu ý: Giá nhập (${formatVnd(val)}) thấp hơn giá gốc (${formatVnd(cost)}) — hệ thống tự giữ tối thiểu bằng giá gốc.`);
+      if (built.warnBelowCost) {
+        showToast(`Lưu ý: Giá nhập (${formatVnd(built.warnBelowCost.val)}) thấp hơn giá gốc (${formatVnd(built.warnBelowCost.cost)}) — hệ thống tự giữ tối thiểu bằng giá gốc.`);
       }
+      const payload = {};
+      if (built.packagePriceOverrides) payload.packagePriceOverrides = built.packagePriceOverrides;
+      if (built.packageMarkupOverrides) payload.packageMarkupOverrides = built.packageMarkupOverrides;
       btn.disabled = true;
       btn.textContent = 'Đang lưu...';
       try {
-        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: Math.round(val) } }, 'Đã cập nhật giá gói thành công!');
+        await savePricingSettingsAndReload(payload, 'Đã lưu giá riêng cho gói này! (Không bị ảnh hưởng khi sửa quy tắc chung)');
+        if (onSaved) onSaved();
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
         btn.disabled = false;
-        btn.textContent = '✓ Cập nhật';
+        btn.textContent = '✓ Lưu riêng';
       }
     });
   });
@@ -3772,12 +3944,111 @@ function bindPackageRows(scope = document) {
       const key = btn.dataset.resetPkgOverride;
       btn.disabled = true;
       try {
-        await savePricingSettingsAndReload({ packagePriceOverrides: { [key]: null } }, 'Đã đặt lại gói về chế độ giá tự động!');
+        await savePricingSettingsAndReload(
+          { packagePriceOverrides: { [key]: null }, packageMarkupOverrides: { [key]: null } },
+          'Đã đưa gói về quy tắc chung của danh mục!'
+        );
+        if (onSaved) onSaved();
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
         btn.disabled = false;
       }
     });
+  });
+}
+
+function openCategoryPackagePricingModal(catKey) {
+  const overlay = document.getElementById('appModalOverlay');
+  const box = document.getElementById('appModalBox');
+  const title = document.getElementById('appModalTitle');
+  const body = document.getElementById('appModalBody');
+  if (!overlay || !box || !title || !body) return;
+
+  const catMeta = PRICING_CATEGORIES.find((c) => c.key === catKey);
+  const adm = state.adminOverview;
+  const cm = adm?.settings?.categoryMarkups || {};
+  const modes = adm?.settings?.categoryMarkupModes || {};
+  const percents = adm?.settings?.categoryMarkupPercents || {};
+  const allPkgs = getAllAdminFixedPackages(state.catalogData).filter((p) => p.catKey === catKey);
+  const catRuleText = modes[catKey] === 'percent'
+    ? `+${percents[catKey] ?? 0}% trên giá gốc`
+    : `+${formatVnd(cm[catKey] ?? 5000)} / đơn`;
+  const customCount = allPkgs.filter((p) => p.hasOverride).length;
+
+  box.className = 'modal-box wide';
+  title.textContent = `📦 Chỉnh từng gói riêng — ${catMeta?.label || catKey}`;
+
+  body.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:rgba(102,58,243,0.12);padding:12px 14px;border-radius:10px;border:1px solid rgba(167,139,250,0.28);">
+      <div style="font-size:12.5px;color:var(--color-moon-mist);line-height:1.55;">
+        <div>Quy tắc chung hiện tại của danh mục: <strong style="color:#5eead4;">${escapeHtml(catRuleText)}</strong> · Đang chỉnh riêng: <strong style="color:#fbbf24;">${customCount}/${allPkgs.length} gói</strong></div>
+        <div style="font-size:11.5px;color:var(--color-fog-veil);">Gói nào đã bấm <strong>Lưu riêng</strong> sẽ không áp dụng quy tắc chung khi bạn cập nhật danh mục, cho đến khi bạn sửa lại hoặc bấm <strong>↺ Quy tắc chung</strong>.</div>
+      </div>
+      ${allPkgs.length > 0 ? `<button type="button" class="btn-violet" id="btnSaveAllModalCatPkgs" style="padding:7px 14px;font-size:12px;">💾 Lưu tất cả gói đã sửa</button>` : ''}
+    </div>
+    ${
+      allPkgs.length === 0
+        ? `<div style="text-align:center;padding:30px;color:var(--color-fog-veil);">Hiện nguồn API chưa mở gói nào cho danh mục này.</div>`
+        : `
+      <div class="table-wrap" style="max-height:60vh;overflow-y:auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>TÊN GÓI</th>
+              <th>GIÁ GỐC NGUỒN</th>
+              <th>CHỈNH CỘNG RIÊNG (+VNĐ / +% / GIÁ BÁN)</th>
+              <th>GIÁ BÁN CTV & LÃI</th>
+              <th>THAO TÁC</th>
+            </tr>
+          </thead>
+          <tbody id="modalCatPkgsTbody">
+            ${allPkgs.map((p) => renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol: false, idPrefix: 'modalPkg' })).join('')}
+          </tbody>
+        </table>
+      </div>
+    `
+    }
+  `;
+
+  overlay.style.display = 'flex';
+  bindPackageRows(body, {
+    idPrefix: 'modalPkg',
+    onSaved: () => openCategoryPackagePricingModal(catKey),
+  });
+
+  body.querySelector('#btnSaveAllModalCatPkgs')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    const dirtyRows = [...body.querySelectorAll('tr[data-pkg-row]')].filter((row) =>
+      row.querySelector('.adm-pkg-override-input[data-dirty="1"]')
+    );
+    if (dirtyRows.length === 0) {
+      showToast('Chưa có gói nào thay đổi. Hãy nhập mức cộng riêng rồi bấm Lưu.');
+      return;
+    }
+    const packagePriceOverrides = {};
+    const packageMarkupOverrides = {};
+    for (const row of dirtyRows) {
+      const built = collectPackageRowPayload(row);
+      if (built.error) {
+        showToast(built.error);
+        return;
+      }
+      if (built.packagePriceOverrides) Object.assign(packagePriceOverrides, built.packagePriceOverrides);
+      if (built.packageMarkupOverrides) Object.assign(packageMarkupOverrides, built.packageMarkupOverrides);
+    }
+    const payload = {};
+    if (Object.keys(packagePriceOverrides).length > 0) payload.packagePriceOverrides = packagePriceOverrides;
+    if (Object.keys(packageMarkupOverrides).length > 0) payload.packageMarkupOverrides = packageMarkupOverrides;
+    btn.disabled = true;
+    btn.textContent = 'Đang lưu...';
+    try {
+      await savePricingSettingsAndReload(payload, `Đã lưu giá riêng cho ${dirtyRows.length} gói thành công!`);
+      openCategoryPackagePricingModal(catKey);
+    } catch (err) {
+      showToast(`Lỗi: ${err.message}`);
+      btn.disabled = false;
+      btn.textContent = '💾 Lưu tất cả gói đã sửa';
+    }
   });
 }
 
@@ -3836,15 +4107,25 @@ function bindAdminPricingEvents() {
     });
   });
 
+  document.querySelectorAll('[data-open-cat-pkgs]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      openCategoryPackagePricingModal(btn.dataset.openCatPkgs);
+    });
+  });
+
   document.querySelectorAll('[data-save-single-cat]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const catKey = btn.dataset.saveSingleCat;
+      const ovrCount = Number(btn.dataset.overrideCount || 0);
       const payload = buildCategoryPayload(catKey);
       if (!payload) return;
       btn.disabled = true;
       btn.textContent = 'Đang lưu...';
       try {
-        await savePricingSettingsAndReload(payload, 'Đã cập nhật giá danh mục thành công!');
+        const msg = ovrCount > 0
+          ? `Đã cập nhật quy tắc chung danh mục (giữ nguyên ${ovrCount} gói đã chỉnh riêng)!`
+          : 'Đã cập nhật giá danh mục thành công!';
+        await savePricingSettingsAndReload(payload, msg);
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
         btn.disabled = false;
@@ -4003,10 +4284,21 @@ function bindAdminPricingEvents() {
       }
     } else if (state.adminPricingTab === 'packages') {
       const packagePriceOverrides = {};
-      document.querySelectorAll('.adm-pkg-override-input[data-dirty="1"]').forEach((inp) => {
-        packagePriceOverrides[inp.dataset.pkgKey] = inp.value === '' ? null : Math.round(Number(inp.value));
-      });
+      const packageMarkupOverrides = {};
+      const dirtyRows = [...document.querySelectorAll('tr[data-pkg-row]')].filter((row) =>
+        row.querySelector('.adm-pkg-override-input[data-dirty="1"]')
+      );
+      for (const row of dirtyRows) {
+        const built = collectPackageRowPayload(row);
+        if (built.error) {
+          showToast(built.error);
+          return;
+        }
+        if (built.packagePriceOverrides) Object.assign(packagePriceOverrides, built.packagePriceOverrides);
+        if (built.packageMarkupOverrides) Object.assign(packageMarkupOverrides, built.packageMarkupOverrides);
+      }
       if (Object.keys(packagePriceOverrides).length > 0) payload.packagePriceOverrides = packagePriceOverrides;
+      if (Object.keys(packageMarkupOverrides).length > 0) payload.packageMarkupOverrides = packageMarkupOverrides;
     }
 
     if (Object.keys(payload).length === 0) {

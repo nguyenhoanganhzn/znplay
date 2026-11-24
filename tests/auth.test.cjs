@@ -853,6 +853,140 @@ test('per-category percentage and manual pricing modes work across packages, fru
   assert.ok(catFixed.body.pricingVersion > beforeVer);
 });
 
+test('per-package custom markup overrides on buff_tim, buff_sao, and fruit_coin survive general category updates and apply accurately on checkout', async t => {
+  let tim500Cost = 2000000;
+  let placedCalls = 0;
+  const server = await startTestServer(t, async (url, options = {}) => {
+    const p = new URL(url).pathname;
+    const json = (data) => ({ ok: true, status: 200, json: async () => data });
+    if (p === '/api/settings') return json({ data: { is_send_task: true, is_send_bufftimorder: true, is_send_buffsaoorder: true, is_send_fruitorder: true } });
+    if (p === '/api/buff-tim-price-packages') {
+      return json({ data: [
+        { id: 7, quantity: 1000, is_active: true, total_price: 10000, original_price: 10000 },
+        { id: 99, quantity: 500000, is_active: true, total_price: tim500Cost, original_price: tim500Cost },
+      ] });
+    }
+    if (p === '/api/buff-sao-price-packages') {
+      return json({ data: [
+        { id: 11, quantity: 10000, is_active: true, total_price: 35000, original_price: 35000 },
+        { id: 12, quantity: 100000, is_active: true, total_price: 300000, original_price: 300000 },
+      ] });
+    }
+    if (p === '/api/fruit-coin-price-packages') {
+      return json({ data: [
+        { id: 21, coin_quantity: 10000000, is_active: true, total_price: 7000, original_price: 7000 },
+        { id: 22, coin_quantity: 100000000, is_active: true, total_price: 65000, original_price: 65000 },
+      ] });
+    }
+    if (p === '/api/fruit-stock') {
+      return json({ data: [], meta: { coin_tiers: [{ min_coin: 0, markup_percent: 0, is_default: true }, { min_coin: 50000, markup_percent: 10 }] } });
+    }
+    if (p === '/api/customers/resolve-by-role-id') return json({ success: true, data: { id: 101, nickname: 'Buyer', suid: '123456', role_id: 'BUY-1234' } });
+    if (p === '/api/buff-tim-orders' && options.method === 'POST') {
+      placedCalls += 1;
+      return json({ success: true, data: { id: 9001, total_price: tim500Cost } });
+    }
+    return json({ data: [] });
+  }, { seed(db) { db.users[1].balance = 5000000; } });
+
+  const admin = await server.login('owner', 'owner-test-password');
+  const seller = await server.login('seller', 'seller-test-password');
+
+  // 1. Validation rejects malformed packageMarkupOverrides
+  for (const bad of [
+    { packageMarkupOverrides: [] },
+    { packageMarkupOverrides: { 'constructor:1': { mode: 'fixed', value: 1000 } } },
+    { packageMarkupOverrides: { 'buff_tim:0': { mode: 'fixed', value: 1000 } } },
+    { packageMarkupOverrides: { 'buff_tim:99': { mode: 'invalid', value: 1000 } } },
+    { packageMarkupOverrides: { 'buff_tim:99': { mode: 'fixed', value: -1 } } },
+    { packageMarkupOverrides: { 'buff_tim:99': { mode: 'percent', value: 501 } } },
+  ]) {
+    assert.equal((await server.request('/api/admin/settings', 'PUT', admin.body.token, bad)).status, 400);
+  }
+
+  // 2. Set custom per-package markups: 500K Tim (+50.000đ), 100K Sao (+12.5%), 100M Xu (+15.000đ)
+  const setCustom = await server.request('/api/admin/settings', 'PUT', admin.body.token, {
+    categoryMarkups: { buff_tim: 3500, buff_sao: 3500, fruit_coin: 3500 },
+    categoryMarkupModes: { buff_tim: 'fixed', buff_sao: 'fixed', fruit_coin: 'fixed' },
+    packageMarkupOverrides: {
+      'buff_tim:99': { mode: 'fixed', value: 50000 },
+      'buff_sao:12': { mode: 'percent', value: 12.5 },
+      'fruit_coin:22': { mode: 'fixed', value: 15000 },
+    },
+  });
+  assert.equal(setCustom.status, 200);
+
+  const cat1 = await server.request('/api/catalog?refresh=1', 'GET', seller.body.token);
+  assert.equal(cat1.body.catalog.buff_tim.find(p => p.id === 7).total_price, 13500);
+  assert.equal(cat1.body.catalog.buff_tim.find(p => p.id === 99).total_price, 2050000);
+  assert.equal(cat1.body.catalog.buff_tim.find(p => p.id === 99)._admin, undefined);
+  assert.equal(cat1.body.catalog.buff_sao.find(p => p.id === 11).total_price, 38500);
+  assert.equal(cat1.body.catalog.buff_sao.find(p => p.id === 12).total_price, 337500);
+  const coin22 = cat1.body.catalog.fruit_coin.find(p => p.id === 22);
+  assert.equal(cat1.body.catalog.fruit_coin.find(p => p.id === 21).total_price, 10500);
+  assert.equal(coin22.total_price, 80000);
+  assert.equal(coin22.prices_by_tier['50000'].total_price, 86500); // 65000 * 1.10 + 15000
+
+  // 3. Update general category rules (fixed & percent) -> updates ALL non-custom packages, preserves custom ones!
+  const updCat = await server.request('/api/admin/settings', 'PUT', admin.body.token, {
+    categoryMarkups: { buff_tim: 6000, fruit_coin: 5000 },
+    categoryMarkupModes: { buff_tim: 'fixed', buff_sao: 'percent', fruit_coin: 'fixed' },
+    categoryMarkupPercents: { buff_sao: 20 },
+  });
+  assert.equal(updCat.status, 200);
+
+  const cat2 = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(cat2.body.catalog.buff_tim.find(p => p.id === 7).total_price, 16000);   // changed by general rule
+  assert.equal(cat2.body.catalog.buff_tim.find(p => p.id === 99).total_price, 2050000); // preserved!
+  assert.equal(cat2.body.catalog.buff_sao.find(p => p.id === 11).total_price, 42000);   // changed to +20%
+  assert.equal(cat2.body.catalog.buff_sao.find(p => p.id === 12).total_price, 337500);  // preserved (+12.5%)!
+  assert.equal(cat2.body.catalog.fruit_coin.find(p => p.id === 21).total_price, 12000); // changed to +5000đ
+  assert.equal(cat2.body.catalog.fruit_coin.find(p => p.id === 22).total_price, 80000); // preserved (+15000đ)!
+
+  // 4. Source cost changes on 500K Tim -> custom +50.000đ stays intact and checkout charges exact sell price
+  tim500Cost = 1900000;
+  const cat3 = await server.request('/api/catalog?refresh=1', 'GET', admin.body.token);
+  const pkg99Adm = cat3.body.catalog.buff_tim.find(p => p.id === 99);
+  assert.equal(pkg99Adm.total_price, 1950000);
+  assert.deepEqual(pkg99Adm._admin.custom_override, { type: 'markup', mode: 'fixed', value: 50000 });
+
+  const sel = await server.request('/api/customer/resolve-role-id', 'POST', seller.body.token, { role_id: 'BUY-1234' });
+  assert.equal(sel.status, 200);
+  const place = await server.request('/api/orders/place', 'POST', seller.body.token, {
+    category: 'buff_tim',
+    customer_id: 101,
+    game_profile_id: null,
+    price_package_id: 99,
+    expected_price: 1950000,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(place.status, 200);
+  assert.equal(placedCalls, 1);
+  assert.equal(server.db.users[1].balance, 5000000 - 1950000);
+
+  // 5. Removing override on a single package returns ONLY that package to the general category rule
+  await server.request('/api/admin/settings', 'PUT', admin.body.token, {
+    packageMarkupOverrides: { 'buff_tim:99': null },
+    packagePriceOverrides: { 'buff_tim:99': null },
+  });
+  const cat4 = await server.request('/api/catalog', 'GET', seller.body.token);
+  assert.equal(cat4.body.catalog.buff_tim.find(p => p.id === 99).total_price, 1906000); // 1900000 + general 6000
+  assert.equal(cat4.body.catalog.buff_sao.find(p => p.id === 12).total_price, 337500);  // still preserved!
+
+  // 6. Client UI Tab 1 shows per-package edit button for fruit_coin/buff_tim/buff_sao and NEVER auto-wipes overrides
+  const client = createClient();
+  client.state.user = { role: 'admin', name: 'Admin' };
+  client.state.adminPricingTab = 'categories';
+  client.state.catalogData = cat4.body;
+  client.state.adminOverview = (await server.request('/api/admin/overview', 'GET', admin.body.token)).body;
+  const html = vm.runInContext('renderAdminPricingPageHtml()', client.context);
+  assert.match(html, /data-open-cat-pkgs="fruit_coin"/);
+  assert.match(html, /data-open-cat-pkgs="buff_tim"/);
+  assert.match(html, /data-open-cat-pkgs="buff_sao"/);
+  assert.match(html, /Giữ nguyên 1 gói chỉnh riêng/);
+  assert.doesNotMatch(html, /admCatApplyOvr_/);
+});
+
 test('passive CTV catalog reads reuse 10-minute cache while pre-order refresh fetches live upstream prices', async t => {
   let upstreamSettingsHits = 0;
   let livePrice = 10000;

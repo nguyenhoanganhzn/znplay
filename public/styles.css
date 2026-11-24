@@ -1089,6 +1089,36 @@ select.input-box {
   line-height: 1.45;
 }
 
+.pricing-cat-subpkg-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  font-size: 12px;
+  border-color: rgba(167, 139, 250, 0.35);
+  background: rgba(102, 58, 243, 0.1);
+  color: #fff;
+}
+
+.pricing-cat-subpkg-btn:hover {
+  border-color: rgba(167, 139, 250, 0.7);
+  background: rgba(102, 58, 243, 0.22);
+}
+
+.pkg-custom-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pkg-mode-switch {
+  width: fit-content;
+}
+
+.is-custom-pkg-row {
+  background: rgba(251, 191, 36, 0.05);
+}
+
 .sync-loading-screen {
   display: flex;
   flex-direction: column;

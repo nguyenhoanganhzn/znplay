@@ -368,6 +368,9 @@ const DEFAULT_DB = {
     },
     // Tùy chỉnh giá bán CTV trực tiếp cho từng gói cố định: { "fruit_coin:80": 15000, "buff_tim:94": 10000 }
     packagePriceOverrides: {},
+    // Tùy chỉnh mức cộng thêm riêng (+VNĐ hoặc +%) cho từng gói cố định (không bị quy tắc chung ghi đè):
+    // { "buff_tim:94": { mode: "fixed", value: 20000 }, "fruit_coin:80": { mode: "percent", value: 12 } }
+    packageMarkupOverrides: {},
     // Tùy chỉnh đơn giá bán CTV cho từng loại trái cây (trống = tự động theo giá gốc HoanNguyen + defaultFruitUnitMarkup)
     fruitUnitPrices: {},
     // Tùy chỉnh đơn giá bán CTV cho từng hệ đột biến của trái: { "1:1": 3500 }
@@ -465,6 +468,10 @@ function normalizeDb(raw) {
       packagePriceOverrides: {
         ...DEFAULT_DB.settings.packagePriceOverrides,
         ...(raw.settings?.packagePriceOverrides || {}),
+      },
+      packageMarkupOverrides: {
+        ...DEFAULT_DB.settings.packageMarkupOverrides,
+        ...(raw.settings?.packageMarkupOverrides || {}),
       },
       fruitUnitPrices: {
         ...DEFAULT_DB.settings.fruitUnitPrices,
@@ -856,7 +863,8 @@ function validPercent(value) {
 
 function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal, tierMarkupPercent = 0) {
   const pkgKey = `${categoryKey}:${pkgId}`;
-  const override = db.settings.packagePriceOverrides?.[pkgKey];
+  const markupOverride = db.settings.packageMarkupOverrides?.[pkgKey];
+  const priceOverride = db.settings.packagePriceOverrides?.[pkgKey];
   const catMode = db.settings.categoryMarkupModes?.[categoryKey] === 'percent' ? 'percent' : 'fixed';
   const catMarkup = Number(db.settings.categoryMarkups?.[categoryKey] ?? db.settings.defaultMarkup ?? 5000);
   const catPercent = Number(db.settings.categoryMarkupPercents?.[categoryKey] ?? 0);
@@ -868,13 +876,40 @@ function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal,
     throw new Error('Giá nguồn hoặc bảng giá chưa hợp lệ.');
   }
 
-  const hasOverride = override !== undefined && override !== null && override !== '' && Number(override) > 0;
+  const hasMarkupOverride = Boolean(
+    markupOverride &&
+    typeof markupOverride === 'object' &&
+    !Array.isArray(markupOverride) &&
+    (markupOverride.mode === 'fixed' || markupOverride.mode === 'percent') &&
+    typeof markupOverride.value === 'number' &&
+    Number.isFinite(markupOverride.value) &&
+    markupOverride.value >= 0
+  );
+  const hasPriceOverride = !hasMarkupOverride && priceOverride !== undefined && priceOverride !== null && priceOverride !== '' && Number(priceOverride) > 0;
+  const hasOverride = hasMarkupOverride || hasPriceOverride;
+
   let sellEffective;
   let sellOriginal;
-  if (hasOverride) {
-    sellEffective = Math.max(adjustedCostEffective, Math.round(Number(override) * factor));
+  let customOverride = null;
+  if (hasMarkupOverride) {
+    if (markupOverride.mode === 'percent') {
+      if (!validPercent(markupOverride.value)) throw new Error('Phần trăm cộng riêng gói không hợp lệ.');
+      sellEffective = Math.max(adjustedCostEffective, Math.round(adjustedCostEffective * (100 + markupOverride.value) / 100));
+      sellOriginal = Math.max(sellEffective, Math.round(adjustedCostOriginal * (100 + markupOverride.value) / 100));
+      customOverride = { type: 'markup', mode: 'percent', value: markupOverride.value };
+    } else {
+      const ovFixed = Math.round(markupOverride.value);
+      if (!validMoney(ovFixed)) throw new Error('Số tiền cộng riêng gói không hợp lệ.');
+      sellEffective = Math.max(adjustedCostEffective, adjustedCostEffective + ovFixed);
+      const markupDiff = sellEffective - adjustedCostEffective;
+      sellOriginal = Math.max(sellEffective, adjustedCostOriginal + markupDiff);
+      customOverride = { type: 'markup', mode: 'fixed', value: ovFixed };
+    }
+  } else if (hasPriceOverride) {
+    sellEffective = Math.max(adjustedCostEffective, Math.round(Number(priceOverride) * factor));
     const markupDiff = sellEffective - adjustedCostEffective;
     sellOriginal = Math.max(sellEffective, adjustedCostOriginal + markupDiff);
+    customOverride = { type: 'price', mode: 'price', value: Math.round(Number(priceOverride)) };
   } else if (catMode === 'percent') {
     sellEffective = Math.max(adjustedCostEffective, Math.round(adjustedCostEffective * (100 + catPercent) / 100));
     sellOriginal = Math.max(sellEffective, Math.round(adjustedCostOriginal * (100 + catPercent) / 100));
@@ -893,6 +928,7 @@ function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal,
     sellOriginal,
     profit: sellEffective - adjustedCostEffective,
     hasCustomOverride: hasOverride,
+    customOverride,
     markupMode: hasOverride ? 'override' : catMode,
   };
 }
@@ -1756,6 +1792,7 @@ function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent = 0) {
       cost_original: calc.costOriginal,
       profit: calc.profit,
       has_custom_override: calc.hasCustomOverride,
+      custom_override: calc.customOverride,
     };
   }
 
@@ -3960,6 +3997,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       categoryMarkupModes: db.settings.categoryMarkupModes,
       categoryMarkupPercents: db.settings.categoryMarkupPercents,
       packagePriceOverrides: db.settings.packagePriceOverrides,
+      packageMarkupOverrides: db.settings.packageMarkupOverrides || {},
       fruitUnitPrices: db.settings.fruitUnitPrices,
       fruitMutationPrices: db.settings.fruitMutationPrices,
       hoanNguyen: {
@@ -4113,6 +4151,7 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
       categoryMarkupModes,
       categoryMarkupPercents,
       packagePriceOverrides,
+      packageMarkupOverrides,
       fruitUnitPrices,
       fruitMutationPrices,
       resetCategoryOverrides,
@@ -4153,9 +4192,28 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
         throw new Error('Danh sách đặt lại giá danh mục không hợp lệ.');
       }
     }
+    const pkgKeyPattern = /^(fruit_coin|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff):[1-9]\d*$/;
+    if (packageMarkupOverrides !== undefined) {
+      if (!packageMarkupOverrides || typeof packageMarkupOverrides !== 'object' || Array.isArray(packageMarkupOverrides) || Object.keys(packageMarkupOverrides).length > 5000) {
+        throw new Error('Bảng packageMarkupOverrides không hợp lệ.');
+      }
+      for (const [key, entry] of Object.entries(packageMarkupOverrides)) {
+        if (!pkgKeyPattern.test(key)) throw new Error('Khóa gói trong packageMarkupOverrides không hợp lệ.');
+        if (entry === null || entry === '') continue;
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !['fixed', 'percent'].includes(entry.mode)) {
+          throw new Error('Chế độ cộng riêng từng gói phải là fixed (+VNĐ) hoặc percent (+%).');
+        }
+        if (entry.mode === 'fixed' && !validMoney(entry.value)) {
+          throw new Error('Số tiền cộng riêng từng gói phải là số nguyên không âm và hữu hạn.');
+        }
+        if (entry.mode === 'percent' && !validPercent(entry.value)) {
+          throw new Error('Phần trăm cộng riêng từng gói phải nằm trong khoảng 0 đến 500%.');
+        }
+      }
+    }
     for (const [label, values, keyPattern] of [
       ['categoryMarkups', categoryMarkups, catKeyPattern],
-      ['packagePriceOverrides', packagePriceOverrides, /^(fruit_coin|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff):[1-9]\d*$/],
+      ['packagePriceOverrides', packagePriceOverrides, pkgKeyPattern],
       ['fruitUnitPrices', fruitUnitPrices, /^[1-9]\d*$/],
       ['fruitMutationPrices', fruitMutationPrices, /^[1-9]\d*:(?:[1-9]|1\d)$/],
     ]) {
@@ -4202,15 +4260,34 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
           for (const pkgKey of Object.keys(db.settings.packagePriceOverrides || {})) {
             if (pkgKey.startsWith(`${catKey}:`)) delete db.settings.packagePriceOverrides[pkgKey];
           }
+          for (const pkgKey of Object.keys(db.settings.packageMarkupOverrides || {})) {
+            if (pkgKey.startsWith(`${catKey}:`)) delete db.settings.packageMarkupOverrides[pkgKey];
+          }
         }
       }
     }
+    db.settings.packagePriceOverrides = db.settings.packagePriceOverrides || {};
+    db.settings.packageMarkupOverrides = db.settings.packageMarkupOverrides || {};
     if (packagePriceOverrides && typeof packagePriceOverrides === 'object') {
       for (const [k, v] of Object.entries(packagePriceOverrides)) {
         if (v === null || v === '' || Number(v) <= 0) {
           delete db.settings.packagePriceOverrides[k];
         } else {
           db.settings.packagePriceOverrides[k] = Math.round(Number(v));
+          delete db.settings.packageMarkupOverrides[k];
+        }
+      }
+    }
+    if (packageMarkupOverrides && typeof packageMarkupOverrides === 'object') {
+      for (const [k, v] of Object.entries(packageMarkupOverrides)) {
+        if (v === null || v === '') {
+          delete db.settings.packageMarkupOverrides[k];
+        } else {
+          db.settings.packageMarkupOverrides[k] = {
+            mode: v.mode,
+            value: v.mode === 'fixed' ? Math.round(v.value) : Math.round(v.value * 100) / 100,
+          };
+          delete db.settings.packagePriceOverrides[k];
         }
       }
     }

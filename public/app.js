@@ -814,7 +814,7 @@ function switchView(viewKey) {
   renderCurrentView();
   if (viewKey === 'admin_monitor') loadAdminMonitor();
   if (viewKey === 'admin_pricing' && state.user?.role === 'admin') {
-    Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]).then(([catChanged]) => {
+    Promise.all([loadCatalog(false, '', 6500), loadAdminOverview()]).then(([catChanged]) => {
       if (state.currentView === 'admin_pricing' && !isUserTypingOrModalOpen() && catChanged) {
         renderCurrentView();
       }
@@ -822,7 +822,7 @@ function switchView(viewKey) {
   }
   if (ORDER_VIEWS.includes(viewKey)) {
     const scope = viewKey === 'fruit_coin' ? 'fruit_all' : viewKey;
-    loadCatalog(true, scope, 6500).then(changed => {
+    loadCatalog(false, scope, 6500).then(changed => {
       if (changed && state.currentView === viewKey && !isUserTypingOrModalOpen()) renderCurrentView();
     });
   }
@@ -3717,7 +3717,7 @@ function renderAdminFruitRowsHtml(fruits) {
 async function savePricingSettingsAndReload(payload, successMsg) {
   const r = await apiFetch('/api/admin/settings', 'PUT', payload);
   showToast(successMsg || r.message || 'Đã cập nhật bảng giá thành công!');
-  await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
+  await Promise.all([loadCatalog(false, '', 6500), loadAdminOverview()]);
   renderCurrentView();
 }
 

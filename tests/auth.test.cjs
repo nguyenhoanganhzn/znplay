@@ -1348,6 +1348,108 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
   assert.equal(notifyRes.status, 200);
   assert.ok(notifyRes.body.updateVersion > beforeVer);
   assert.equal((await server.request('/api/ping')).body.updateVersion, notifyRes.body.updateVersion);
+
+  // Client CTV auto-update behavior: online CTV auto-reloads, offline CTV auto-reloads on next visit, and shows updated notice once
+  const persisted = new Map();
+  const makeCtvBrowser = (remoteVer, token = '') => {
+    const bodyChildren = [];
+    const byId = new Map();
+    const makeEl = (tag = 'div') => ({
+      tagName: tag.toUpperCase(),
+      style: {},
+      innerHTML: '',
+      textContent: '',
+      value: '',
+      children: [],
+      parentNode: null,
+      classList: { remove() {}, toggle() {}, contains: () => false },
+      setAttribute() {},
+      addEventListener() {},
+      appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
+      remove() {
+        if (this.id) byId.delete(this.id);
+        const i = bodyChildren.indexOf(this);
+        if (i >= 0) bodyChildren.splice(i, 1);
+        this.parentNode = null;
+      },
+    });
+    const session = new Map(token ? [['znplay_token', token]] : []);
+    let reloads = 0;
+    const ctx = vm.createContext({
+      localStorage: {
+        getItem: k => (persisted.has(k) ? persisted.get(k) : null),
+        setItem: (k, v) => persisted.set(k, String(v)),
+        removeItem: k => persisted.delete(k),
+      },
+      sessionStorage: {
+        getItem: k => (session.has(k) ? session.get(k) : null),
+        setItem: (k, v) => session.set(k, String(v)),
+        removeItem: k => session.delete(k),
+      },
+      window: {
+        location: { reload() { reloads += 1; } },
+        addEventListener() {},
+      },
+      document: {
+        hidden: false,
+        body: {
+          appendChild(child) {
+            child.parentNode = this;
+            if (child.id) byId.set(child.id, child);
+            bodyChildren.push(child);
+            return child;
+          },
+        },
+        createElement: tag => makeEl(tag),
+        getElementById: id => byId.get(id) || makeEl('div'),
+        querySelectorAll: () => [],
+        addEventListener() {},
+      },
+      fetch: async url => {
+        if (url === '/api/ping') return { ok: true, status: 200, json: async () => ({ ok: true, maintenance: false, updateVersion: remoteVer }) };
+        if (url === '/api/auth/me') return { ok: true, status: 200, json: async () => ({ success: true, user: { id: 'seller', role: 'ctv', name: 'CTV' }, updateVersion: remoteVer }) };
+        return { ok: true, status: 200, json: async () => ({ success: true }) };
+      },
+      console: { ...console, error() {} },
+      setTimeout() {},
+      setInterval() {},
+    });
+    vm.runInContext(toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', ctx);
+    return { ctx, getReloads: () => reloads, getNotice: () => byId.get('znCtvUpdatedNotice') };
+  };
+
+  // 1. CTV logs in at version 100 -> persisted, no reload
+  const b1 = makeCtvBrowser(100, 'tok-ctv');
+  await b1.ctx.initAuth();
+  assert.equal(b1.getReloads(), 0);
+  assert.equal(persisted.get('znplay_ctv_update_ver'), '100');
+
+  // 2. Online CTV receives version 200 -> immediate auto-reload + notice flag
+  assert.equal(b1.ctx.handleCtvUpdateVersion(200, { isCtvConfirmed: true }), true);
+  assert.equal(b1.getReloads(), 1);
+  assert.equal(persisted.get('znplay_ctv_update_ver'), '200');
+  assert.equal(persisted.get('znplay_ctv_updated_notice'), '1');
+
+  // 3. After reload at version 200 -> no loop, shows "Zn đã tự động cập nhật phiên bản mới"
+  const b2 = makeCtvBrowser(200, 'tok-ctv');
+  await b2.ctx.initAuth();
+  b2.ctx.showCtvUpdatedNoticeIfPending();
+  assert.equal(b2.getReloads(), 0);
+  assert.equal(persisted.has('znplay_ctv_updated_notice'), false);
+  assert.match(b2.getNotice()?.children?.[0]?.textContent || '', /Zn đã tự động cập nhật phiên bản mới/);
+
+  // 4. Offline CTV (logged out, no session token) opens browser later when server is at version 300 -> auto-reloads immediately
+  const b3 = makeCtvBrowser(300, '');
+  await b3.ctx.bootstrap();
+  assert.equal(b3.getReloads(), 1);
+  assert.equal(persisted.get('znplay_ctv_update_ver'), '300');
+  assert.equal(persisted.get('znplay_ctv_updated_notice'), '1');
+
+  // 5. After offline auto-reload at version 300 -> no loop, shows notice on login screen
+  const b4 = makeCtvBrowser(300, '');
+  await b4.ctx.bootstrap();
+  assert.equal(b4.getReloads(), 0);
+  assert.match(b4.getNotice()?.children?.[0]?.textContent || '', /Zn đã tự động cập nhật phiên bản mới/);
 });
 
 test('scoped catalog refresh calls only target category endpoints, omits seller-settlements for CTV, and returns compact fruit mutations', async t => {

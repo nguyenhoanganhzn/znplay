@@ -265,6 +265,7 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
         const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
         if (p && !p.maintenance) {
           setCtvMaintenanceOverlay(false);
+          if (handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: true })) return;
           await initAuth();
           if (state.user) await loadInitialAppData();
           return;
@@ -286,25 +287,127 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
   }
 }
 
-function setCtvUpdateBanner(visible) {
-  if (state.user?.role === 'admin') visible = false;
+const CTV_UPDATE_VER_KEY = 'znplay_ctv_update_ver';
+const CTV_UPDATED_NOTICE_KEY = 'znplay_ctv_updated_notice';
+let pendingCtvReload = false;
+
+function readStoredCtvUpdateVer() {
+  try {
+    const raw = localStorage.getItem(CTV_UPDATE_VER_KEY);
+    if (raw === null || raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredCtvUpdateVer(ver) {
+  try {
+    localStorage.setItem(CTV_UPDATE_VER_KEY, String(Number(ver || 0)));
+  } catch {}
+}
+
+function clearStoredCtvUpdateState() {
+  try {
+    localStorage.removeItem(CTV_UPDATE_VER_KEY);
+    localStorage.removeItem(CTV_UPDATED_NOTICE_KEY);
+  } catch {}
+}
+
+function showCtvUpdatedNotice(message = 'Zn đã tự động cập nhật phiên bản mới') {
+  if (state.user?.role === 'admin') return;
   if (typeof document === 'undefined' || !document.body) return;
-  let bar = document.getElementById('znCtvUpdateBanner');
-  if (!visible) {
-    if (bar) bar.remove();
+  const existing = document.getElementById('znCtvUpdatedNotice');
+  if (existing) existing.remove();
+  const bar = document.createElement('div');
+  bar.id = 'znCtvUpdatedNotice';
+  bar.setAttribute('role', 'status');
+  bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:linear-gradient(90deg,#059669 0%,#4f46e5 100%);color:#fff;border:1px solid rgba(167,243,208,0.65);border-radius:999px;padding:10px 18px;font-size:13.5px;font-weight:700;box-shadow:0 12px 32px rgba(5,150,105,0.42);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);text-align:center;';
+  const text = document.createElement('span');
+  text.textContent = `✓ ${message}`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.textContent = '✕';
+  closeBtn.setAttribute('aria-label', 'Đóng thông báo');
+  closeBtn.style.cssText = 'background:rgba(255,255,255,0.18);color:#fff;border:none;border-radius:999px;width:22px;height:22px;cursor:pointer;font-size:12px;line-height:22px;padding:0;flex-shrink:0;';
+  closeBtn.addEventListener('click', () => bar.remove());
+  bar.appendChild(text);
+  bar.appendChild(closeBtn);
+  document.body.appendChild(bar);
+  setTimeout(() => {
+    if (bar.parentNode) bar.remove();
+  }, 7000);
+}
+
+function showCtvUpdatedNoticeIfPending() {
+  if (state.user?.role === 'admin') {
+    clearStoredCtvUpdateState();
     return;
   }
-  if (bar) return;
-  bar = document.createElement('button');
-  bar.id = 'znCtvUpdateBanner';
-  bar.type = 'button';
-  bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:linear-gradient(90deg,#6d28d9 0%,#4f46e5 100%);color:#fff;border:1px solid rgba(196,181,253,0.75);border-radius:999px;padding:10px 22px;font-size:13.5px;font-weight:700;cursor:pointer;box-shadow:0 12px 32px rgba(79,70,229,0.55);display:flex;align-items:center;gap:8px;max-width:calc(100vw - 24px);text-align:center;';
-  bar.textContent = '🔄 Có cập nhật từ Zn, vui lòng bấm vào dòng này';
-  bar.addEventListener('click', () => {
-    try { sessionStorage.removeItem('znplay_catalog_cache'); } catch {}
+  let shouldShow = false;
+  try {
+    if (localStorage.getItem(CTV_UPDATED_NOTICE_KEY) === '1') {
+      localStorage.removeItem(CTV_UPDATED_NOTICE_KEY);
+      shouldShow = true;
+    }
+  } catch {}
+  if (shouldShow) {
+    showCtvUpdatedNotice('Zn đã tự động cập nhật phiên bản mới');
+  }
+}
+
+function triggerCtvAutoReload(nextVer) {
+  if (pendingCtvReload) return true;
+  pendingCtvReload = true;
+  state.seenUpdateVersion = nextVer;
+  writeStoredCtvUpdateVer(nextVer);
+  try {
+    localStorage.setItem(CTV_UPDATED_NOTICE_KEY, '1');
+    sessionStorage.removeItem('znplay_catalog_cache');
+  } catch {}
+  if (typeof window !== 'undefined' && window.location && typeof window.location.reload === 'function') {
     window.location.reload();
-  });
-  document.body.appendChild(bar);
+  }
+  return true;
+}
+
+function handleCtvUpdateVersion(remoteVer, { isCtvConfirmed = false } = {}) {
+  const ver = Number(remoteVer || 0);
+  if (!Number.isFinite(ver) || ver < 0) return false;
+  if (state.user?.role === 'admin') {
+    clearStoredCtvUpdateState();
+    return false;
+  }
+  const storedVer = readStoredCtvUpdateVer();
+  const knownVer = state.seenUpdateVersion != null
+    ? (storedVer != null ? Math.min(state.seenUpdateVersion, storedVer) : state.seenUpdateVersion)
+    : storedVer;
+
+  if (knownVer != null && ver > knownVer) {
+    if (state.maintenanceLocked) return false;
+    return triggerCtvAutoReload(ver);
+  }
+
+  if (isCtvConfirmed) {
+    state.seenUpdateVersion = ver;
+    if (storedVer == null || ver > storedVer) {
+      writeStoredCtvUpdateVer(ver);
+    }
+  } else if (storedVer != null) {
+    state.seenUpdateVersion = ver;
+  }
+  return false;
+}
+
+function setCtvUpdateBanner(visible) {
+  if (typeof document === 'undefined' || !document.body) return;
+  const old = document.getElementById('znCtvUpdateBanner');
+  if (old) old.remove();
+  if (!visible) {
+    const notice = document.getElementById('znCtvUpdatedNotice');
+    if (notice) notice.remove();
+  }
 }
 
 // ============================================================================
@@ -396,8 +499,10 @@ async function initAuth() {
       const r = await apiFetch('/api/auth/me');
       if (r.success && r.user) {
         state.user = r.user;
-        if (r.updateVersion !== undefined && state.seenUpdateVersion == null) {
-          state.seenUpdateVersion = Number(r.updateVersion || 0);
+        if (r.user.role === 'admin') {
+          clearStoredCtvUpdateState();
+        } else if (r.updateVersion !== undefined) {
+          if (handleCtvUpdateVersion(r.updateVersion, { isCtvConfirmed: true })) return;
         }
         updateShellAuthUI();
         return;
@@ -427,8 +532,11 @@ async function loginWithCredentials(identifier, password) {
     clearAuthState();
     state.token = r.token;
     state.user = r.user;
-    if (r.updateVersion !== undefined) {
-      state.seenUpdateVersion = Number(r.updateVersion || 0);
+    if (r.user?.role === 'admin') {
+      clearStoredCtvUpdateState();
+    } else if (r.updateVersion !== undefined) {
+      sessionStorage.setItem('znplay_token', r.token);
+      if (handleCtvUpdateVersion(r.updateVersion, { isCtvConfirmed: true })) return;
     }
     sessionStorage.setItem('znplay_token', r.token);
     const passwordInput = document.getElementById('gateLoginPw');
@@ -4090,7 +4198,7 @@ function renderAdminCtvPageHtml() {
           ${
             isMaintenance
               ? 'Toàn bộ tài khoản CTV đang đăng nhập hiện đang thấy màn hình <strong>"Hệ thống Zn đang bảo trì"</strong> và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
-              : 'Khi bật nút <strong>Bảo trì</strong>, tất cả các tài khoản CTV đang đăng nhập sẽ ngay lập tức hiển thị <strong>"Hệ thống Zn đang bảo trì"</strong> (Admin vẫn dùng bình thường).'
+              : 'Khi bật nút <strong>Bảo trì</strong>, CTV đang đăng nhập sẽ thấy <strong>"Hệ thống Zn đang bảo trì"</strong>. Nút <strong>Cập nhật cho CTV</strong> sẽ tự động F5 toàn bộ CTV (CTV đang off sẽ tự F5 ở lần vào trình duyệt kế tiếp).'
           }
         </div>
       </div>
@@ -4651,6 +4759,9 @@ function bindGlobalEvents() {
     try {
       const result = await apiFetch('/api/auth/me');
       if (result.user) { state.user = result.user; updateShellAuthUI(); }
+      if (result.user?.role !== 'admin' && result.updateVersion !== undefined) {
+        if (handleCtvUpdateVersion(result.updateVersion, { isCtvConfirmed: true })) return;
+      }
       if (state.currentView === 'admin_monitor' && state.user?.role === 'admin') {
         await loadAdminMonitor();
       } else if ((ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'order_history') && !isUserTypingOrModalOpen()) {
@@ -4660,34 +4771,50 @@ function bindGlobalEvents() {
     } catch {}
   }, 60000);
 
-  // Ultra-light maintenance & update check every 10s for CTVs (zero DB load)
+  // Ultra-light maintenance & auto-update check every 10s for CTVs (zero DB load)
   const checkCtvMaintenance = async () => {
-    if (!state.token || state.user?.role === 'admin' || document.hidden) return;
+    if (state.user?.role === 'admin' || document.hidden) return;
+    const isTrackedCtvBrowser = Boolean(state.token) || readStoredCtvUpdateVer() !== null;
+    if (!isTrackedCtvBrowser) return;
     try {
       const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
       if (!p) return;
-      if (p.maintenance) {
-        setCtvMaintenanceOverlay(true, 'Hệ thống Zn đang bảo trì');
-      } else if (state.maintenanceLocked) {
-        setCtvMaintenanceOverlay(false);
-        await initAuth();
-        if (state.user) await loadInitialAppData();
+      if (state.token) {
+        if (p.maintenance) {
+          setCtvMaintenanceOverlay(true, 'Hệ thống Zn đang bảo trì');
+        } else if (state.maintenanceLocked) {
+          setCtvMaintenanceOverlay(false);
+          if (handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: true })) return;
+          await initAuth();
+          if (state.user) await loadInitialAppData();
+        }
       }
-      const remoteVer = Number(p.updateVersion || 0);
-      if (state.seenUpdateVersion == null) {
-        state.seenUpdateVersion = remoteVer;
-      } else if (remoteVer > state.seenUpdateVersion && !state.maintenanceLocked) {
-        setCtvUpdateBanner(true);
+      if (!p.maintenance && !state.maintenanceLocked) {
+        handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: Boolean(state.token && state.user?.role === 'ctv') });
       }
     } catch {}
   };
   setInterval(checkCtvMaintenance, 10000);
 
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) checkCtvMaintenance();
+    });
+    window.addEventListener('storage', (event) => {
+      if (event.key === CTV_UPDATE_VER_KEY && state.user?.role !== 'admin' && !state.maintenanceLocked) {
+        const nextVer = Number(event.newValue || 0);
+        if (Number.isFinite(nextVer) && state.seenUpdateVersion != null && nextVer > state.seenUpdateVersion) {
+          triggerCtvAutoReload(nextVer);
+        }
+      }
+    });
+  }
+
   // When returning to tab, refresh only if stale (> 1 min for Admin, > 10 min for CTV).
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('visibilitychange', async () => {
       if (document.hidden) return;
-      if (state.token && state.user?.role !== 'admin') await checkCtvMaintenance();
+      if (state.user?.role !== 'admin') await checkCtvMaintenance();
       if (!state.user || state.maintenanceLocked) return;
       const intervalMs = state.user.role === 'admin' ? 60 * 1000 : 10 * 60 * 1000;
       if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
@@ -4788,6 +4915,15 @@ async function bootstrap() {
   installClientProtection();
   bindGlobalEvents();
   await initAuth();
+  if (!state.user && readStoredCtvUpdateVer() !== null) {
+    try {
+      const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
+      if (p && !p.maintenance && handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: false })) {
+        return;
+      }
+    } catch {}
+  }
+  showCtvUpdatedNoticeIfPending();
   if (state.user) {
     await loadInitialAppData();
   }

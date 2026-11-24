@@ -3979,7 +3979,7 @@ app.post('/api/admin/maintenance', requireAdmin, asyncRoute(async (req, res) => 
   });
 }));
 
-// Notify all logged-in CTVs that a new Zn update is available (click banner to F5 reload)
+// Trigger automatic F5 reload & update notice for all CTVs (online immediately, offline on next visit)
 app.post('/api/admin/notify-update', requireAdmin, asyncRoute(async (req, res) => {
   const prev = Number(db.settings.clientUpdateVersion || 0);
   const nextVer = Math.max(prev + 1, Date.now());
@@ -3989,7 +3989,7 @@ app.post('/api/admin/notify-update', requireAdmin, asyncRoute(async (req, res) =
   res.json({
     success: true,
     updateVersion: nextVer,
-    message: 'Đã gửi thông báo "Có cập nhật từ Zn, vui lòng bấm vào dòng này" tới toàn bộ CTV!',
+    message: 'Đã kích hoạt tự động cập nhật (F5) cho toàn bộ CTV! CTV đang online sẽ tự tải lại ngay, CTV đang off sẽ tự F5 ở lần mở trình duyệt kế tiếp.',
   });
 }));
 

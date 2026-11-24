@@ -1855,9 +1855,9 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       ? Math.max(catalogScopeTimestamps.get(scope) || 0, catalogCache.timestamp || 0)
       : catalogCache.timestamp;
 
-    // Pre-order / manual refresh (?refresh=1): ALWAYS fetch live from HoanNguyen (deduplicated, 1.5s burst guard for CTV, hard 5.5s deadline for fast CTV UX!).
+    // Pre-order / manual refresh (?refresh=1): ALWAYS fetch live from HoanNguyen (deduplicated, 1.5s burst guard for CTV, hard 5.5s ceiling so total latency stays < 7s!).
     const force = req.query.refresh === '1' && (isAdmin || now - lastScopeTs > 1500);
-    const timeoutMs = !isAdmin && req.query.refresh === '1' ? 5500 : 12000;
+    const timeoutMs = (req.query.refresh === '1' || scope) ? 5500 : 6000;
 
     const raw = scope
       ? await fetchScopedCatalogFromHoanNguyen(scope, { force, maxAgeMs, timeoutMs })
@@ -2388,7 +2388,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         Number(selection.customer.gameProfileId || 0) !== Number(game_profile_id || 0))) {
       return res.status(403).json({ success: false, message: 'Vui lòng tìm và chọn lại nhân vật bằng tài khoản của bạn trước khi đặt đơn.' });
     }
-    const rawCatalog = await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 8000 });
+    const rawCatalog = await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 5500 });
 
     // Check if the category is currently active on HoanNguyen
     const isSendTask = enabled(rawCatalog.hnSettings?.is_send_task);

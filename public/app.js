@@ -813,6 +813,19 @@ function switchView(viewKey) {
   }
   renderCurrentView();
   if (viewKey === 'admin_monitor') loadAdminMonitor();
+  if (viewKey === 'admin_pricing' && state.user?.role === 'admin') {
+    Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]).then(([catChanged]) => {
+      if (state.currentView === 'admin_pricing' && !isUserTypingOrModalOpen() && catChanged) {
+        renderCurrentView();
+      }
+    });
+  }
+  if (ORDER_VIEWS.includes(viewKey)) {
+    const scope = viewKey === 'fruit_coin' ? 'fruit_all' : viewKey;
+    loadCatalog(true, scope, 6500).then(changed => {
+      if (changed && state.currentView === viewKey && !isUserTypingOrModalOpen()) renderCurrentView();
+    });
+  }
   if (ORDER_VIEWS.includes(viewKey) || ['order_history','dashboard'].includes(viewKey)) {
     loadOrders().then(changed => { if (changed && state.currentView === viewKey) renderCurrentView(); });
   }
@@ -1311,7 +1324,8 @@ function bindOrderCategoryPageEvents(catKey) {
     const btn = document.getElementById('btnRefreshCatPage');
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
     showToast('Đang đồng bộ dữ liệu mới nhất...');
-    await Promise.all([loadCatalog(true), loadOrders(true)]);
+    const scope = catKey === 'fruit_coin' ? 'fruit_all' : catKey;
+    await Promise.all([loadCatalog(true, scope, 6500), loadOrders(true)]);
     renderCurrentView();
   });
 
@@ -1939,23 +1953,25 @@ function bindCreateOrderModalEvents() {
     }
   });
 
-  // Fruit Order Type Tabs (by_coin vs by_fruit)
-  body.querySelector('#modalTabByCoin')?.addEventListener('click', () => {
+  // Fruit Order Type Tabs (by_coin vs by_fruit) — ALWAYS sync live under 6.5s so prices are 100% up-to-date
+  body.querySelector('#modalTabByCoin')?.addEventListener('click', async () => {
+    if (state.modalOrder.fruitOrderType === 'by_coin') return;
     state.modalOrder.fruitOrderType = 'by_coin';
     state.modalOrder.category = 'fruit_coin';
+    body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Xu từ Zn...', 'Đang lấy gói xu & giá mới nhất.');
+    await loadCatalog(true, 'fruit_coin', 6500);
+    const overlay = document.getElementById('appModalOverlay');
+    if (!overlay || overlay.style.display === 'none' || state.modalOrder.fruitOrderType !== 'by_coin') return;
     renderCreateOrderModalBody();
   });
   body.querySelector('#modalTabByFruit')?.addEventListener('click', async () => {
+    if (state.modalOrder.fruitOrderType === 'by_fruit') return;
     state.modalOrder.fruitOrderType = 'by_fruit';
     state.modalOrder.category = 'fruit_by_fruit';
-    const lastFruitSync = state.lastScopeSyncAt?.fruit_by_fruit || 0;
-    const hasFruits = (state.catalogData?.catalog?.fruit_by_fruit || []).length > 0;
-    if (!hasFruits || Date.now() - lastFruitSync > 30000) {
-      body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
-      await loadCatalog(true, 'fruit_by_fruit', 6500);
-      const overlay = document.getElementById('appModalOverlay');
-      if (!overlay || overlay.style.display === 'none') return;
-    }
+    body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
+    await loadCatalog(true, 'fruit_by_fruit', 6500);
+    const overlay = document.getElementById('appModalOverlay');
+    if (!overlay || overlay.style.display === 'none' || state.modalOrder.fruitOrderType !== 'by_fruit') return;
     renderCreateOrderModalBody();
     triggerModalFruitPreview();
   });
@@ -3701,7 +3717,7 @@ function renderAdminFruitRowsHtml(fruits) {
 async function savePricingSettingsAndReload(payload, successMsg) {
   const r = await apiFetch('/api/admin/settings', 'PUT', payload);
   showToast(successMsg || r.message || 'Đã cập nhật bảng giá thành công!');
-  await Promise.all([loadCatalog(true), loadAdminOverview()]);
+  await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
   renderCurrentView();
 }
 
@@ -4057,7 +4073,7 @@ function bindAdminPricingEvents() {
     const btn = document.getElementById('btnRefreshAdminPricing');
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
     showToast('Đang tải giá gốc mới nhất từ nguồn API...');
-    await Promise.all([loadCatalog(true), loadAdminOverview()]);
+    await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
     renderCurrentView();
   });
 
@@ -4108,8 +4124,14 @@ function bindAdminPricingEvents() {
   });
 
   document.querySelectorAll('[data-open-cat-pkgs]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      openCategoryPackagePricingModal(btn.dataset.openCatPkgs);
+    btn.addEventListener('click', async () => {
+      const catKey = btn.dataset.openCatPkgs;
+      openCategoryPackagePricingModal(catKey);
+      const changed = await loadCatalog(true, catKey, 6500);
+      const overlay = document.getElementById('appModalOverlay');
+      if (changed && overlay && overlay.style.display !== 'none' && !document.querySelector('#modalCatPkgsTbody .adm-pkg-override-input[data-dirty="1"]')) {
+        openCategoryPackagePricingModal(catKey);
+      }
     });
   });
 
@@ -4986,7 +5008,7 @@ function bindAdminSystemEvents() {
       showToast('⏳ Đang kết nối lại và đồng bộ dữ liệu...');
       const r = await apiFetch('/api/admin/source/reconnect', 'POST');
       showToast(r.message);
-      await Promise.all([loadCatalog(true), loadAdminOverview()]);
+      await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
       renderCurrentView();
     } catch (err) {
       showToast(err.message);
@@ -5007,7 +5029,7 @@ function bindAdminSystemEvents() {
     try {
       const r = await apiFetch('/api/admin/settings', 'PUT', { sourceEmail, sourcePassword });
       showToast(r.message);
-      await Promise.all([loadCatalog(true), loadAdminOverview()]);
+      await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
       renderCurrentView();
     } catch (err) {
       showToast(err.message);

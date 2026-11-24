@@ -27,6 +27,7 @@ const state = {
 
   // Orders & Admin Data
   orders: [],
+  customerSnapshotCache: {},
   listLimits: {},
   adminOverview: null,
   adminMonitor: null,
@@ -156,6 +157,24 @@ function formatDateVi(iso) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function formatDateTimeSecVi(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const parts = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t) => parts.find((p) => p.type === t)?.value || '00';
+  return `${get('hour')}:${get('minute')}:${get('second')} ${get('day')}/${get('month')}/${get('year')}`;
 }
 
 function escapeHtml(str) {
@@ -428,6 +447,7 @@ function clearAuthState() {
   state.lastScopeSyncAt = {};
   state.remoteSummaries = {};
   state.orders = [];
+  state.customerSnapshotCache = {};
   state.orderPage = null;
   state.listLimits = {};
   state.adminOverview = null;
@@ -1135,7 +1155,7 @@ function renderOrderCategoryPageHtml(catKey) {
               <th>TRẠNG THÁI</th>
               <th>BẬT/TẮT</th>
               <th>TẠO LÚC</th>
-              ${catKey === 'weather_buff' ? '<th>LIÊN KẾT / THAO TÁC</th>' : state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
+              ${catKey === 'weather_buff' ? '<th>LIÊN KẾT / THAO TÁC</th>' : '<th>THAO TÁC</th>'}
             </tr>
           </thead>
           <tbody id="catOrdersTbody">
@@ -1172,7 +1192,7 @@ function getFilteredCatOrders(catKey) {
 
 function renderCatOrdersTbodyHtml(catKey) {
   const filteredOrders = state.orderPage ? state.orders : getFilteredCatOrders(catKey);
-  const colSpan = catKey === 'weather_buff' ? 8 : state.user?.role === 'admin' ? 9 : 8;
+  const colSpan = catKey === 'weather_buff' ? 8 : 9;
   if (filteredOrders.length === 0) {
     return `
       <tr>
@@ -1290,14 +1310,19 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
     : `<span class="badge-tag order-summary-badge">${escapeHtml(o.summary)}</span>`;
 
   const wbTrackUrl = isWeather ? String(o.weather?.trackUrl || '') : '';
+  const eyeIconSvg = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const eyeBtnHtml = o.remoteOrderId
+    ? `<button type="button" class="btn-frost btn-eye-view" data-view-order-customer="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="Xem thông tin khách lúc lên đơn" aria-label="Xem thông tin khách lúc lên đơn">${eyeIconSvg}</button>`
+    : '';
   const lastCellHtml = isWeather
     ? `
       <td>
-        <div style="display:flex;flex-direction:column;gap:5px;min-width:136px;">
+        <div style="display:flex;flex-direction:column;gap:5px;min-width:146px;">
           ${
             o.remoteOrderId && o.status !== 'cancelled'
               ? `
                 <div style="display:flex;align-items:center;gap:5px;">
+                  ${eyeBtnHtml}
                   <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;white-space:nowrap;" data-copy-weather-link="${escapeHtml(o.remoteOrderId)}" data-track-url="${escapeHtml(wbTrackUrl)}">
                     📋 Sao chép liên kết
                   </button>
@@ -1313,7 +1338,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
                     : ''
                 }
               `
-              : '—'
+              : (eyeBtnHtml || '—')
           }
           ${
             isAdmin && o.remoteOrderId && o.status !== 'cancelled'
@@ -1327,16 +1352,24 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
     : isAdmin
     ? `
       <td>
-        ${
-          o.remoteOrderId && o.status !== 'cancelled'
-            ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
-            : '—'
-        }
+        <div class="order-row-actions">
+          ${eyeBtnHtml}
+          ${
+            o.remoteOrderId && o.status !== 'cancelled'
+              ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
+              : ''
+          }
+          ${!eyeBtnHtml && (!o.remoteOrderId || o.status === 'cancelled') ? '—' : ''}
+        </div>
       </td>
     `
-    : inHistory
-    ? '<td>—</td>'
-    : '';
+    : `
+      <td>
+        <div class="order-row-actions">
+          ${eyeBtnHtml || '—'}
+        </div>
+      </td>
+    `;
 
   return `
     <tr>
@@ -1445,6 +1478,14 @@ async function copyTextToClipboard(text) {
 }
 
 function bindOrderRowActionButtons() {
+  document.querySelectorAll('[data-view-order-customer]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const remId = btn.dataset.viewOrderCustomer;
+      const cat = btn.dataset.orderCat;
+      if (remId && cat) openOrderCustomerSnapshotModal(cat, remId);
+    });
+  });
+
   document.querySelectorAll('[data-toggle-order]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const remId = btn.dataset.toggleOrder;
@@ -1588,6 +1629,180 @@ function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ Zn
       <div class="sync-loading-sub">${escapeHtml(sub)}</div>
     </div>
   `;
+}
+
+let customerSnapshotModalSeq = 0;
+let lastSnapshotForceAt = 0;
+async function openOrderCustomerSnapshotModal(cat, remoteOrderId, { force = false } = {}) {
+  const overlay = document.getElementById('appModalOverlay');
+  const box = document.getElementById('appModalBox');
+  const title = document.getElementById('appModalTitle');
+  const body = document.getElementById('appModalBody');
+  if (!overlay || !box || !title || !body) return;
+
+  const cacheKey = `${cat}:${remoteOrderId}`;
+  const isFruit = cat === 'fruit_coin' || cat === 'fruit_by_fruit';
+  const mySeq = ++customerSnapshotModalSeq;
+
+  box.className = 'modal-box';
+  title.textContent = `Thông tin đơn #${remoteOrderId}`;
+  overlay.style.display = 'flex';
+
+  const renderSnapshot = (data) => {
+    const p = data.profile;
+    const cust = data.customer || {};
+    const ord = data.order || {};
+    const quota = data.dailyFruitQuota;
+    const displayName = p?.nickname || cust.nickname || 'Chưa gán khách';
+    const regionText = p?.region || '';
+
+    let quotaBadgeHtml = '';
+    if (isFruit && quota) {
+      if (quota.limit > 0) {
+        const ratio = quota.used / quota.limit;
+        const tone = ratio >= 1 ? 'is-full' : ratio >= 0.8 ? 'is-warn' : 'is-ok';
+        quotaBadgeHtml = `<span class="snapshot-quota-pill ${tone}">${formatNum(quota.used)} / ${formatNum(quota.limit)}</span>`;
+      } else {
+        quotaBadgeHtml = `<span class="snapshot-quota-pill is-ok">${formatNum(quota.used)} · Không giới hạn trái trong ngày</span>`;
+      }
+    }
+
+    const avatarFallbackSvg = '<svg viewBox="0 0 64 64" width="52" height="52" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#c8cbd2"/><circle cx="32" cy="24" r="11" fill="#e6e8ec"/><path d="M14 54c3-10 10-15 18-15s15 5 18 15" fill="#e6e8ec"/></svg>';
+
+    body.innerHTML = `
+      <div class="customer-snapshot-card">
+        <div class="snapshot-card-label">Thông tin khách lúc lên đơn</div>
+        ${
+          p
+            ? `
+          <div class="snapshot-profile-head">
+            <div class="snapshot-avatar-wrap">
+              ${
+                p.photoUrl
+                  ? `<img src="${escapeHtml(p.photoUrl)}" alt="${escapeHtml(displayName)}" class="snapshot-avatar-img" referrerpolicy="no-referrer" />`
+                  : ''
+              }
+              <div class="snapshot-avatar-fallback" ${p.photoUrl ? 'style="display:none;"' : ''}>${avatarFallbackSvg}</div>
+              <span class="snapshot-level-badge" title="Cấp độ thành tích">${formatNum(p.achievementLevel || 0)}</span>
+            </div>
+            <div class="snapshot-profile-meta">
+              <div class="snapshot-nickname">${escapeHtml(displayName)}</div>
+              <div class="snapshot-tags-row">
+                ${regionText ? `<span class="snapshot-region-pill">${escapeHtml(regionText)}</span>` : ''}
+                ${p.onlineStatus ? `<span class="snapshot-region-pill">${escapeHtml(formatOnlineStatusVi(p.onlineStatus))}</span>` : ''}
+              </div>
+            </div>
+          </div>
+
+          <div class="snapshot-stats-row">
+            <span class="snapshot-stat-item" title="Lượt thích (Tim)"><strong>${formatNum(p.userLikes || 0)}</strong> <span aria-hidden="true">❤️</span></span>
+            <span class="snapshot-stat-item" title="Sao nhà"><strong>${formatNum(p.homeLikes || 0)}</strong> <span aria-hidden="true">⭐</span></span>
+            <span class="snapshot-stat-item" title="Lượt ghé thăm nhà"><span style="color:#a78bfa;" aria-hidden="true">👣</span> <strong>${formatNum(p.totalHomeVisitCount || 0)}</strong></span>
+            <span class="snapshot-stat-item" title="Người theo dõi"><span class="snapshot-follow-icon" aria-hidden="true">★</span> <strong>${formatNum(p.followerCount || 0)}</strong></span>
+          </div>
+
+          <div class="snapshot-captured-line">
+            Chụp thông tin lúc: <strong>${escapeHtml(formatDateTimeSecVi(p.capturedAt || ord.createdAt))}</strong>
+          </div>
+        `
+            : `
+          <div class="snapshot-empty-profile">
+            <div style="font-weight:600;color:#fff;">${escapeHtml(displayName)}</div>
+            <div style="font-size:12.5px;color:var(--color-fog-veil);margin-top:4px;">Đơn này chưa lưu thông tin khách (đơn cũ hoặc chưa gán khách).</div>
+          </div>
+        `
+        }
+
+        ${
+          isFruit
+            ? `
+          <div class="snapshot-fruit-quota">
+            <span class="snapshot-quota-label">Trái đã nhận hôm nay</span>
+            ${quota ? quotaBadgeHtml : '<span class="snapshot-region-pill">Chưa có dữ liệu hôm nay</span>'}
+            <span class="snapshot-quota-reset">Đặt lại lúc 07:00 giờ Việt Nam</span>
+          </div>
+        `
+            : ''
+        }
+      </div>
+
+      <div class="snapshot-order-meta">
+        <div><span>Mã đơn:</span> <strong>#${escapeHtml(ord.remoteOrderId || remoteOrderId)}</strong></div>
+        ${cust.suid ? `<div><span>SUID:</span> <strong>${escapeHtml(cust.suid)}</strong></div>` : ''}
+        ${ord.summary ? `<div><span>Nội dung:</span> <strong>${escapeHtml(ord.summary)}</strong></div>` : ''}
+        ${ord.totalCnt > 0 ? `<div><span>Tiến độ:</span> <strong>${formatNum(ord.completedCnt || 0)} / ${formatNum(ord.totalCnt)}</strong></div>` : ''}
+      </div>
+
+      <div class="action-row align-end">
+        <button type="button" class="btn-frost" id="btnRefreshOrderSnapshot" style="font-size:12px;">↻ Cập nhật mới</button>
+        <button type="button" class="btn-violet" id="btnCloseOrderSnapshot" style="font-size:12px;">Đóng</button>
+      </div>
+    `;
+
+    const img = body.querySelector('.snapshot-avatar-img');
+    if (img) {
+      img.addEventListener('error', () => {
+        img.style.display = 'none';
+        const fb = body.querySelector('.snapshot-avatar-fallback');
+        if (fb) fb.style.display = 'flex';
+      });
+    }
+
+    body.querySelector('#btnCloseOrderSnapshot')?.addEventListener('click', () => {
+      overlay.style.display = 'none';
+    });
+
+    const refreshBtn = body.querySelector('#btnRefreshOrderSnapshot');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => {
+        const waitLeft = Math.ceil((10000 - (Date.now() - lastSnapshotForceAt)) / 1000);
+        if (state.user?.role !== 'admin' && waitLeft > 0) {
+          showToast(`Vui lòng đợi ${waitLeft} giây trước khi làm mới lại.`);
+          return;
+        }
+        lastSnapshotForceAt = Date.now();
+        openOrderCustomerSnapshotModal(cat, remoteOrderId, { force: true });
+      });
+    }
+  };
+
+  // Client-side 30s cache so re-opening the same eye icon is instant (0 network requests!)
+  const cached = state.customerSnapshotCache?.[cacheKey];
+  if (!force && cached && Date.now() - cached.at < 30000) {
+    renderSnapshot(cached.data);
+    return;
+  }
+
+  body.innerHTML = renderSyncLoadingHtml(
+    'Đang lấy thông tin khách hàng...',
+    isFruit
+      ? 'Đang tải hồ sơ khách lúc lên đơn và số trái đã nhận hôm nay.'
+      : 'Đang tải hồ sơ khách lúc lên đơn từ hệ thống.'
+  );
+
+  try {
+    const qs = force ? '?refresh=1' : '';
+    const r = await apiFetch(`/api/orders/${encodeURIComponent(cat)}/${encodeURIComponent(remoteOrderId)}/customer-snapshot${qs}`, 'GET', null, 8000);
+    if (mySeq !== customerSnapshotModalSeq || overlay.style.display === 'none' || !state.user) return;
+    if (!state.customerSnapshotCache) state.customerSnapshotCache = {};
+    const keys = Object.keys(state.customerSnapshotCache);
+    if (keys.length >= 60) delete state.customerSnapshotCache[keys[0]];
+    state.customerSnapshotCache[cacheKey] = { at: Date.now(), data: r };
+    renderSnapshot(r);
+  } catch (err) {
+    if (mySeq !== customerSnapshotModalSeq || overlay.style.display === 'none') return;
+    body.innerHTML = `
+      <div class="sync-loading-screen" style="padding:24px 12px;">
+        <div style="font-size:26px;">⚠️</div>
+        <div class="sync-loading-title" style="color:#fca5a5;">Chưa tải được thông tin khách hàng</div>
+        <div class="sync-loading-sub">${escapeHtml(err.message || 'Vui lòng thử lại sau ít giây.')}</div>
+        <button type="button" class="btn-violet" id="btnRetryOrderSnapshot">↻ Thử lại</button>
+      </div>
+    `;
+    body.querySelector('#btnRetryOrderSnapshot')?.addEventListener('click', () => {
+      openOrderCustomerSnapshotModal(cat, remoteOrderId, { force: false });
+    });
+  }
 }
 
 // ============================================================================

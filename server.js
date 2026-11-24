@@ -3250,6 +3250,207 @@ app.get('/api/orders', requireAuth, async (req, res) => {
   }
 });
 
+const ORDER_SNAPSHOT_TTL_MS = 45000;
+const orderCustomerSnapshotCache = new Map();
+const orderCustomerSnapshotInflight = new Map();
+const snapshotViewLimits = new Map();
+const snapshotForceCooldowns = new Map();
+
+function findRemoteOrderInPages(pages, category, remoteId) {
+  if (!Array.isArray(pages)) return null;
+  const spec = ORDER_CATEGORY_GROUPS[category];
+  const indices = spec ? spec.all : pages.map((_, i) => i);
+  for (const idx of indices) {
+    const list = Array.isArray(pages[idx]?.data?.data) ? pages[idx].data.data : [];
+    const hit = list.find((item) => item && String(item.id) === String(remoteId));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function sanitizeGameProfile(gp, fallbackNickname = '') {
+  if (!gp || typeof gp !== 'object') return null;
+  const rawPhoto = typeof gp.photo_url === 'string' ? gp.photo_url.trim() : '';
+  const photoUrl = /^https:\/\//i.test(rawPhoto) && !/hoannguyen/i.test(rawPhoto) ? rawPhoto : null;
+  const toNonNegInt = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0;
+  };
+  return {
+    nickname: String(gp.nickname || fallbackNickname || '').slice(0, 120),
+    region: String(gp.region || '').slice(0, 32),
+    regionName: String(gp.region_name || '').slice(0, 64),
+    achievementLevel: toNonNegInt(gp.achievement_level),
+    photoUrl,
+    userLikes: toNonNegInt(gp.user_likes),
+    homeLikes: toNonNegInt(gp.home_likes),
+    totalHomeVisitCount: toNonNegInt(gp.total_home_visit_count),
+    followerCount: toNonNegInt(gp.follower_count),
+    capturedAt: gp.created_at || gp.updated_at || null,
+    onlineStatus: typeof gp.Online_Status === 'string' ? gp.Online_Status.slice(0, 64) : null,
+  };
+}
+
+// On-demand lightweight customer profile snapshot (+ daily fruit quota for fruit categories)
+app.get('/api/orders/:category/:remoteId/customer-snapshot', requireAuth, async (req, res) => {
+  try {
+    const user = req.user;
+    const isAdmin = user.role === 'admin';
+    const { category, remoteId } = req.params;
+    const catMeta = CATEGORY_METADATA[category];
+    if (!catMeta) {
+      return res.status(400).json({ success: false, message: 'Danh mục đơn hàng không hợp lệ.' });
+    }
+    const cleanId = String(remoteId || '').trim();
+    if (!/^\d{1,12}$/.test(cleanId)) {
+      return res.status(400).json({ success: false, message: 'Mã đơn hàng không hợp lệ.' });
+    }
+
+    const lo = db.localOrders.find((o) => o.category === category && String(o.remoteOrderId) === cleanId);
+    if (!isAdmin && (!lo || lo.placedBy?.id !== user.id)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Bạn chỉ có thể xem thông tin khách trên đơn hàng do chính tài khoản của bạn tạo.',
+      });
+    }
+
+    const now = Date.now();
+    const rate = checkBoundedBucket(snapshotViewLimits, user.id, isAdmin ? 40 : 15, 60000, 1000);
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(rate.retrySec));
+      return res.status(429).json({
+        success: false,
+        message: 'Bạn đang xem thông tin quá nhanh. Vui lòng đợi ít giây rồi thử lại.',
+      });
+    }
+
+    const cacheKey = `${category}:${cleanId}`;
+    const wantForce = req.query.refresh === '1';
+    const lastForce = snapshotForceCooldowns.get(user.id) || 0;
+    const allowForce = wantForce && (isAdmin || now - lastForce >= 10000);
+    if (allowForce) {
+      if (snapshotForceCooldowns.size > 1000) snapshotForceCooldowns.clear();
+      snapshotForceCooldowns.set(user.id, now);
+    }
+
+    const cachedEntry = orderCustomerSnapshotCache.get(cacheKey);
+    if (!allowForce && cachedEntry && now < cachedEntry.until) {
+      return res.json({ ...cachedEntry.data, cached: true });
+    }
+
+    const isFruit = category === 'fruit_coin' || category === 'fruit_by_fruit';
+    let job = orderCustomerSnapshotInflight.get(cacheKey);
+    if (!job) {
+      job = (async () => {
+        // 1. Try existing in-memory orderCache first (0 upstream requests!)
+        let rem = findRemoteOrderInPages(orderCache.pages || orderCache.result?.pages, category, cleanId);
+        if (!rem) {
+          const scopeKey = isFruit ? 'fruit_all' : category;
+          const fetched = await loadRemoteOrders(false, { category: scopeKey }).catch(() => null);
+          rem = findRemoteOrderInPages(fetched?.pages, category, cleanId);
+        }
+
+        const slotCust = category === 'weather_buff'
+          ? (rem?.slots || lo?.weather?.slots || []).find((s) => s?.customer_id || s?.customer)
+          : null;
+        const customerId = Number(
+          rem?.customer_id ||
+          rem?.customer?.id ||
+          slotCust?.customer_id ||
+          slotCust?.customer?.id ||
+          lo?.customer?.customerId ||
+          0
+        ) || null;
+        const gameProfileId = Number(rem?.game_profile_id || lo?.customer?.gameProfileId || 0) || null;
+
+        let rawProfile = rem?.game_profile || null;
+        const needCustomerFetch = !rawProfile && customerId;
+
+        const [custRes, quotaRes] = await Promise.all([
+          needCustomerFetch
+            ? hnApiCall(`/api/customers/${encodeURIComponent(customerId)}`, 'GET', null, true, 6000).catch(() => null)
+            : Promise.resolve(null),
+          isFruit
+            ? hnApiCall(`/api/fruit-coin-orders/${encodeURIComponent(cleanId)}/daily-quota`, 'GET', null, true, 6000).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+
+        if (!rawProfile && Array.isArray(custRes?.data?.game_profiles) && custRes.data.game_profiles.length > 0) {
+          const profiles = custRes.data.game_profiles;
+          rawProfile = (gameProfileId ? profiles.find((p) => Number(p.id) === gameProfileId) : null) || profiles[0];
+        }
+
+        const nickname = String(
+          rawProfile?.nickname ||
+          rem?.customer?.nickname ||
+          slotCust?.customer?.nickname ||
+          custRes?.data?.nickname ||
+          lo?.customer?.nickname ||
+          '—'
+        ).slice(0, 120);
+        const suid = String(
+          rem?.customer?.suid ||
+          slotCust?.customer?.suid ||
+          custRes?.data?.suid ||
+          lo?.customer?.suid ||
+          ''
+        ).slice(0, 64);
+
+        const profile = sanitizeGameProfile(rawProfile, nickname);
+        let dailyFruitQuota = null;
+        if (isFruit && quotaRes?.success && quotaRes.data) {
+          const used = Number(quotaRes.data.used);
+          const limit = Number(quotaRes.data.limit);
+          dailyFruitQuota = {
+            used: Number.isFinite(used) && used >= 0 ? Math.round(used) : 0,
+            limit: Number.isFinite(limit) && limit >= 0 ? Math.round(limit) : 0,
+            resetsAt: typeof quotaRes.data.resets_at === 'string' ? quotaRes.data.resets_at : null,
+          };
+        }
+
+        const payload = {
+          success: true,
+          cached: false,
+          fetchedAt: new Date().toISOString(),
+          order: {
+            remoteOrderId: Number(cleanId),
+            category,
+            categoryName: catMeta.menuLabel || category,
+            summary: lo?.summary || null,
+            status: rem?.status || lo?.status || null,
+            totalCnt: Number(rem?.total_cnt ?? rem?.package_quantity ?? lo?.totalCnt ?? 0),
+            completedCnt: Number(rem?.completed_cnt ?? lo?.completedCnt ?? 0),
+            createdAt: rem?.created_at || lo?.createdAt || null,
+          },
+          customer: {
+            nickname,
+            suid,
+          },
+          profile,
+          dailyFruitQuota,
+        };
+
+        if (orderCustomerSnapshotCache.size >= 200) {
+          orderCustomerSnapshotCache.delete(orderCustomerSnapshotCache.keys().next().value);
+        }
+        orderCustomerSnapshotCache.set(cacheKey, { until: Date.now() + ORDER_SNAPSHOT_TTL_MS, data: payload });
+        return payload;
+      })().finally(() => {
+        orderCustomerSnapshotInflight.delete(cacheKey);
+      });
+      orderCustomerSnapshotInflight.set(cacheKey, job);
+    }
+
+    const result = await job;
+    return res.json(result);
+  } catch (err) {
+    res.status(err?.status === 502 ? 502 : 500).json({
+      success: false,
+      message: publicError(req, err, 'Không thể tải thông tin khách hàng lúc này.'),
+    });
+  }
+});
+
 const weatherMutationLocks = new Set();
 function orderMutation(handler) {
   return asyncRoute(async (req, res) => {

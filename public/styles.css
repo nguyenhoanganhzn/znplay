@@ -765,6 +765,215 @@ select.input-box {
   background: linear-gradient(90deg, #269684 0%, #4ade80 100%);
 }
 
+/* Eye button & Customer Snapshot Modal Card */
+.order-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.btn-eye-view {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--color-moon-mist);
+  flex-shrink: 0;
+}
+
+.btn-eye-view:hover {
+  color: #fff;
+  background: rgba(102, 58, 243, 0.25);
+  box-shadow: rgba(167, 139, 250, 0.45) 0 0 0 1px inset;
+}
+
+.customer-snapshot-card {
+  background: rgba(24, 28, 52, 0.82);
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: var(--shadow-subtle-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.snapshot-card-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fog-veil);
+}
+
+.snapshot-profile-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.snapshot-avatar-wrap {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  flex-shrink: 0;
+}
+
+.snapshot-avatar-img,
+.snapshot-avatar-fallback {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: rgba(186, 214, 247, 0.14);
+}
+
+.snapshot-level-badge {
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #4f7cff 0%, #6366f1 100%);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(79, 124, 255, 0.55);
+}
+
+.snapshot-profile-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.snapshot-nickname {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-pure-white);
+  overflow-wrap: break-word;
+}
+
+.snapshot-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.snapshot-region-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(186, 214, 247, 0.12);
+  color: var(--color-moon-mist);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.snapshot-stats-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 15px;
+  color: var(--color-pure-white);
+}
+
+.snapshot-stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.snapshot-follow-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #22c55e;
+  color: #fff;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.snapshot-captured-line {
+  font-size: 13px;
+  color: var(--color-moon-mist);
+}
+
+.snapshot-captured-line strong {
+  color: var(--color-frost-glow);
+  font-variant-numeric: tabular-nums;
+}
+
+.snapshot-fruit-quota {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(186, 215, 247, 0.1);
+  font-size: 13px;
+}
+
+.snapshot-quota-label {
+  color: var(--color-moon-mist);
+}
+
+.snapshot-quota-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.snapshot-quota-pill.is-ok {
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+}
+
+.snapshot-quota-pill.is-warn,
+.snapshot-quota-pill.is-full {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+
+.snapshot-quota-reset {
+  font-size: 12px;
+  color: var(--color-fog-veil);
+}
+
+.snapshot-order-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(5, 6, 15, 0.5);
+  box-shadow: var(--shadow-subtle);
+  font-size: 12px;
+  color: var(--color-fog-veil);
+}
+
+.snapshot-order-meta strong {
+  color: var(--color-frost-glow);
+}
+
 .badge-tag.green {
   background: rgba(38, 150, 132, 0.22);
   color: #5eead4;

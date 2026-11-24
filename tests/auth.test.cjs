@@ -1923,3 +1923,121 @@ test('CTV scoped live progress sync fetches only active category endpoint and de
   assert.match(html, /Tự động cập nhật tiến độ/);
   assert.doesNotMatch(html, />assigned<|>pending<|\(Active\)|\(Paused\)/);
 });
+
+test('on-demand customer snapshot endpoint enforces CTV isolation, caches responses, and includes daily fruit quota only for fruit orders', async t => {
+  let now = Date.parse('2026-11-24T16:30:00Z');
+  class Clock extends Date { static now() { return now; } }
+  const hits = [];
+  const server = await startTestServer(t, async url => {
+    const u = new URL(url);
+    hits.push(u.pathname);
+    if (u.pathname === '/api/fruit-coin-orders' && u.searchParams.get('status_group') === 'completed') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          data: {
+            current_page: 1, last_page: 1,
+            data: [{
+              id: 18334, customer_id: 43168, game_profile_id: 73066, total_price: 4000,
+              status: 'completed', is_active: true, total_cnt: 10000000, completed_cnt: 10000000,
+              customer: { id: 43168, nickname: 'QuaccXhamster', suid: '1080183253328797012' },
+              game_profile: {
+                id: 73066, nickname: 'QuaccXhamster', region: 'vn1', achievement_level: 13,
+                photo_url: 'https://example.test/avatar.png', user_likes: 51, home_likes: 0,
+                total_home_visit_count: 0, follower_count: 0, created_at: '2026-11-20T11:29:37Z',
+              },
+            }],
+          },
+        }),
+      };
+    }
+    if (u.pathname === '/api/fruit-coin-orders/18334/daily-quota') {
+      return { ok: true, status: 200, json: async () => ({ success: true, data: { used: 30, limit: 30, resets_at: '2026-11-25T07:00:00+07:00' } }) };
+    }
+    if (u.pathname === '/api/buff-tim-orders' && u.searchParams.get('status_group') === 'active') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          data: {
+            current_page: 1, last_page: 1,
+            data: [{
+              id: 7001, customer_id: 9001, game_profile_id: 8001, total_price: 9000,
+              status: 'assigned', is_active: true, total_cnt: 100, completed_cnt: 40,
+              customer: { id: 9001, nickname: 'TimUser', suid: '999888' },
+              game_profile: {
+                id: 8001, nickname: 'TimUser', region: 'vn1', achievement_level: 25,
+                user_likes: 120, home_likes: 12, total_home_visit_count: 8, follower_count: 4,
+                created_at: '2026-11-24T10:00:00Z',
+              },
+            }],
+          },
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ data: { current_page: 1, last_page: 1, data: [] } }) };
+  }, {
+    clock: Clock,
+    seed(db) {
+      db.localOrders.push(
+        {
+          id: 'ord-f1', remoteOrderId: 18334, category: 'fruit_coin', categoryName: 'Trái cây',
+          summary: 'Gói 10.000.000 Xu', customer: { customerId: 43168, nickname: 'QuaccXhamster', suid: '1080183253328797012' },
+          sellPrice: 6000, costPrice: 4000, status: 'completed', isActive: false, totalCnt: 10000000, completedCnt: 10000000,
+          placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, createdAt: '2026-11-24T11:30:00Z',
+        },
+        {
+          id: 'ord-t1', remoteOrderId: 7001, category: 'buff_tim', categoryName: 'Buff Tim',
+          summary: 'Buff 100 Tim', customer: { customerId: 9001, nickname: 'TimUser', suid: '999888' },
+          sellPrice: 12000, costPrice: 9000, status: 'assigned', isActive: true, totalCnt: 100, completedCnt: 40,
+          placedBy: { id: 'owner', name: 'Owner', role: 'admin' }, createdAt: '2026-11-24T10:05:00Z',
+        }
+      );
+    },
+  });
+
+  const seller = (await server.login('seller', 'seller-test-password')).body.token;
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+
+  // CTV cannot inspect another user's order
+  assert.equal((await server.request('/api/orders/buff_tim/7001/customer-snapshot', 'GET', seller)).status, 403);
+  assert.equal(hits.length, 0);
+
+  // CTV inspects their own fruit order: returns profile + dailyFruitQuota, hides source cost
+  const fruitSnap = await server.request('/api/orders/fruit_coin/18334/customer-snapshot', 'GET', seller);
+  assert.equal(fruitSnap.status, 200);
+  assert.equal(fruitSnap.body.cached, false);
+  assert.equal(fruitSnap.body.profile.nickname, 'QuaccXhamster');
+  assert.equal(fruitSnap.body.profile.achievementLevel, 13);
+  assert.equal(fruitSnap.body.profile.userLikes, 51);
+  assert.deepEqual(fruitSnap.body.dailyFruitQuota, { used: 30, limit: 30, resetsAt: '2026-11-25T07:00:00+07:00' });
+  assert.equal(fruitSnap.body.order.costPrice, undefined);
+  assert.equal(fruitSnap.body.order.total_price, undefined);
+  const hitsAfterFirst = hits.length;
+
+  // Second view within 45s returns instantly from RAM cache (0 upstream hits)
+  now += 10000;
+  const fruitCached = await server.request('/api/orders/fruit_coin/18334/customer-snapshot', 'GET', seller);
+  assert.equal(fruitCached.status, 200);
+  assert.equal(fruitCached.body.cached, true);
+  assert.equal(hits.length, hitsAfterFirst);
+
+  // Admin inspects non-fruit order: returns profile without calling daily-quota
+  const timSnap = await server.request('/api/orders/buff_tim/7001/customer-snapshot', 'GET', admin);
+  assert.equal(timSnap.status, 200);
+  assert.equal(timSnap.body.profile.nickname, 'TimUser');
+  assert.equal(timSnap.body.profile.userLikes, 120);
+  assert.equal(timSnap.body.dailyFruitQuota, null);
+  assert.equal(hits.some(p => p.includes('7001/daily-quota')), false);
+
+  // Eye button renders for both CTV and Admin across order pages
+  const client = createClient();
+  client.state.user = { id: 'seller', role: 'ctv', name: 'Seller', balance: 50000 };
+  client.state.catalogData = { systemStatus: { fruit_coin: true }, processingRates: {} };
+  client.state.orders = [{
+    id: 'ord-f1', remoteOrderId: 18334, category: 'fruit_coin', summary: 'Gói 10M Xu', sellPrice: 6000,
+    status: 'completed', isActive: false, totalCnt: 100, completedCnt: 100, createdAt: '2026-11-20T11:30:00Z',
+    customer: { nickname: 'QuaccXhamster', suid: '1080183253328797012' },
+  }];
+  const ctvHtml = client.context.renderOrderCategoryPageHtml('fruit_coin');
+  assert.match(ctvHtml, /data-view-order-customer="18334"/);
+});

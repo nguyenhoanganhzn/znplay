@@ -4409,14 +4409,21 @@ app.delete('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
   if (idx < 0) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV.' });
   }
-  const removed = db.users[idx];
-  removed.isLocked = true;
-  removed.archivedAt = new Date().toISOString();
-  for (const [token, session] of Object.entries(db.sessions)) if (session.userId === removed.id) delete db.sessions[token];
+  const [removed] = db.users.splice(idx, 1);
+  for (const [token, session] of Object.entries(db.sessions)) {
+    const uid = typeof session === 'string' ? session : session?.userId;
+    if (uid === removed.id) delete db.sessions[token];
+  }
+  req.auditDetails = {
+    userId: removed.id,
+    username: removed.username,
+    name: removed.name,
+    balanceAfter: removed.balance,
+  };
   req.needsSave = true;
   res.json({
     success: true,
-    message: `Đã khóa và lưu trữ tài khoản CTV "${removed.name}"; giữ nguyên số dư, đơn hàng và lịch sử đối soát.`,
+    message: `Đã xóa tài khoản CTV "${removed.name}" (${removed.username}) khỏi hệ thống.`,
   });
 }));
 

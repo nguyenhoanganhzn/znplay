@@ -4199,8 +4199,8 @@ function renderAdminCtvPageHtml() {
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-lock-ctv="${u.id}" data-locked="${u.isLocked ? '1' : '0'}">
                       ${u.isLocked ? 'Mở khóa' : 'Khóa'}
                     </button>
-                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-del-ctv="${u.id}">
-                      Ngừng tài khoản
+                    <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;" data-del-ctv="${u.id}" data-ctv-name="${escapeHtml(u.name)}">
+                      Xóa tài khoản
                     </button>
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-reset-ctv="${u.id}">Đổi mật khẩu</button>
                   </div>
@@ -4324,7 +4324,8 @@ function bindAccountRows(scope = document) {
 
   scope.querySelectorAll('[data-del-ctv]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Ngừng tài khoản CTV này? Các phiên sẽ bị thu hồi; số dư và lịch sử vẫn được giữ để đối soát.')) return;
+      const ctvName = btn.dataset.ctvName || 'này';
+      if (!confirm(`Xóa tài khoản CTV "${ctvName}"? Các phiên đăng nhập sẽ bị thu hồi và tài khoản sẽ bị xóa khỏi danh sách.`)) return;
       try {
         const r = await apiFetch(`/api/admin/ctv/${btn.dataset.delCtv}`, 'DELETE');
         showToast(r.message);

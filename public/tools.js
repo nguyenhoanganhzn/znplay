@@ -33,7 +33,7 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (a === 'POST /admin/ctv') return '➕ Admin tạo tài khoản CTV';
     if (a === 'POST /admin/maintenance') return '🛠️ Admin bật / tắt chế độ bảo trì';
     if (a === 'POST /admin/notify-update') return '🔄 Admin gửi thông báo cập nhật cho CTV';
-    if (/^DELETE \/admin\/ctv\/[^/]+$/.test(a)) return '🔒 Admin khóa / lưu trữ CTV';
+    if (/^DELETE \/admin\/ctv\/[^/]+$/.test(a)) return '🗑️ Admin xóa tài khoản CTV';
     if (/^POST \/admin\/orders\/[^/]+\/refund$/.test(a)) return '↩️ Admin hoàn tiền đối soát';
     return a;
   }

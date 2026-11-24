@@ -541,6 +541,13 @@ test('locking or resetting a CTV password revokes sessions, including after the 
   assert.equal((await server.request('/api/auth/me', 'GET', fresh.body.token)).status, 401);
   assert.equal((await server.login('seller', 'seller-test-password')).status, 401);
   assert.equal((await server.login('seller', 'new-ctv-test-password')).status, 200);
+  const relogged = await server.login('seller', 'new-ctv-test-password');
+  const delRes = await server.request(path, 'DELETE', admin.body.token);
+  assert.equal(delRes.status, 200);
+  assert.equal(server.db.users.find(u => u.id === 'seller'), undefined);
+  assert.equal((await server.request('/api/auth/me', 'GET', relogged.body.token)).status, 401);
+  assert.equal((await server.login('seller', 'new-ctv-test-password')).status, 401);
+  assert.equal((await server.request(path, 'DELETE', admin.body.token)).status, 404);
 });
 
 test('CTV cannot enumerate saved source customers, read stock internals, monitor logs or other orders', async t => {

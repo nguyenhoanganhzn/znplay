@@ -423,6 +423,10 @@ body::before {
   gap: 16px;
 }
 
+#monitorWalletTotals .stats-three-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+
 .stat-subcard {
   background: rgba(5, 6, 15, 0.45);
   border-radius: 12px;

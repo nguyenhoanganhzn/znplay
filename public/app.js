@@ -628,6 +628,7 @@ async function loadOrders(forceRefresh = false) {
     const query = `category=${category}&limit=${pageLimit('orderList')}&q=${encodeURIComponent(state.orderSearch)}&active=${filter ? state.orderActiveFilter : 'all'}&progress=${filter ? state.orderProgressFilter : 'all'}`;
     const r = await apiFetch(`/api/orders?${query}${forceRefresh ? '&refresh=1' : ''}`);
     if (r.success && current()) {
+      state.orderClockOffset = (r.serverTime ?? Date.now()) - Date.now();
       const nextOrders = r.orders || [];
       const sig = JSON.stringify([nextOrders, r.page, r.partial, r.remoteSummaries]);
       const changed = sig !== state.lastOrdersSig || !state.orderPage || Boolean(state.ordersWarning);
@@ -981,7 +982,7 @@ function renderOrderCategoryPageHtml(catKey) {
               <th>TRẠNG THÁI</th>
               <th>BẬT/TẮT</th>
               <th>TẠO LÚC</th>
-              ${catKey === 'weather_buff' ? '<th>LINK</th>' : state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
+              ${catKey === 'weather_buff' ? '<th>LINK / THAO TÁC</th>' : state.user?.role === 'admin' ? '<th>THAO TÁC</th>' : ''}
             </tr>
           </thead>
           <tbody id="catOrdersTbody">
@@ -1051,7 +1052,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
       : '';
 
   const isWeather = o.category === 'weather_buff';
-  const canEditWeather = isWeather && o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview;
+  const canEditWeather = isWeather && o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview && !o.weatherDeletePending;
   const wbSlots = isWeather ? (o.weather?.slots || []) : [];
   const wbHasCust = isWeather ? wbSlots.some(s => s.customer_id || s.customer) || Boolean(o.customer?.customerId) : true;
   const wbLines = isWeather ? (o.weather?.weathers || []) : [];
@@ -1139,8 +1140,9 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
           }
           ${
             isAdmin && o.remoteOrderId && o.status !== 'cancelled'
-              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">Hủy tại nguồn</button></div>`
-              : ''
+              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">${o.weatherDeletePending ? 'Đối soát xóa đơn' : 'Hủy tại nguồn'}</button></div>`
+              : o.weatherDeletePending ? '<span class="tool-note">Chờ đối soát xóa đơn</span>'
+              : Number.isFinite(o.weatherDeleteAt) ? `<div><button type="button" class="btn-frost" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${o.weatherDeleteAt}" disabled>Xóa đơn</button></div>` : ''
           }
         </div>
       </td>
@@ -1180,7 +1182,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
       <td>${statusBadge}</td>
       <td>
         ${
-          o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview
+          o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview && !o.weatherDeletePending
             ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" role="switch" aria-checked="${Boolean(o.isActive)}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
             : '—'
         }
@@ -1331,14 +1333,27 @@ function bindOrderRowActionButtons() {
     });
   });
 
-  if (state.user?.role === 'admin') {
-    document.querySelectorAll('[data-delete-order]').forEach((btn) => {
+  document.querySelectorAll('[data-delete-order]').forEach((btn) => {
+      if (btn.hasAttribute('data-unlock-at')) {
+        const tick = () => {
+          if (!btn.isConnected) return;
+          const left = Math.ceil((Number(btn.dataset.unlockAt) - Date.now() - (state.orderClockOffset || 0)) / 1000);
+          btn.disabled = left > 0;
+          btn.textContent = left > 0 ? `Xóa sau ${left}s` : 'Xóa đơn';
+          if (left > 0) setTimeout(tick, 1000);
+        };
+        tick();
+      }
       btn.addEventListener('click', async () => {
         const remId = btn.dataset.deleteOrder;
         const cat = btn.dataset.orderCat;
         const ord = state.orders.find((o) => o.category === cat && String(o.remoteOrderId) === String(remId));
         let confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn?`;
-        if (ord?.placedBy?.role === 'ctv') {
+        if (state.user?.role === 'ctv') {
+          confirmMsg = `Xóa đơn Buff Thời Tiết #${remId} và hoàn ${formatVnd(ord?.sellPrice)} vào ví của bạn?`;
+        } else if (ord?.weatherDeletePending) {
+          confirmMsg = `Đã kiểm tra tại nguồn đơn #${remId} chưa chạy và đã xóa hoặc vẫn trống? Xác nhận để hoàn ${formatVnd(ord.sellPrice)} vào ví CTV sau khi kiểm tra lại tại nguồn.`;
+        } else if (ord?.placedBy?.role === 'ctv') {
           if (ord.status === 'completed') {
             confirmMsg = `Xóa đơn #${remId} đã hoàn thành khỏi hệ thống? (Đơn đã giao đủ nên không hoàn tiền ví CTV.)`;
           } else if (Number(ord.completedCnt || 0) > 0 && Number(ord.totalCnt || 0) > 0) {
@@ -1352,17 +1367,18 @@ function bindOrderRowActionButtons() {
         try {
           const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
             deletion_note: 'Xóa đơn từ ZnStudio',
+            confirmed_deleted: state.user?.role === 'admin' && !!ord?.weatherDeletePending,
           });
           showToast(res.message || 'Đã hủy & xóa đơn hàng');
           await Promise.all([loadOrders(true), initAuth()]);
           renderCurrentView();
         } catch (err) {
           showToast(`Không thể xóa: ${err.message}`);
-          btn.disabled = false;
+          await loadOrders(true);
+          renderCurrentView();
         }
       });
-    });
-  }
+  });
 }
 
 function renderSyncLoadingHtml(message = 'Đang cập nhật bảng giá từ Zn...', sub = 'Đang đồng bộ trạng thái hoạt động và giá gốc mới nhất từ hệ thống để đảm bảo chính xác tuyệt đối.') {

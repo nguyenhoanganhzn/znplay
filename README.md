@@ -96,9 +96,10 @@ Sao lưu dữ liệu riêng trước khi đổi thư mục lưu trữ hoặc tri
 - Mỗi yêu cầu tạo đơn có mã chống trùng. Tiền được giữ và lưu trước khi gửi nguồn.
 - Khi không xác định được nguồn đã tạo đơn hay chưa, giữ nguyên khoản giữ tiền,
   khóa đặt tiếp và đưa vào danh sách admin đối soát. Không tự gửi lại yêu cầu.
-- CTV gửi yêu cầu hủy; admin duyệt hủy tại nguồn. Lịch sử không bị xóa.
-- Không tự hoàn toàn bộ tiền khi hủy. Admin nhập tổng tiền nguồn đã hoàn và xác nhận;
-  tiền hoàn CTV bị giới hạn theo phần đã đối soát, có chống hoàn trùng.
+- Sau 15 giây kể từ lúc tạo, CTV có thể xóa đơn Buff Thời Tiết của mình khi đơn còn trống và chưa chạy.
+  Sau khi nguồn xác nhận xóa, ví nhận lại đúng giá CTV đã đặt. Giao dịch hoàn được giữ trong sổ ví.
+  Nếu nguồn mất kết nối trong lúc xóa, admin kiểm tra đơn tại nguồn rồi dùng **Đối soát xóa đơn** ở bảng Buff Thời Tiết.
+- Trong **Giám sát & đối soát CTV**, mục **Admin phải thanh toán** cộng hạn mức nguồn đã dùng trong tuần với tổng số dư của tất cả CTV.
 - Admin xem hoạt động, yêu cầu chờ xử lý và hoạt động gần nhất của CTV.
   Lưu tối đa 5.000 sự kiện gần nhất, hiển thị 200; nhật ký không ghi mật khẩu/token.
 - Phiên đăng nhập hết hạn sau 12 giờ; khóa hoặc đổi mật khẩu CTV sẽ thu hồi phiên.
@@ -106,7 +107,6 @@ Sao lưu dữ liệu riêng trước khi đổi thư mục lưu trữ hoặc tri
 - Trong **Công cụ → Trích xuất ID Game / Tên nhân vật**, nhập tên, Role ID dạng số
   hoặc mã nhân vật `XXXX-XXXX-XXXX` để tra cứu từ client game của HoanNguyen.
   Mỗi kết quả có nút sao chép riêng cho tên và từng dạng ID.
-- Buff thời tiết hiện chỉ xem lịch sử, chưa mở tạo đơn mới.
 
 Ứng dụng kết nối nguồn thật: tạo đơn trong lúc thử vẫn có thể phát sinh chi phí
 ở tài khoản nguồn. Các bài kiểm tra tự động dùng dữ liệu giả, không tạo đơn thật.

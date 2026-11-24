@@ -191,9 +191,12 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
       <td>${esc(formatAuditAction(e.action))}</td><td>${esc(formatAuditDetails(e.details))}</td></tr>`).join(''));
   }
 
-  function walletCards(totals) {
+  function walletCards(totals, overview) {
     const fields = [['Tổng đã nạp', 'totalTopup'], ['Tổng đã sử dụng (sau hoàn tiền)', 'totalSpent'], ['Tổng còn lại', 'balance']];
-    return `<div class="stats-three-grid">${fields.map(([label, key]) => `<div class="stat-subcard"><span class="tool-note">${label}</span><strong class="wallet-value">${totals?.[key] == null ? '—' : money(totals[key])}</strong></div>`).join('')}</div>`;
+    const payable = overview ? `<div class="stat-subcard"><span class="tool-note">Admin phải thanh toán</span>
+      <strong class="wallet-value">${overview.adminPayable == null ? '—' : money(overview.adminPayable)}</strong>
+      <span class="tool-note">${overview.adminPayable == null ? 'Chưa lấy được hạn mức đã sử dụng từ nguồn.' : 'Hạn mức nguồn đã dùng trong tuần + tổng số dư ví CTV.'}</span></div>` : '';
+    return `<div class="stats-three-grid">${fields.map(([label, key]) => `<div class="stat-subcard"><span class="tool-note">${label}</span><strong class="wallet-value">${totals?.[key] == null ? '—' : money(totals[key])}</strong></div>`).join('')}${payable}</div>`;
   }
 
   function renderSelectedCtvDetailHtml() {
@@ -238,7 +241,7 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     const rows = data.ctvs.map(u => `<tr><td><strong>${esc(u.name)}</strong><div class="tool-note">${esc(u.username)}</div></td>
       <td>${money(u.totalTopup)}</td><td>${money(u.totalSpent)}</td><td class="wallet-balance">${money(u.balance)}</td><td>${Number(u.orderCount || 0)}</td>
       <td>${button(u.id === state.adminMonitorCtvId ? 'Đang xem' : 'Xem đơn', 'data-select-ctv', u.id, u.id === state.adminMonitorCtvId ? 'btn-violet' : 'btn-frost')}</td></tr>`).join('');
-    return panel('Tổng ví của toàn bộ CTV', walletCards(data.walletTotals), 'id="monitorWalletTotals"')
+    return panel('Tổng ví của toàn bộ CTV', walletCards(data.walletTotals, data), 'id="monitorWalletTotals"')
       + panel('Ví và đơn hàng của CTV', `${!data.storageHealthy ? '<p class="tool-warning">Lỗi ghi dữ liệu ví.</p>' : ''}
       <div class="tool-actions">${button('Làm mới', 'data-refresh-monitor', '')}</div>
       ${table(['CTV','Tổng đã nạp','Đã dùng sau hoàn tiền','Còn lại','Số đơn','Chi tiết'], rows)}${moreButton('ctvs', data.ctvCount, 0, data.ctvs.length)}`)

@@ -536,7 +536,7 @@ function vietnamWeekStart(now = Date.now()) {
 
 function isPastOrderHistory(order, cutoff) {
   return Date.parse(order.createdAt) < cutoff && ['completed', 'cancelled'].includes(order.status)
-    && !order.requiresReview && !order.refundPending && !order.cancelRequested;
+    && !order.weatherDeletePending && !order.requiresReview && !order.refundPending && !order.cancelRequested;
 }
 
 function pruneWeekHistory(cutoff) {
@@ -1479,14 +1479,9 @@ let catalogCache = {
 const catalogResponseCache = new Map();
 
 function getCurrentMondayStr() {
-  const now = new Date();
-  const day = now.getDay();
-  const diff = now.getDate() - day + (day === 0 ? -6 : 1);
-  const monday = new Date(now.setDate(diff));
-  const y = monday.getFullYear();
-  const m = String(monday.getMonth() + 1).padStart(2, '0');
-  const d = String(monday.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  const local = new Date(Date.now() + 7 * 3600000);
+  local.setUTCDate(local.getUTCDate() - (local.getUTCDay() + 6) % 7);
+  return local.toISOString().slice(0, 10);
 }
 
 const SETTINGS_KEYS_PATH =
@@ -2915,7 +2910,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     // Once the source confirms its full list, remove last week's orders that it has cleared.
     if (!remote.partial) {
       const retained = db.localOrders.filter(o => !(Date.parse(o.createdAt) < cutoff && o.remoteOrderId
-        && !o.requiresReview && !o.cancelRequested && !o.refundPending
+        && !o.weatherDeletePending && !o.requiresReview && !o.cancelRequested && !o.refundPending
         && !remoteMap.has(`${o.category}:${o.remoteOrderId}`)));
       if (retained.length !== db.localOrders.length) {
         db.localOrders = retained;
@@ -2957,6 +2952,9 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           ? lo.note
           : null,
         weather: lo.category === 'weather_buff' ? lo.weather || null : undefined,
+        weatherDeletePending: lo.weatherDeletePending || undefined,
+        weatherDeleteAt: !isAdmin && lo.category === 'weather_buff' && lo.status === 'pending' && !lo.weatherDeletePending && !lo.requiresReview && !lo.refundPending && !lo.refundedAmount &&
+          emptyWeatherOrder(remoteMap.get(`weather_buff:${lo.remoteOrderId}`)) ? Date.parse(lo.createdAt) + 15000 : undefined,
         cancelRequested: !!lo.cancelRequested,
         requiresReview: !!lo.requiresReview,
         createdAt: lo.createdAt,
@@ -3077,6 +3075,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
 
     res.json({
       success: true,
+      serverTime: Date.now(),
       orders: results,
       page,
       partial: remote.partial,
@@ -3097,8 +3096,20 @@ app.get('/api/orders', requireAuth, async (req, res) => {
   }
 });
 
+const weatherMutationLocks = new Set();
+function orderMutation(handler) {
+  return asyncRoute(async (req, res) => {
+    if (req.params.category && req.params.category !== 'weather_buff') return handler(req, res);
+    const key = String(req.params.remoteId).replace(/^0+(?=\d)/, '');
+    if (weatherMutationLocks.has(key)) return res.status(409).json({ success: false, message: 'Đơn đang được xử lý. Vui lòng làm mới.' });
+    weatherMutationLocks.add(key);
+    try { await handler(req, res); }
+    finally { weatherMutationLocks.delete(key); }
+  });
+}
+
 // Toggle Active / Inactive Order (Strict ownership check for CTV)
-app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialGuard, limitInteractive, async (req, res) => {
+app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
@@ -3116,7 +3127,7 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
     if (!Object.hasOwn(CATEGORY_METADATA, category)) {
       return res.status(400).json({ success: false, message: 'Danh mục đơn không hợp lệ.' });
     }
-    if (lo?.status === 'cancelled' || lo?.requiresReview) return res.status(409).json({ success: false, message: 'Đơn đã hủy hoặc đang chờ đối soát; không thể bật/tắt.' });
+    if (lo?.status === 'cancelled' || lo?.requiresReview || lo?.weatherDeletePending) return res.status(409).json({ success: false, message: 'Đơn đã hủy hoặc đang chờ đối soát; không thể bật/tắt.' });
     if (category === 'weather_buff' && lo && !lo.isActive && lo.weather) {
       const hasCust = (lo.weather.slots || []).some(s => s.customer_id || s.customer);
       const totalWeathers = (lo.weather.weathers || []).reduce((sum, w) => sum + Number(w.quantity || 0), 0);
@@ -3151,7 +3162,7 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
       message: publicError(req, err, 'Không thể bật/tắt đơn hàng này (kiểm tra đã gán khách và chọn đủ thời tiết chưa).'),
     });
   }
-});
+}));
 
 // ============================================================================
 // WEATHER BUFF ORDER CONFIGURATION (ASSIGN/CLEAR CUSTOMER SLOT + SET WEATHERS)
@@ -3170,7 +3181,7 @@ function resolveEditableWeatherOrder(req, res) {
     res.status(403).json({ success: false, message: 'Bạn chỉ có thể chỉnh sửa đơn Buff Thời Tiết do chính bạn tạo.' });
     return null;
   }
-  if (lo && (lo.status === 'cancelled' || lo.status === 'completed' || lo.requiresReview)) {
+  if (lo && (lo.status === 'cancelled' || lo.status === 'completed' || lo.requiresReview || lo.weatherDeletePending)) {
     res.status(409).json({ success: false, message: 'Đơn đã hoàn thành, đã hủy hoặc đang chờ đối soát; không thể chỉnh sửa.' });
     return null;
   }
@@ -3196,7 +3207,7 @@ function applyWeatherRemoteUpdate(lo, remoteData) {
     : { customerId: null, gameProfileId: null, nickname: 'Chưa gán khách', suid: '' };
 }
 
-app.put('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+app.put('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
   try {
     const ctx = resolveEditableWeatherOrder(req, res);
     if (!ctx) return;
@@ -3238,7 +3249,7 @@ app.put('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, fina
   }
 }));
 
-app.delete('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+app.delete('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
   try {
     const ctx = resolveEditableWeatherOrder(req, res);
     if (!ctx) return;
@@ -3273,7 +3284,7 @@ app.delete('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, f
   }
 }));
 
-app.put('/api/orders/weather_buff/:remoteId/weathers', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+app.put('/api/orders/weather_buff/:remoteId/weathers', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
   try {
     const ctx = resolveEditableWeatherOrder(req, res);
     if (!ctx) return;
@@ -3383,12 +3394,82 @@ app.post('/api/orders/weather_buff/:remoteId/share-link', requireAuth, limitInte
   }
 }));
 
-// Delete Unstarted / Completed Order (ADMIN ONLY — auto-refunds uncompleted portion to CTV & removes order cleanly!)
-app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+function emptyWeatherOrder(row) {
+  const zero = n => n === 0 || n === '0';
+  return row?.status === 'pending' && (row.is_active === false || zero(row.is_active))
+    && zero(row.completed_cnt) && zero(row.sending_cnt) && zero(row.failed_cnt)
+    && !row.completed_at && !row.deleted_at && !row.remote_ref && !row.remote_order_id
+    && !row.casting && !row.casting_weather_id && !row.casting_started_at
+    && Array.isArray(row.weathers) && row.weathers.length === 0
+    && Array.isArray(row.slots) && row.slots.every(slot => slot && !slot.customer_id && !slot.customer);
+}
+
+async function findSourceWeatherOrder(id, group) {
+  const list = await hnApiCall(`/api/weather-buff-orders?status_group=${group}&search=${id}&per_page=100`);
+  if (list?.success !== true || !Array.isArray(list.data?.data)) throw new Error('Chưa đọc được trạng thái đơn tại nguồn.');
+  const match = list.data.data.find(o => String(o.id) === id);
+  if (!match && list.data.data.length !== Number(list.data.total)) throw new Error('Chưa xác minh hết kết quả tại nguồn.');
+  return match;
+}
+
+async function deleteEmptyWeatherOrder(req, res, order) {
+  const admin = req.user.role === 'admin';
+  const reject = (status, message) => res.status(status).json({ success: false, message });
+  if (!order || order.placedBy?.role !== 'ctv' || (!admin && order.placedBy.id !== req.user.id)) {
+    return reject(403, 'Bạn chỉ có thể xóa đơn Buff Thời Tiết của mình.');
+  }
+  const unlockAt = Date.parse(order.createdAt) + 15000;
+  if (!Number.isFinite(unlockAt) || Date.now() < unlockAt) return reject(409, 'Có thể xóa đơn sau 15 giây kể từ khi tạo.');
+  if (order.requiresReview || order.refundPending || order.refundedAmount || (!order.weatherDeletePending && order.status !== 'pending')) {
+    return reject(409, 'Trạng thái hiện tại của đơn không cho phép hoàn toàn bộ tiền.');
+  }
+  const owner = db.users.find(u => u.id === order.placedBy.id);
+  const amount = order.sellPrice;
+  const refundKey = `cancel:${order.id}`;
+  const canRefund = () => db.localOrders.includes(order) && db.users.includes(owner) && validMoney(amount, false)
+    && validMoney(owner?.balance) && validMoney(owner.balance + amount) && !db.transactions.some(t => t.refundKey === refundKey);
+  if (!canRefund()) return reject(409, 'Vui lòng đối soát giá đặt đơn và ví nhận trước khi xóa.');
+  const id = encodeURIComponent(order.remoteOrderId);
+  const row = await findSourceWeatherOrder(id, 'active');
+  req.auditDetails = { category: order.category, remoteOrderId: order.remoteOrderId, userId: owner.id };
+  const reconciling = admin && order.weatherDeletePending && req.body?.confirmed_deleted === true;
+  if (reconciling && !emptyWeatherOrder(row) && (row || await findSourceWeatherOrder(id, 'completed'))) {
+    delete order.weatherDeletePending;
+    orderCache = {};
+    return reject(409, 'Đơn vẫn tồn tại và đã thay đổi tại nguồn. Đã đóng yêu cầu xóa và giữ nguyên ví CTV.');
+  }
+  if (!reconciling || row) {
+    if (!emptyWeatherOrder(row)) return reject(409, order.weatherDeletePending
+      ? 'Yêu cầu xóa cần admin kiểm tra tại nguồn để đối soát.' : 'Chỉ có thể xóa đơn chưa chạy, chưa gán khách và chưa chọn thời tiết.');
+    if (!canRefund()) return reject(409, 'Ví hoặc đơn đã thay đổi. Vui lòng làm mới.');
+    order.weatherDeletePending = true;
+    await saveDb(db);
+    try {
+      const result = await hnApiCall(`/api/weather-buff-orders/${id}`, 'DELETE', { deletion_note: 'CTV hủy đơn Buff Thời Tiết trống' });
+      if (result?.success !== true) throw new Error('Thiếu xác nhận xóa.');
+    } catch (error) {
+      if (error.data?.success === false && error.status < 500 && error.status !== 404) {
+        delete order.weatherDeletePending;
+        return reject(409, 'Nguồn từ chối xóa đơn. Ví CTV chưa thay đổi.');
+      }
+      return reject(503, 'Chưa xác nhận được kết quả xóa. Vui lòng nhờ admin kiểm tra tại nguồn để đối soát ví.');
+    }
+  }
+  if (!canRefund()) return reject(409, 'Cần admin đối soát ví để ghi nhận tiền hoàn.');
+  owner.balance += amount;
+  db.transactions.unshift({ id: crypto.randomUUID(), refundKey, userId: owner.id, userName: owner.name,
+    type: 'order_refund', amount, balanceAfter: owner.balance, note: `Hoàn tiền xóa đơn Buff Thời Tiết #${order.remoteOrderId}`, createdAt: new Date().toISOString() });
+  db.localOrders.splice(db.localOrders.indexOf(order), 1);
+  orderCache = {};
+  Object.assign(req.auditDetails, { refundedAmount: amount, balanceAfter: owner.balance });
+  res.json({ success: true, refundedAmount: amount, message: `Đã xóa đơn #${order.remoteOrderId} và hoàn ${amount.toLocaleString('vi-VN')}đ vào ví CTV.` });
+}
+
+app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
-    if (!isAdmin) {
+    if (!isAdmin && req.params.category !== 'weather_buff') {
       return res.status(403).json({
         success: false,
         message: 'CTV không có quyền xóa hoặc hủy đơn hàng. Vui lòng liên hệ Admin nếu cần hỗ trợ.',
@@ -3402,6 +3483,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
       return res.status(400).json({ success: false, message: 'Danh mục đơn không hợp lệ.' });
     }
     const lo = idx >= 0 ? db.localOrders[idx] : null;
+    if (!isAdmin || lo?.weatherDeletePending) return await deleteEmptyWeatherOrder(req, res, lo);
     const alreadyCancelled = lo?.status === 'cancelled';
 
     // Delete at upstream source FIRST (skip only if order was already cancelled at source earlier)
@@ -3561,7 +3643,10 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
 app.use('/api/admin', requireAdmin);
 app.use('/api/admin', (req, res, next) => req.method === 'GET' ? next() : financialGuard(req, res, next));
 
-app.get('/api/admin/monitor', (req, res) => {
+app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
+  const settlement = await hnApiCall(`/api/seller-settlements?week_start=${getCurrentMondayStr()}`, 'GET', null, true, 5000).catch(() => null);
+  const rawSpent = settlement?.data?.weekly_limit?.spent;
+  const spent = typeof rawSpent === 'string' && /^\d+$/.test(rawSpent) ? Number(rawSpent) : rawSpent;
   const wallets = walletTotalsByUser();
   const orderStatsByCtv = new Map();
   for (const o of db.localOrders) {
@@ -3591,13 +3676,14 @@ app.get('/api/admin/monitor', (req, res) => {
   }
   res.json({ success: true, storageHealthy,
     walletTotals,
+    adminPayable: Number.isSafeInteger(spent) && spent >= 0 && Number.isSafeInteger(spent + walletTotals.balance) ? spent + walletTotals.balance : null,
     ctvCount: ctvs.length,
     ctvs: ctvs.slice(0, listLimit(req.query.ctvs)),
     intents: req.query.summary === '1' ? undefined : db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),
     eventCount: Math.min(50, db.auditLog.length),
     events: db.auditLog.slice(0, Math.min(50, listLimit(req.query.events))),
   });
-});
+}));
 
 app.get('/api/admin/monitor/ctv/:id', (req, res) => {
   const ctv = db.users.find(u => u.id === req.params.id && u.role === 'ctv');

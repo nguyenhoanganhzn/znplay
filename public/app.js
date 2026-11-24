@@ -4881,6 +4881,14 @@ function bindGlobalEvents() {
     document.getElementById('appModalOverlay').style.display = 'none';
   });
 
+  // Global top navbar reload button (available on all pages for both Admin & CTV)
+  document.getElementById('btnTopReloadPage')?.addEventListener('click', (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try { sessionStorage.removeItem('znplay_catalog_cache'); } catch {}
+    window.location.reload();
+  });
+
   // Logout always returns to the credential form.
   document.getElementById('btnTopLogout')?.addEventListener('click', logout);
 

@@ -55,9 +55,19 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.45;
+  width: 100%;
+  max-width: 100%;
   min-height: 100vh;
+  overflow-x: hidden;
   overflow-x: clip;
+  overscroll-behavior-x: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
+}
+
+body.modal-open {
+  overflow: hidden;
 }
 
 /* Blueprint Grid & Ambient Halo */
@@ -124,6 +134,9 @@ body::before {
   position: relative;
   z-index: 1;
   display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 100vh;
 }
 
@@ -298,7 +311,10 @@ body::before {
   margin-left: var(--sidebar-width);
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  overflow-x: hidden;
   overflow-x: clip;
 }
 
@@ -382,7 +398,8 @@ body::before {
 
 .glass-panel {
   min-width: 0;
-  overflow-wrap: anywhere;
+  max-width: 100%;
+  overflow-wrap: break-word;
   background: rgba(18, 22, 41, 0.78);
   backdrop-filter: blur(12px);
   border-radius: 16px;
@@ -590,8 +607,30 @@ body::before {
 .btn-frost, .btn-violet {
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
   line-height: 1.35;
+}
+
+.inline-search-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.inline-search-row .input-box {
+  flex: 1 1 0%;
+  min-width: 0;
+  width: 100%;
+}
+
+.inline-search-row > button,
+.inline-search-row > a {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 button:focus-visible, a:focus-visible {
@@ -624,8 +663,21 @@ button:focus-visible, a:focus-visible {
 }
 
 select.input-box {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   cursor: pointer;
   background-color: #0b0e1d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5L6 8l3.5-3.5' stroke='%239da7ba' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 
 .badge-tag {
@@ -824,20 +876,27 @@ select.input-box {
   position: fixed;
   inset: 0;
   z-index: 1000;
+  width: 100%;
+  max-width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: contain;
   background: rgba(5, 6, 15, 0.82);
   backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 
 .modal-box {
   width: 100%;
-  max-width: 640px;
+  max-width: min(640px, 100%);
   max-height: 100%;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  overflow-wrap: break-word;
   background: rgba(10, 13, 28, 0.98);
   border-radius: 16px;
   padding: 24px;
@@ -882,14 +941,34 @@ select.input-box {
 }
 
 #appModalBody {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  touch-action: pan-y;
   padding: 3px;
 }
 
 #appModalBody > * {
   flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#appModalBody div,
+#appModalBody form,
+#appModalBody label {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#appModalBody .table-wrap {
+  overflow-x: auto;
+  touch-action: pan-x pan-y;
 }
 
 .navbar-details {
@@ -907,19 +986,27 @@ select.input-box {
 }
 
 .modal-box.wide {
-  max-width: 900px;
+  max-width: min(900px, 100%);
 }
 
 .pkg-picker-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
   gap: 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   max-height: 300px;
   overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   padding: 2px;
 }
 
 .pkg-picker-card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   background: rgba(186, 214, 247, 0.04);
   border-radius: 10px;
   padding: 12px 14px;
@@ -1506,16 +1593,27 @@ button.pkg-picker-card, .dashboard-category {
 
   .modal-box {
     padding: 14px 12px;
+    max-height: calc(100vh - 16px);
     max-height: calc(100dvh - 16px);
     gap: 10px;
   }
 
   .modal-overlay {
-    padding: 8px;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   }
 
   .modal-heading {
     padding-bottom: 8px;
+  }
+
+  .modal-heading h3 {
+    font-size: 16px !important;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .pkg-picker-list {
+    max-height: 220px;
   }
 
   .fruit-order-fields, .customer-search-fields, .order-mode-options {

@@ -1727,14 +1727,14 @@ function renderCreateOrderModalBody() {
               .join('')}${moreButton('modalPackages', coinPkgs.length)}
           </div>
         </div>
-        <div>
+        <div style="min-width:0;max-width:100%;">
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Lọc giá trị trái tối thiểu:</label>
           <select id="modalCoinTierSelect" class="input-box">
             ${tiers
               .map(
                 (t) => `
               <option value="${t.min_coin}" ${Number(state.modalOrder.min_coin_filter) === Number(t.min_coin) ? 'selected' : ''}>
-                Trái từ ${formatNum(t.min_coin)} Xu trở lên ${t.markup_percent > 0 ? `(+${t.markup_percent}%)` : '(Mặc định)'} — Kho còn: ${formatNum(t.quantity)} Xu
+                Trái ≥ ${formatNum(t.min_coin)} Xu ${t.markup_percent > 0 ? `(+${t.markup_percent}%)` : '(Mặc định)'} · Kho: ${formatNum(t.quantity)} Xu
               </option>
             `
               )
@@ -1938,7 +1938,7 @@ function renderCreateOrderModalBody() {
           </div>
         `
             : `
-          <div style="display:flex;gap:8px;">
+          <div class="inline-search-row">
             <input
               type="text"
               id="modalCustSearchInput"
@@ -1954,24 +1954,24 @@ function renderCreateOrderModalBody() {
             <button type="button" class="btn-violet" id="btnModalSearchCust">Tìm</button>
           </div>
           <div id="modalCustSearchStatus" style="font-size:12px;color:var(--color-fog-veil);"></div>
-          <div id="modalCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:190px;overflow-y:auto;"></div>
+          <div id="modalCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:190px;overflow-y:auto;overflow-x:hidden;"></div>
         `
         }
       </div>
     `
     }
 
-    <div style="display:flex;flex-direction:column;gap:12px;">
+    <div style="display:flex;flex-direction:column;gap:12px;min-width:0;max-width:100%;">
       ${categoryFormHtml}
     </div>
 
-    <div style="background:rgba(5,6,15,0.7);padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+    <div style="background:rgba(5,6,15,0.7);padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;min-width:0;max-width:100%;">
       <div>
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng tiền thanh toán:</div>
         <div style="font-size:22px;font-weight:700;color:#fbbf24;" id="modalTotalPriceText">0đ</div>
       </div>
       <div class="action-row order-submit-actions">
-        <button type="button" class="btn-frost" id="btnModalCancel">Hủy</button>
+        <button type="button" class="btn-frost" id="btnModalCancel" style="white-space:nowrap;">Hủy</button>
         <button type="button" class="btn-violet" id="btnModalSaveOrder" ${!isWorking ? 'disabled' : ''}>
           ${catKey === 'weather_buff' ? 'Xác Nhận Tạo Gói →' : 'Lưu & Chạy Đơn Hàng →'}
         </button>
@@ -2390,7 +2390,7 @@ async function submitModalOrder(confirmDuplicate = false) {
               <div style="font-size:13px;color:var(--color-moon-mist);line-height:1.6;">
                 Đơn gói <strong>${formatNum(r.order?.totalCnt || 0)} lần</strong> đã tạo thành công! Gửi liên kết theo dõi bên dưới cho khách tự chọn nhân vật & thời tiết, hoặc chỉnh trực tiếp trên bảng đơn:
               </div>
-              <div style="display:flex;gap:8px;align-items:center;">
+              <div class="inline-search-row">
                 <input type="text" class="input-box" id="createdWbLinkInput" readonly value="${escapeHtml(wbUrl)}" />
                 <button type="button" class="btn-violet" id="btnCopyCreatedWbLink" style="white-space:nowrap;">📋 Sao chép liên kết</button>
               </div>
@@ -2473,12 +2473,12 @@ function openWeatherSlotModal(order) {
         <button type="button" class="btn-frost ${tab === 'roleid' ? 'is-active' : ''}" data-wb-cust-tab="roleid" style="padding:5px 11px;font-size:12px;">Theo mã ID nhân vật</button>
         ${state.user?.role === 'admin' ? `<button type="button" class="btn-frost ${tab === 'saved' ? 'is-active' : ''}" data-wb-cust-tab="saved" style="padding:5px 11px;font-size:12px;">Khách đã lưu</button>` : ''}
       </div>
-      <div style="display:flex;gap:8px;">
+      <div class="inline-search-row">
         <input type="text" id="wbCustSearchInput" class="input-box" placeholder="${tab === 'ingame' ? 'Nhập tên nhân vật trong game...' : tab === 'roleid' ? 'Nhập mã ID nhân vật (XXXX-XXXX-XXXX)...' : 'Nhập tên hoặc SUID khách quen...'}" />
         <button type="button" class="btn-violet" id="btnWbCustSearch">Tìm</button>
       </div>
       <div id="wbCustSearchStatus" style="font-size:12px;color:var(--color-fog-veil);"></div>
-      <div id="wbCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto;"></div>
+      <div id="wbCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto;overflow-x:hidden;"></div>
     `;
 
     const assignCustomerId = async (customerId) => {
@@ -5267,10 +5267,21 @@ function bindGlobalEvents() {
     }
   });
 
-  // Modal close
+  // Modal close & body scroll lock (prevents background horizontal/vertical drift on iOS/Zalo/in-app browsers)
+  const modalOverlayEl = document.getElementById('appModalOverlay');
   document.getElementById('btnCloseAppModal')?.addEventListener('click', () => {
-    document.getElementById('appModalOverlay').style.display = 'none';
+    if (modalOverlayEl) modalOverlayEl.style.display = 'none';
   });
+  modalOverlayEl?.addEventListener('click', (e) => {
+    if (e.target === modalOverlayEl) modalOverlayEl.style.display = 'none';
+  });
+  if (modalOverlayEl && typeof MutationObserver !== 'undefined') {
+    const syncBodyModalLock = () => {
+      document.body?.classList?.toggle?.('modal-open', modalOverlayEl.style.display !== 'none');
+    };
+    new MutationObserver(syncBodyModalLock).observe(modalOverlayEl, { attributes: true, attributeFilter: ['style'] });
+    syncBodyModalLock();
+  }
 
   // Global top navbar reload button (available on all pages for both Admin & CTV)
   document.getElementById('btnTopReloadPage')?.addEventListener('click', (ev) => {

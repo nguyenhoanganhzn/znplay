@@ -2737,7 +2737,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     };
 
     db.localOrders.unshift(localOrder);
-    orderCache = { previous: orderCache.result || orderCache.previous };
+    resetOrderCache();
     const debit = db.transactions.find(t => t.id === intent.id);
     if (debit) { debit.type = 'order_debit'; debit.note = `Tạo đơn ${localOrder.categoryName}: ${localOrder.summary}`; }
     intent.status = 'completed';
@@ -2812,6 +2812,11 @@ const ORDER_COMPLETED_FRESH_MS = 60000;
 const ORDER_FRESH_MS = 15000;
 const ORDER_STALE_MS = 90000;
 let orderCache = {};
+
+function resetOrderCache() {
+  const prevPages = orderCache.pages || orderCache.result?.pages || orderCache.previous?.pages;
+  orderCache = prevPages ? { previous: { pages: prevPages } } : {};
+}
 
 function ensureOrderCacheMeta(cache) {
   if (!cache.pages) {
@@ -2968,7 +2973,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const liveProgress = req.query.live === '1';
     const now = Date.now();
     // Anti-spam burst guard: CTV can force-refresh orders at most once every 3s (placing/editing orders clears orderCache immediately).
-    const force = req.query.refresh === '1' && (isAdmin || !orderCache.result || now - (orderCache.lastForceAt || 0) > 3000);
+    const force = req.query.refresh === '1' && (isAdmin || (!orderCache.result && !orderCache.pages) || now - (orderCache.lastForceAt || 0) > 3000);
     if (force) orderCache.lastForceAt = now;
 
     if (!isAdmin && !db.localOrders.some(order => order.placedBy?.id === user.id)) {
@@ -3291,7 +3296,7 @@ app.put('/api/orders/:category/:remoteId/toggle-active', requireAuth, financialG
       }
     }
     const r = await hnApiCall(`${meta.apiOrderPath}/${encodeURIComponent(remoteId)}/toggle-active`, 'PUT');
-    orderCache = { previous: orderCache.result || orderCache.previous };
+    resetOrderCache();
     if (lo && r?.data) {
       lo.isActive = r.data.is_active ?? !lo.isActive;
       if (r.data.status) lo.status = r.data.status;
@@ -3379,7 +3384,7 @@ app.put('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, fina
     if (!r?.success) {
       return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể gán khách hàng vào đơn này.') });
     }
-    orderCache = { previous: orderCache.result || orderCache.previous };
+    resetOrderCache();
     if (ctx.lo) {
       applyWeatherRemoteUpdate(ctx.lo, r.data);
       req.needsSave = true;
@@ -3414,7 +3419,7 @@ app.delete('/api/orders/weather_buff/:remoteId/slots/:slotIndex', requireAuth, f
     if (!r?.success) {
       return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể gỡ khách hàng khỏi đơn này.') });
     }
-    orderCache = { previous: orderCache.result || orderCache.previous };
+    resetOrderCache();
     if (ctx.lo) {
       applyWeatherRemoteUpdate(ctx.lo, r.data);
       req.needsSave = true;
@@ -3490,7 +3495,7 @@ app.put('/api/orders/weather_buff/:remoteId/weathers', requireAuth, financialGua
     if (!r?.success) {
       return res.status(400).json({ success: false, message: publicError(req, new Error(r?.message || ''), 'Không thể lưu cấu hình thời tiết cho đơn này.') });
     }
-    orderCache = { previous: orderCache.result || orderCache.previous };
+    resetOrderCache();
     if (ctx.lo) {
       applyWeatherRemoteUpdate(ctx.lo, r.data);
       req.needsSave = true;
@@ -3666,7 +3671,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
         });
       }
     }
-    orderCache = { previous: orderCache.result || orderCache.previous };
+    resetOrderCache();
 
     let refundedAmount = 0;
     let ownerName = '';

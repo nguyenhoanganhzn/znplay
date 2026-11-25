@@ -2237,6 +2237,148 @@ app.get('/api/catalog/fruit-stock/:id', requireAuth, requireAdmin, async (req, r
 // ============================================================================
 // PLAYER LOOKUP & CUSTOMER SEARCH
 // ============================================================================
+const IDENTITY_DETAIL_TTL_MS = 60000;
+const identityDetailCache = new Map();
+const identityDetailInflight = new Map();
+const identityDetailForceCooldowns = new Map();
+
+const PLAY_TOGETHER_REGION_LABELS = {
+  vn1: 'Phố Việt',
+  vn: 'Phố Việt',
+  vietnam: 'Phố Việt',
+  global: 'Quốc tế',
+  gl: 'Quốc tế',
+  us: 'Quốc tế',
+  en: 'Quốc tế',
+  kr: 'Hàn Quốc',
+  ko: 'Hàn Quốc',
+  jp: 'Nhật Bản',
+  ja: 'Nhật Bản',
+  tw: 'Đài Loan',
+  hk: 'Hồng Kông',
+  th: 'Thái Lan',
+  id: 'Indonesia',
+  eu: 'Châu Âu',
+};
+
+function sanitizeIdentityPhotoUrl(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /hoannguyen/i.test(trimmed)) return null;
+  if (/^https:\/\//i.test(trimmed)) return trimmed.slice(0, 500);
+  if (/^http:\/\//i.test(trimmed)) return `https://${trimmed.slice(7)}`.slice(0, 500);
+  return null;
+}
+
+function resolvePlayTogetherRegionName(region, rawRegionName) {
+  const cleanName = typeof rawRegionName === 'string' ? rawRegionName.trim().slice(0, 64) : '';
+  if (cleanName) return cleanName;
+  const key = String(region || '').trim().toLowerCase();
+  return key && PLAY_TOGETHER_REGION_LABELS[key] ? PLAY_TOGETHER_REGION_LABELS[key] : '';
+}
+
+function toOptionalNonNegInt(val) {
+  if (val === undefined || val === null || val === '') return undefined;
+  const n = Number(val);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
+function buildIdentityPlayerRecord(profile, detailWrapper = null) {
+  const id = String(profile?.suid ?? '');
+  const nickname = profile?.Nickname ?? profile?.nickname;
+  if (!/^\d{1,20}$/.test(id) || !numericGameId(id) || typeof nickname !== 'string' || !nickname.trim()) {
+    return null;
+  }
+  const out = { nickname, roleId: id, gameCode: gameCodeFromId(id) };
+
+  const photoUrl = sanitizeIdentityPhotoUrl(profile?.PhotoUrl ?? profile?.photo_url);
+  if (photoUrl) out.photoUrl = photoUrl;
+
+  const photoId = toOptionalNonNegInt(profile?.PhotoID ?? profile?.photo_id);
+  if (photoId !== undefined) out.photoId = photoId;
+
+  const achievementLevel = toOptionalNonNegInt(profile?.AchievementLevel ?? profile?.achievement_level);
+  if (achievementLevel !== undefined) out.achievementLevel = achievementLevel;
+
+  const region = typeof (profile?.Region ?? profile?.region) === 'string'
+    ? String(profile.Region ?? profile.region).trim().slice(0, 32)
+    : '';
+  if (region) out.region = region;
+
+  const regionName = resolvePlayTogetherRegionName(region, profile?.RegionName ?? profile?.region_name);
+  if (regionName) out.regionName = regionName;
+
+  if (typeof profile?.Is_Online === 'boolean') out.isOnline = profile.Is_Online;
+
+  const onlineStatus = typeof profile?.Online_Status === 'string'
+    ? profile.Online_Status.trim().slice(0, 80)
+    : '';
+  if (onlineStatus) out.onlineStatus = onlineStatus;
+
+  const lastLogin = typeof (profile?.LastLogin ?? profile?.last_login) === 'string'
+    ? String(profile.LastLogin ?? profile.last_login).trim().slice(0, 64)
+    : '';
+  if (lastLogin) out.lastLogin = lastLogin;
+
+  const intro = typeof (profile?.IntroStr ?? profile?.intro) === 'string'
+    ? String(profile.IntroStr ?? profile.intro).trim().slice(0, 240)
+    : '';
+  if (intro) out.intro = intro;
+
+  const userLikes = toOptionalNonNegInt(profile?.UserLikes ?? profile?.user_likes);
+  const homeLikes = toOptionalNonNegInt(profile?.HomeLikes ?? profile?.home_likes);
+  const followerCount = toOptionalNonNegInt(profile?.FollowerCount ?? profile?.follower_count);
+  const friendCount = toOptionalNonNegInt(detailWrapper?.FriendCount ?? profile?.FriendCount ?? profile?.friend_count);
+  const profileCount = profile?.ProfileCount && typeof profile.ProfileCount === 'object' ? profile.ProfileCount : null;
+  const todayProfileVisitCount = toOptionalNonNegInt(profileCount?.TodayProfileVisitCount ?? profile?.today_profile_visit_count);
+  const totalProfileVisitCount = toOptionalNonNegInt(profileCount?.TotalProfileVisitCount ?? profile?.total_profile_visit_count);
+  const totalHomeVisitCount = toOptionalNonNegInt(profileCount?.TotalHomeVisitCount ?? profile?.total_home_visit_count);
+
+  if (userLikes !== undefined) out.userLikes = userLikes;
+  if (homeLikes !== undefined) out.homeLikes = homeLikes;
+  if (followerCount !== undefined) out.followerCount = followerCount;
+  if (friendCount !== undefined) out.friendCount = friendCount;
+  if (todayProfileVisitCount !== undefined) out.todayProfileVisitCount = todayProfileVisitCount;
+  if (totalProfileVisitCount !== undefined) out.totalProfileVisitCount = totalProfileVisitCount;
+  if (totalHomeVisitCount !== undefined) out.totalHomeVisitCount = totalHomeVisitCount;
+
+  const hasDetailMetrics = userLikes !== undefined || homeLikes !== undefined || followerCount !== undefined ||
+    friendCount !== undefined || todayProfileVisitCount !== undefined || totalProfileVisitCount !== undefined ||
+    totalHomeVisitCount !== undefined;
+  if (detailWrapper && hasDetailMetrics) {
+    out.hasFullProfile = true;
+  }
+  return out;
+}
+
+async function fetchCachedIdentityDetail(id, { force = false } = {}) {
+  const now = Date.now();
+  const cached = identityDetailCache.get(id);
+  if (!force && cached && now < cached.until) {
+    return { player: cached.player, fetchedAt: cached.fetchedAt, cached: true };
+  }
+  let job = identityDetailInflight.get(id);
+  if (!job) {
+    job = (async () => {
+      const detail = await requestProfileDetailByWebSocket(id);
+      const player = buildIdentityPlayerRecord({ ...detail.Profile, suid: id }, detail);
+      if (!player) throw new Error('Hồ sơ trả về từ Server Zn thiếu tên hoặc ID nhân vật.');
+      const fetchedAt = new Date().toISOString();
+      if (identityDetailCache.size >= 300) {
+        const ts = Date.now();
+        for (const [k, v] of identityDetailCache) if (v.until <= ts) identityDetailCache.delete(k);
+        if (identityDetailCache.size >= 300) identityDetailCache.delete(identityDetailCache.keys().next().value);
+      }
+      identityDetailCache.set(id, { until: Date.now() + IDENTITY_DETAIL_TTL_MS, player, fetchedAt });
+      return { player, fetchedAt, cached: false };
+    })().finally(() => {
+      identityDetailInflight.delete(id);
+    });
+    identityDetailInflight.set(id, job);
+  }
+  return job;
+}
+
 app.post('/api/tools/identity', requireAuth, limitInteractive, async (req, res) => {
   const { mode, query } = req.body || {};
   const term = typeof query === 'string' ? query.trim() : '';
@@ -2244,29 +2386,58 @@ app.post('/api/tools/identity', requireAuth, limitInteractive, async (req, res) 
     return res.status(400).json({ success: false, message: 'Nhập tên nhân vật hoặc ID Game hợp lệ.' });
   }
   try {
-    let profiles;
+    let entries;
     if (mode === 'id') {
       const id = numericGameId(term);
       if (!id) return res.status(400).json({ success: false, message: 'Nhập ID dạng số hoặc mã nhân vật dạng XXXX-XXXX-XXXX.' });
       const detail = await requestProfileDetailByWebSocket(id);
-      profiles = [{ ...detail.Profile, suid: id }];
+      entries = [{ profile: { ...detail.Profile, suid: id }, detail }];
     } else {
-      profiles = await searchInGameByWebSocket(term);
+      const profiles = await searchInGameByWebSocket(term);
+      entries = profiles.map(profile => ({ profile, detail: null }));
     }
     const players = [];
     const seen = new Set();
-    for (const profile of profiles.slice(0, 100)) {
-      const id = String(profile?.suid ?? '');
-      const nickname = profile?.Nickname ?? profile?.nickname;
-      if (!/^\d{1,20}$/.test(id) || !numericGameId(id) || typeof nickname !== 'string' || !nickname.trim() || seen.has(id)) continue;
-      players.push({ nickname, roleId: id, gameCode: gameCodeFromId(id) });
-      seen.add(id);
+    for (const entry of entries.slice(0, 100)) {
+      const player = buildIdentityPlayerRecord(entry.profile, entry.detail);
+      if (!player || seen.has(player.roleId)) continue;
+      players.push(player);
+      seen.add(player.roleId);
     }
-    if (profiles.length && !players.length) throw new Error('Hồ sơ trả về từ Server Zn thiếu tên hoặc ID nhân vật.');
+    if (entries.length && !players.length) throw new Error('Hồ sơ trả về từ Server Zn thiếu tên hoặc ID nhân vật.');
     req.auditDetails = { resultCount: players.length, ...(mode === 'id' ? { roleId: term } : { nickname: term }) };
     res.json({ success: true, players });
   } catch (error) {
     res.status(error.status === 503 ? 503 : 502).json({ success: false, message: publicError(req, error, 'Chưa tra cứu được nhân vật trên Server Zn.') });
+  }
+});
+
+app.post('/api/tools/identity/detail', requireAuth, limitInteractive, async (req, res) => {
+  const rawId = typeof req.body?.roleId === 'string'
+    ? req.body.roleId.trim()
+    : (typeof req.body?.query === 'string' ? req.body.query.trim() : '');
+  const id = numericGameId(rawId);
+  if (!id) {
+    return res.status(400).json({ success: false, message: 'Nhập ID dạng số hoặc mã nhân vật dạng XXXX-XXXX-XXXX hợp lệ.' });
+  }
+  const now = Date.now();
+  const isAdmin = req.user?.role === 'admin';
+  const wantForce = req.body?.force === true;
+  const lastForce = identityDetailForceCooldowns.get(req.user.id) || 0;
+  const allowForce = wantForce && (isAdmin || now - lastForce >= 10000);
+  if (allowForce) {
+    if (identityDetailForceCooldowns.size > 1000) identityDetailForceCooldowns.clear();
+    identityDetailForceCooldowns.set(req.user.id, now);
+  }
+  try {
+    const result = await fetchCachedIdentityDetail(id, { force: allowForce });
+    req.auditDetails = { roleId: id };
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(error.status === 503 ? 503 : 502).json({
+      success: false,
+      message: publicError(req, error, 'Chưa tải được hồ sơ chi tiết nhân vật từ Server Zn.'),
+    });
   }
 });
 

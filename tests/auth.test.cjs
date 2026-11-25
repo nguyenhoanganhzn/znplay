@@ -2176,3 +2176,135 @@ test('app versions follow vx.x.text, restrict editing to admin, show 3 latest re
     }
   }
 });
+
+test('enriched identity lookup extracts full player profile fields and caches on-demand detail safely', async t => {
+  const id = '791671405538107068';
+  const gameCode = 'RMHG-XUHL-LMYC';
+  const nickname = 'thwtraidisc';
+  let detailCalls = 0;
+  let searchCalls = 0;
+  class RichGameSocket {
+    constructor() { queueMicrotask(() => this.onopen()); }
+    close() { }
+    send(raw) {
+      const req = JSON.parse(raw);
+      if (req.type === 'profile_search') {
+        searchCalls++;
+        const frame = {
+          type: 'profile_search_result',
+          profiles: [{
+            Nickname: nickname,
+            suid: id,
+            PhotoUrl: 'http://graph.facebook.com/12345/picture?height=196&width=196',
+            PhotoID: 1,
+            AchievementLevel: 19,
+            Region: 'vn1',
+            RegionName: 'Phố Việt',
+            LastLogin: '25/11/2026 4:41:08 CH',
+            IntroStr: '  Xin chào Play Together  ',
+            Is_Online: true,
+            Online_Status: 'Online',
+            FacebookAccountID: 'secret-fb-id',
+          }],
+        };
+        this.onmessage({ data: JSON.stringify(frame) });
+      } else if (req.type === 'request_profile') {
+        detailCalls++;
+        const frame = {
+          type: 'request_profile_result',
+          profile: {
+            UserSuid: id,
+            FriendCount: 17,
+            Profile: {
+              Nickname: nickname,
+              suid: id,
+              PhotoUrl: 'https://graph.facebook.com/12345/picture?height=196&width=196',
+              PhotoID: 1,
+              AchievementLevel: 19,
+              Region: 'vn1',
+              LastLogin: '25/11/2026 4:41:08 CH',
+              IntroStr: '  Xin chào Play Together  ',
+              UserLikes: 1104248,
+              HomeLikes: 1102836,
+              FollowerCount: 1000,
+              ProfileCount: {
+                TodayProfileVisitCount: 212,
+                TotalProfileVisitCount: 19163,
+                TotalHomeVisitCount: 2098,
+              },
+            },
+          },
+        };
+        setTimeout(() => this.onmessage({ data: JSON.stringify(frame) }), 15);
+      }
+    }
+  }
+  const server = await startTestServer(t, undefined, {
+    WebSocket: RichGameSocket,
+    seed(db) {
+      db.settings.hoanNguyen.user = { id: 120 };
+      db.users[1].balance = 0;
+    },
+  });
+  const seller = (await server.login('seller', 'seller-test-password')).body.token;
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+
+  // Name search returns enriched search metadata, upgrades avatar to HTTPS, omits private FB account ID
+  const byName = await server.request('/api/tools/identity', 'POST', seller, { mode: 'name', query: nickname });
+  assert.equal(byName.status, 200);
+  assert.equal(searchCalls, 1);
+  assert.equal(detailCalls, 0);
+  const pName = byName.body.players[0];
+  assert.equal(pName.nickname, nickname);
+  assert.equal(pName.roleId, id);
+  assert.equal(pName.gameCode, gameCode);
+  assert.equal(pName.photoUrl, 'https://graph.facebook.com/12345/picture?height=196&width=196');
+  assert.equal(pName.achievementLevel, 19);
+  assert.equal(pName.region, 'vn1');
+  assert.equal(pName.regionName, 'Phố Việt');
+  assert.equal(pName.isOnline, true);
+  assert.equal(pName.onlineStatus, 'Online');
+  assert.equal(pName.lastLogin, '25/11/2026 4:41:08 CH');
+  assert.equal(pName.intro, 'Xin chào Play Together');
+  assert.equal('FacebookAccountID' in pName, false);
+
+  // ID lookup immediately returns full profile metrics + inferred regionName
+  const byId = await server.request('/api/tools/identity', 'POST', seller, { mode: 'id', query: gameCode });
+  assert.equal(byId.status, 200);
+  assert.equal(detailCalls, 1);
+  const pId = byId.body.players[0];
+  assert.equal(pId.hasFullProfile, true);
+  assert.equal(pId.regionName, 'Phố Việt');
+  assert.equal(pId.userLikes, 1104248);
+  assert.equal(pId.homeLikes, 1102836);
+  assert.equal(pId.followerCount, 1000);
+  assert.equal(pId.friendCount, 17);
+  assert.equal(pId.todayProfileVisitCount, 212);
+  assert.equal(pId.totalProfileVisitCount, 19163);
+  assert.equal(pId.totalHomeVisitCount, 2098);
+
+  // On-demand detail endpoint requires auth, validates ID, deduplicates inflight calls, and serves 60s cache
+  assert.equal((await server.request('/api/tools/identity/detail', 'POST', '', { roleId: id })).status, 401);
+  assert.equal((await server.request('/api/tools/identity/detail', 'POST', seller, { roleId: '0' })).status, 400);
+  const [d1, d2] = await Promise.all([
+    server.request('/api/tools/identity/detail', 'POST', seller, { roleId: id }),
+    server.request('/api/tools/identity/detail', 'POST', admin, { roleId: gameCode }),
+  ]);
+  assert.equal(d1.status, 200);
+  assert.equal(d2.status, 200);
+  assert.equal(detailCalls, 2); // Shared single inflight WS request across both callers
+  const d3 = await server.request('/api/tools/identity/detail', 'POST', seller, { roleId: id });
+  assert.equal(d3.status, 200);
+  assert.equal(d3.body.cached, true);
+  assert.equal(detailCalls, 2); // Served directly from cache without touching WS
+  assert.equal(d3.body.player.userLikes, 1104248);
+  assert.equal(d3.body.player.friendCount, 17);
+
+  // Admin force refresh bypasses cache
+  const dForce = await server.request('/api/tools/identity/detail', 'POST', admin, { roleId: id, force: true });
+  assert.equal(dForce.status, 200);
+  assert.equal(dForce.body.cached, false);
+  assert.equal(detailCalls, 3);
+  assert.equal(server.db.localOrders.length, 0);
+  assert.equal(server.db.transactions.length, 0);
+});

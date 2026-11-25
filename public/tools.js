@@ -1,4 +1,4 @@
-export function createToolViews({ state, apiFetch, pageLimit, moreButton, renderLocalPages, escapeHtml: esc, showToast, copyTextToClipboard, formatVnd: money, formatDateVi: date, renderCurrentView }) {
+export function createToolViews({ state, apiFetch, pageLimit, moreButton, renderLocalPages, escapeHtml: esc, showToast, copyTextToClipboard, formatVnd: money, formatDateVi: date, renderCurrentView, znIcon = () => '' }) {
   const panel = (title, content, extra = '') => `<section class="glass-panel" ${extra}><div class="panel-title-row"><span class="panel-title-text">${title}</span></div>${content}</section>`;
   const button = (label, attribute, id, cls = 'btn-frost') => `<button type="button" class="${cls}" ${attribute}="${esc(id)}">${label}</button>`;
 
@@ -13,34 +13,64 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     weather_buff: 'Buff Thời Tiết',
   };
 
+  function auditActionIcon(action) {
+    const a = String(action || '');
+    if (a === 'POST /auth/login') return znIcon('key', 14);
+    if (a === 'POST /auth/logout') return znIcon('logout', 14);
+    if (a === 'POST /orders/place') return znIcon('plus', 14);
+    if (/^PUT \/orders\/[^/]+\/\d+\/toggle-active$/.test(a)) return znIcon('activity', 14);
+    if (/^DELETE \/orders\/[^/]+\/\d+$/.test(a)) return znIcon('trash', 14);
+    if (/^PUT \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return znIcon('user', 14);
+    if (/^DELETE \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return znIcon('user', 14);
+    if (/^PUT \/orders\/weather_buff\/\d+\/weathers$/.test(a)) return znIcon('cloud', 14);
+    if (/^POST \/orders\/weather_buff\/\d+\/share-link$/.test(a)) return znIcon('link', 14);
+    if (a === 'POST /customer/search-ingame' || a === 'POST /tools/identity' || a === 'POST /customer/resolve-role-id') return znIcon('search', 14);
+    if (a === 'POST /customer/select-ingame') return znIcon('check', 14);
+    if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return znIcon('wallet', 14);
+    if (/^PUT \/admin\/ctv\/[^/]+$/.test(a) || a === 'POST /admin/ctv') return znIcon('users', 14);
+    if (a === 'POST /admin/maintenance') return znIcon('shield', 14);
+    if (a === 'POST /admin/notify-update' || a === 'PUT /admin/app-versions') return znIcon('refresh', 14);
+    if (a === 'POST /admin/server-zn/reconnect' || a === 'POST /admin/source/reconnect') return znIcon('server', 14);
+    if (a === 'PUT /admin/settings') return znIcon('sliders', 14);
+    if (a === 'POST /admin/backup/import') return znIcon('upload', 14);
+    if (/^DELETE \/admin\/ctv\/[^/]+$/.test(a)) return znIcon('trash', 14);
+    if (/^POST \/admin\/orders\/[^/]+\/refund$/.test(a)) return znIcon('wallet', 14);
+    return znIcon('activity', 14);
+  }
+
   function formatAuditAction(action) {
     const a = String(action || '');
-    if (a === 'POST /auth/login') return '🔑 Đăng nhập hệ thống';
-    if (a === 'POST /auth/logout') return '🚪 Đăng xuất';
-    if (a === 'POST /orders/place') return '🛒 Đặt đơn hàng mới';
-    if (/^PUT \/orders\/[^/]+\/\d+\/toggle-active$/.test(a)) return '⏯️ Bật / Tắt đơn hàng';
-    if (/^DELETE \/orders\/[^/]+\/\d+$/.test(a)) return '🗑️ Hủy đơn hàng';
-    if (/^PUT \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return '👤 Gán / Đổi khách Buff Thời Tiết';
-    if (/^DELETE \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return '👤 Gỡ khách Buff Thời Tiết';
-    if (/^PUT \/orders\/weather_buff\/\d+\/weathers$/.test(a)) return '☁️ Lưu cấu hình thời tiết';
-    if (/^POST \/orders\/weather_buff\/\d+\/share-link$/.test(a)) return '🔗 Lấy liên kết theo dõi thời tiết';
-    if (a === 'POST /customer/search-ingame') return '🔍 Tìm nhân vật trong game';
+    if (a === 'POST /auth/login') return 'Đăng nhập hệ thống';
+    if (a === 'POST /auth/logout') return 'Đăng xuất';
+    if (a === 'POST /orders/place') return 'Đặt đơn hàng mới';
+    if (/^PUT \/orders\/[^/]+\/\d+\/toggle-active$/.test(a)) return 'Bật / Tắt đơn hàng';
+    if (/^DELETE \/orders\/[^/]+\/\d+$/.test(a)) return 'Hủy đơn hàng';
+    if (/^PUT \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return 'Gán / Đổi khách Buff Thời Tiết';
+    if (/^DELETE \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return 'Gỡ khách Buff Thời Tiết';
+    if (/^PUT \/orders\/weather_buff\/\d+\/weathers$/.test(a)) return 'Lưu cấu hình thời tiết';
+    if (/^POST \/orders\/weather_buff\/\d+\/share-link$/.test(a)) return 'Lấy liên kết theo dõi thời tiết';
+    if (a === 'POST /customer/search-ingame') return 'Tìm nhân vật trong game';
     if (a === 'POST /tools/identity') return 'Tra cứu ID Game / Tên nhân vật';
-    if (a === 'POST /customer/select-ingame') return '✓ Chọn nhân vật khách hàng';
-    if (a === 'POST /customer/resolve-role-id') return '🆔 Tra cứu khách theo mã ID nhân vật';
-    if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return '💰 Quản trị nạp / trừ ví CTV';
-    if (/^PUT \/admin\/ctv\/[^/]+$/.test(a)) return '⚙️ Quản trị cập nhật tài khoản CTV';
-    if (a === 'POST /admin/ctv') return '➕ Quản trị tạo tài khoản CTV';
-    if (a === 'POST /admin/maintenance') return '🛠️ Quản trị bật / tắt chế độ bảo trì';
-    if (a === 'POST /admin/notify-update') return '🔄 Quản trị kích hoạt tự động tải lại cho CTV';
-    if (/^DELETE \/admin\/ctv\/[^/]+$/.test(a)) return '🗑️ Quản trị xóa tài khoản CTV';
-    if (/^POST \/admin\/orders\/[^/]+\/refund$/.test(a)) return '↩️ Quản trị hoàn tiền đối soát';
+    if (a === 'POST /customer/select-ingame') return 'Chọn nhân vật khách hàng';
+    if (a === 'POST /customer/resolve-role-id') return 'Tra cứu khách theo mã ID nhân vật';
+    if (/^POST \/admin\/ctv\/[^/]+\/balance$/.test(a)) return 'Quản trị nạp / trừ ví CTV';
+    if (/^PUT \/admin\/ctv\/[^/]+$/.test(a)) return 'Quản trị cập nhật tài khoản CTV';
+    if (a === 'POST /admin/ctv') return 'Quản trị tạo tài khoản CTV';
+    if (a === 'POST /admin/maintenance') return 'Quản trị bật / tắt chế độ bảo trì';
+    if (a === 'POST /admin/notify-update') return 'Quản trị kích hoạt tự động tải lại cho CTV';
+    if (a === 'PUT /admin/app-versions') return 'Quản trị cập nhật phiên bản hệ thống';
+    if (a === 'POST /admin/server-zn/reconnect' || a === 'POST /admin/source/reconnect' || a === 'POST /api/admin/server-zn/reconnect' || a === 'POST /api/admin/source/reconnect') return 'Quản trị đồng bộ & kết nối lại Server Zn';
+    if (a === 'PUT /admin/settings') return 'Quản trị cập nhật bảng giá & cấu hình';
+    if (a === 'POST /admin/backup/import') return 'Quản trị khôi phục bản sao lưu dữ liệu';
+    if (/^DELETE \/admin\/ctv\/[^/]+$/.test(a)) return 'Quản trị xóa tài khoản CTV';
+    if (/^POST \/admin\/orders\/[^/]+\/refund$/.test(a)) return 'Quản trị hoàn tiền đối soát';
     return a;
   }
 
   function formatAuditDetails(details) {
     if (!details || typeof details !== 'object') return '—';
     const parts = [];
+    if (details.version) parts.push(`Phiên bản: ${details.version}`);
     if (details.category) parts.push(`Mục: ${CAT_LABELS[details.category] || details.category}`);
     if (details.remoteOrderId) parts.push(`Đơn #${details.remoteOrderId}`);
     if (details.sellPrice !== undefined) parts.push(`Giá bán: ${money(details.sellPrice)}`);
@@ -61,14 +91,14 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
   }
 
   function renderIdentityToolsHtml() {
-    return panel('Tra cứu nhân vật', `
+    return panel(`${znIcon('search', 17)} Tra cứu nhân vật`, `
       <form id="identityForm" class="customer-search-fields" role="search">
         <select name="mode" class="input-box" aria-label="Tra cứu theo">
           <option value="name">Theo tên nhân vật</option>
           <option value="id">Theo ID Game</option>
         </select>
         <input name="query" class="input-box" aria-label="Tên nhân vật" placeholder="Nhập tên nhân vật trong game" maxlength="80" required autocomplete="off" spellcheck="false">
-        <button class="btn-violet" type="submit">Tra cứu</button>
+        <button class="btn-violet" type="submit">${znIcon('search', 14)} <span>Tra cứu</span></button>
       </form>
       <p id="identityStatus" class="tool-note" role="status"></p>
       <div id="identityResults" class="identity-results"></div>`);
@@ -103,14 +133,14 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
       if (!term) { status.textContent = query.placeholder; query.focus(); return; }
       const request = revision;
       submit.disabled = true;
-      status.textContent = 'Đang tìm nhân vật trên nguồn game…';
+      status.textContent = 'Đang tìm nhân vật trên Server Zn…';
       try {
         const { players } = await apiFetch('/api/tools/identity', 'POST', { mode: mode.value, query: term });
         if (request !== revision || !form.isConnected) return;
         status.textContent = players.length ? `Tìm thấy ${players.length} nhân vật.` : `Không tìm thấy nhân vật khớp với “${term}”.`;
         const row = (label, value, copyLabel) => `<div class="identity-field">
           <div><span class="tool-note">${label}</span><strong>${esc(value)}</strong></div>
-          ${button(copyLabel, 'data-identity-copy', value)}</div>`;
+          ${button(`${znIcon('copy', 13)} ${copyLabel}`, 'data-identity-copy', value)}</div>`;
         renderLocalPages(results, players, visible => {
           results.innerHTML = visible.map(player => `<article class="stat-subcard">
             ${row('Tên nhân vật', player.nickname, 'Sao chép tên')}
@@ -188,14 +218,14 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
   function eventTable(events) {
     return table(['Thời điểm', 'Tài khoản', 'Hoạt động', 'Chi tiết'], events.map(e => `<tr>
       <td>${esc(date(e.createdAt))}</td><td>${esc(e.actorName)}</td>
-      <td>${esc(formatAuditAction(e.action))}</td><td>${esc(formatAuditDetails(e.details))}</td></tr>`).join(''));
+      <td><span class="audit-action-cell">${auditActionIcon(e.action)}<span>${esc(formatAuditAction(e.action))}</span></span></td><td>${esc(formatAuditDetails(e.details))}</td></tr>`).join(''));
   }
 
   function walletCards(totals, overview) {
     const fields = [['Tổng đã nạp', 'totalTopup'], ['Tổng đã sử dụng (sau hoàn tiền)', 'totalSpent'], ['Tổng còn lại', 'balance']];
     const payable = overview ? `<div class="stat-subcard"><span class="tool-note">Admin phải thanh toán</span>
       <strong class="wallet-value">${overview.adminPayable == null ? '—' : money(overview.adminPayable)}</strong>
-      <span class="tool-note">${overview.adminPayable == null ? 'Chưa lấy được hạn mức đã sử dụng từ nguồn.' : 'Hạn mức nguồn đã dùng trong tuần + tổng số dư ví CTV.'}</span></div>` : '';
+      <span class="tool-note">${overview.adminPayable == null ? 'Chưa lấy được hạn mức đã sử dụng từ Server Zn.' : 'Hạn mức Server Zn đã dùng trong tuần + tổng số dư ví CTV.'}</span></div>` : '';
     return `<div class="stats-three-grid">${fields.map(([label, key]) => `<div class="stat-subcard"><span class="tool-note">${label}</span><strong class="wallet-value">${totals?.[key] == null ? '—' : money(totals[key])}</strong></div>`).join('')}${payable}</div>`;
   }
 
@@ -237,13 +267,13 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
 
   function renderAdminMonitorHtml() {
     const data = state.adminMonitor;
-    if (!data) return panel('Giám sát CTV', `Đang tải… ${button('Làm mới','data-refresh-monitor','')}`);
+    if (!data) return panel('Giám sát CTV', `Đang tải… ${button(`${znIcon('refresh', 13)} Làm mới`,'data-refresh-monitor','')}`);
     const rows = data.ctvs.map(u => `<tr><td><strong>${esc(u.name)}</strong><div class="tool-note">${esc(u.username)}</div></td>
       <td>${money(u.totalTopup)}</td><td>${money(u.totalSpent)}</td><td class="wallet-balance">${money(u.balance)}</td><td>${Number(u.orderCount || 0)}</td>
       <td>${button(u.id === state.adminMonitorCtvId ? 'Đang xem' : 'Xem đơn', 'data-select-ctv', u.id, u.id === state.adminMonitorCtvId ? 'btn-violet' : 'btn-frost')}</td></tr>`).join('');
     return panel('Tổng ví của toàn bộ CTV', walletCards(data.walletTotals, data), 'id="monitorWalletTotals"')
       + panel('Ví và đơn hàng của CTV', `${!data.storageHealthy ? '<p class="tool-warning">Lỗi ghi dữ liệu ví.</p>' : ''}
-      <div class="tool-actions">${button('Làm mới', 'data-refresh-monitor', '')}</div>
+      <div class="tool-actions">${button(`${znIcon('refresh', 13)} Làm mới`, 'data-refresh-monitor', '')}</div>
       ${table(['CTV','Tổng đã nạp','Đã dùng sau hoàn tiền','Còn lại','Số đơn','Chi tiết'], rows)}${moreButton('ctvs', data.ctvCount, 0, data.ctvs.length)}`)
       + renderSelectedCtvDetailHtml()
       + panel('50 hoạt động gần nhất', eventTable(data.events) + moreButton('systemEvents', data.eventCount, 0, data.events.length));

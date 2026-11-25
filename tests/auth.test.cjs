@@ -34,19 +34,19 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
   const publicDir = path.join(root, 'public');
   const fakeFs = {
     existsSync: filePath => filePath.startsWith(publicDir) ? fs.existsSync(filePath) : !(options.fresh && filePath.endsWith('db.json')),
-    mkdirSync() {},
+    mkdirSync() { },
     readFileSync: (filePath, enc) => filePath.startsWith(publicDir) ? fs.readFileSync(filePath, enc) : (options.corrupt ? '{broken json' : JSON.stringify(data)),
-    writeFileSync() { if (writeFailure) throw new Error('Disk full'); }, renameSync() {}, unlinkSync() {},
+    writeFileSync() { if (writeFailure) throw new Error('Disk full'); }, renameSync() { }, unlinkSync() { },
   };
   const context = vm.createContext({
     express: () => {
       const app = express();
-      app.listen = () => {}; // Avoid the production listener and startup login.
+      app.listen = () => { }; // Avoid the production listener and startup login.
       return app;
     },
     fs: fakeFs, path, crypto, zlib, esbuild, Date: options.clock || Date,
     fileURLToPath: () => path.join(root, 'server.js'),
-    process: { env: options.env || {}, on() {} }, console: { ...console, error() {} }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
+    process: { env: options.env || {}, on() { } }, console: { ...console, error() { } }, structuredClone, URL, URLSearchParams, Buffer, AbortSignal,
     fetch: upstreamFetch, WebSocket: options.WebSocket, setTimeout, clearTimeout,
   });
   context.express.json = express.json;
@@ -67,7 +67,8 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     return { status: response.status, headers: response.headers, body: await response.json() };
   };
   const login = async (identifier, password) => request('/api/auth/login', 'POST', '', { identifier, password });
-  return { base, request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; },
+  return {
+    base, request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; },
     setWriteFailure: value => { writeFailure = value; },
     mockSearch: handler => { context.searchInGameByWebSocket = handler; },
   };
@@ -107,9 +108,10 @@ test('cached token does not imply connectivity and a failed reconnect reports th
   const admin = await login('owner', 'owner-test-password');
   const token = admin.body.token;
   const overview = await request('/api/admin/overview', 'GET', token);
-  assert.equal(overview.body.settings.hoanNguyen.connected, false);
-  assert.match(overview.body.settings.hoanNguyen.lastError, /bị chặn kết nối mạng/);
-  const reconnect = await request('/api/admin/hoannguyen/reconnect', 'POST', token);
+  assert.equal(overview.body.settings.serverZn.connected, false);
+  assert.match(overview.body.settings.serverZn.lastError, /bị chặn kết nối mạng/);
+  assert.doesNotMatch(JSON.stringify(overview.body), /hoannguyen|hoannguyenplaytogether/i);
+  const reconnect = await request('/api/admin/server-zn/reconnect', 'POST', token);
   assert.equal(reconnect.status, 502);
   assert.match(reconnect.body.message, /bị chặn kết nối mạng/);
   const catalog = await request('/api/catalog?refresh=1', 'GET', token);
@@ -119,10 +121,11 @@ test('cached token does not imply connectivity and a failed reconnect reports th
     ok: true, status: 200,
     json: async () => url.endsWith('/api/auth/login') ? { token: 'fresh-upstream-token' } : { success: true, data: [] },
   }));
-  const recovered = await request('/api/admin/hoannguyen/reconnect', 'POST', token);
+  const recovered = await request('/api/admin/server-zn/reconnect', 'POST', token);
   assert.equal(recovered.status, 200);
-  assert.equal(recovered.body.hoanNguyen.connected, true);
-  assert.equal(recovered.body.hoanNguyen.lastError, '');
+  assert.equal(recovered.body.serverZn.connected, true);
+  assert.equal(recovered.body.serverZn.lastError, '');
+  assert.doesNotMatch(JSON.stringify(recovered.body), /hoannguyen|hoannguyenplaytogether/i);
 });
 
 test('a failed required catalog request cannot be hidden by later successful responses', async t => {
@@ -134,8 +137,8 @@ test('a failed required catalog request cannot be hidden by later successful res
   const catalog = await request('/api/catalog?refresh=1', 'GET', admin.body.token);
   assert.equal(catalog.body.success, false);
   const overview = await request('/api/admin/overview', 'GET', admin.body.token);
-  assert.equal(overview.body.settings.hoanNguyen.connected, false);
-  assert.equal(overview.body.settings.hoanNguyen.lastError, 'Catalog unavailable');
+  assert.equal(overview.body.settings.serverZn.connected, false);
+  assert.equal(overview.body.settings.serverZn.lastError, 'Catalog unavailable');
 });
 
 test('only authenticated admins can access every admin operation', async t => {
@@ -155,8 +158,8 @@ test('only authenticated admins can access every admin operation', async t => {
     ['/api/admin/overview', 'GET'], ['/api/admin/settings', 'PUT'],
     ['/api/admin/ctv', 'POST'], ['/api/admin/ctv/seller', 'PUT'],
     ['/api/admin/ctv/seller', 'DELETE'], ['/api/admin/ctv/seller/balance', 'POST'],
-    ['/api/admin/hoannguyen/reconnect', 'POST'], ['/api/admin/password', 'PUT'],
-    ['/api/admin/future-route', 'GET'],
+    ['/api/admin/server-zn/reconnect', 'POST'], ['/api/admin/password', 'PUT'],
+    ['/api/admin/app-versions', 'PUT'], ['/api/admin/future-route', 'GET'],
   ]) {
     assert.equal((await request(url, method, seller.body.token, { role: 'admin', balance: 999999 })).status, 403, url);
     assert.equal((await request(url, method)).status, 403, url);
@@ -196,16 +199,16 @@ function createClient(fetchImpl = async () => { throw new Error('Unexpected requ
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
       style: {}, innerHTML: '', textContent: '', value: '',
-      classList: { remove() {}, toggle() {} },
+      classList: { remove() { }, toggle() { } },
     });
     return elements.get(id);
   };
   const storage = new Map(token ? [['znplay_token', token]] : []);
   const context = vm.createContext({
-    localStorage: { getItem: () => null, removeItem() {} },
+    localStorage: { getItem: () => null, removeItem() { } },
     sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     document: { getElementById: element, querySelectorAll: () => [] },
-    fetch: fetchImpl, console: { ...console, error() {} }, setTimeout,
+    fetch: fetchImpl, console: { ...console, error() { } }, setTimeout,
   });
   vm.runInContext(toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', context);
   return { context, state: context.testState, element, storage };
@@ -255,7 +258,7 @@ test('CTV navigation cannot render admin pages or preserve prior admin data', ()
   const { context, state, element } = createClient();
   state.user = { role: 'ctv', balance: 100 };
   context.renderOrderCategoryPageHtml = () => 'CTV order page';
-  context.bindOrderCategoryPageEvents = () => {};
+  context.bindOrderCategoryPageEvents = () => { };
   for (const view of ['admin_pricing', 'admin_ctv', 'admin_system']) {
     context.switchView(view);
     assert.equal(state.currentView, 'fruit_coin');
@@ -315,8 +318,12 @@ async function prepareBuyer(server) {
   const token = seller.body.token;
   const selected = await server.request('/api/customer/resolve-role-id', 'POST', token, { role_id: 'TEST-1234' });
   assert.equal(selected.status, 200);
-  return { token, payload: { category: 'buff_tim', customer_id: 101, game_profile_id: null,
-    price_package_id: 7, expected_price: 15000, idempotency_key: crypto.randomUUID() } };
+  return {
+    token, payload: {
+      category: 'buff_tim', customer_id: 101, game_profile_id: null,
+      price_package_id: 7, expected_price: 15000, idempotency_key: crypto.randomUUID()
+    }
+  };
 }
 
 test('simultaneous purchases reserve funds before source calls and cannot overdraw the wallet', async t => {
@@ -440,14 +447,16 @@ test('order IDs are scoped by category; CTV cannot delete while Admin delete aut
       deletes += 1;
     }
     return source(url, options);
-  }, { seed: data => {
-    data.localOrders.push(
-      { id: 'my-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 0, status: 'pending', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
-      { id: 'partial-order', category: 'buff_tim', remoteOrderId: 43, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 40, status: 'assigned', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
-      { id: 'done-order', category: 'buff_tim', remoteOrderId: 44, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 100, status: 'completed', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
-      { id: 'foreign-order', category: 'buff_sao', remoteOrderId: 42, status: 'pending', placedBy: { id: 'other', role: 'ctv' }, customer: {} }
-    );
-  } });
+  }, {
+    seed: data => {
+      data.localOrders.push(
+        { id: 'my-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 0, status: 'pending', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
+        { id: 'partial-order', category: 'buff_tim', remoteOrderId: 43, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 40, status: 'assigned', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
+        { id: 'done-order', category: 'buff_tim', remoteOrderId: 44, sellPrice: 15000, costPrice: 10000, totalCnt: 100, completedCnt: 100, status: 'completed', placedBy: { id: 'seller', role: 'ctv', name: 'Seller' }, customer: {} },
+        { id: 'foreign-order', category: 'buff_sao', remoteOrderId: 42, status: 'pending', placedBy: { id: 'other', role: 'ctv' }, customer: {} }
+      );
+    }
+  });
   const seller = await server.login('seller', 'seller-test-password');
   assert.equal((await server.request('/api/orders/buff_sao/42', 'DELETE', seller.body.token)).status, 403);
   assert.equal((await server.request('/api/orders/buff_sao/42/toggle-active', 'PUT', seller.body.token)).status, 403);
@@ -488,9 +497,11 @@ test('order IDs are scoped by category; CTV cannot delete while Admin delete aut
 });
 
 test('manual partial refund uses cumulative source credit and cannot over-refund or repeat', async t => {
-  const server = await startTestServer(t, financeSource(), { seed: data => {
-    data.localOrders.push({ id: 'refund-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, status: 'cancelled', placedBy: { id: 'seller', role: 'ctv' } });
-  } });
+  const server = await startTestServer(t, financeSource(), {
+    seed: data => {
+      data.localOrders.push({ id: 'refund-order', category: 'buff_tim', remoteOrderId: 42, sellPrice: 15000, costPrice: 10000, status: 'cancelled', placedBy: { id: 'seller', role: 'ctv' } });
+    }
+  });
   const admin = await server.login('owner', 'owner-test-password');
   const payload = { confirmed: true, note: 'Verified cumulative source refund of 4000.', sourceRefund: 4000, amount: 7000, idempotency_key: crypto.randomUUID() };
   const path = '/api/admin/orders/refund-order/refund';
@@ -551,9 +562,11 @@ test('locking or resetting a CTV password revokes sessions, including after the 
 });
 
 test('CTV cannot enumerate saved source customers, read stock internals, monitor logs or other orders', async t => {
-  const server = await startTestServer(t, financeSource(), { seed: data => {
-    data.localOrders.push({ id: 'foreign', category: 'buff_tim', remoteOrderId: 10, placedBy: { id: 'someone-else' }, customer: {}, sellPrice: 99999 });
-  } });
+  const server = await startTestServer(t, financeSource(), {
+    seed: data => {
+      data.localOrders.push({ id: 'foreign', category: 'buff_tim', remoteOrderId: 10, placedBy: { id: 'someone-else' }, customer: {}, sellPrice: 99999 });
+    }
+  });
   const seller = await server.login('seller', 'seller-test-password');
   for (const path of ['/api/customer/saved', '/api/customer/saved/101', '/api/catalog/fruit-stock/1', '/api/admin/monitor']) {
     assert.equal((await server.request(path, 'GET', seller.body.token)).status, 403);
@@ -570,7 +583,7 @@ test('identity lookup round-trips exact IDs via the game client without an order
   let mismatch = false;
   class GameSocket {
     constructor() { queueMicrotask(() => this.onopen()); }
-    close() {}
+    close() { }
     send(raw) {
       const req = JSON.parse(raw);
       sent.push(req);
@@ -581,10 +594,12 @@ test('identity lookup round-trips exact IDs via the game client without an order
       this.onmessage({ data: JSON.stringify(frame).replaceAll('"' + id + '"', id) });
     }
   }
-  const server = await startTestServer(t, undefined, { WebSocket: GameSocket, seed(db) {
-    db.settings.hoanNguyen.user = { id: 7 };
-    db.users[1].balance = 0;
-  } });
+  const server = await startTestServer(t, undefined, {
+    WebSocket: GameSocket, seed(db) {
+      db.settings.hoanNguyen.user = { id: 7 };
+      db.users[1].balance = 0;
+    }
+  });
   const url = '/api/tools/identity';
   assert.equal((await server.request(url, 'POST', '', { mode: 'name', query: nickname })).status, 401);
   const { token } = (await server.login('seller', 'seller-test-password')).body;
@@ -673,13 +688,17 @@ test('same request arriving while catalog is slow is accepted only once', async 
 
 test('a restart preserves an in-flight hold as uncertain; admin can link a confirmed source order without resending', async t => {
   let creates = 0;
-  const intent = { id: 'interrupted-intent', requestKey: crypto.randomUUID(), payloadHash: 'test', userId: 'seller', userName: 'Seller',
-    status: 'processing', category: 'buff_tim', customerId: 101, customer: { customerId: 101, nickname: 'Test' }, summary: 'Test Tim', heldAmount: 15000, sellPrice: 15000, expectedCost: 10000, createdAt: new Date().toISOString() };
-  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true }; }), { seed: data => {
-    data.users.find(u => u.id === 'seller').balance = 35000;
-    data.orderIntents = [intent];
-    data.transactions.push({ id: intent.id, userId: 'seller', type: 'order_hold', amount: -15000 });
-  } });
+  const intent = {
+    id: 'interrupted-intent', requestKey: crypto.randomUUID(), payloadHash: 'test', userId: 'seller', userName: 'Seller',
+    status: 'processing', category: 'buff_tim', customerId: 101, customer: { customerId: 101, nickname: 'Test' }, summary: 'Test Tim', heldAmount: 15000, sellPrice: 15000, expectedCost: 10000, createdAt: new Date().toISOString()
+  };
+  const server = await startTestServer(t, financeSource(async () => { creates += 1; return { success: true }; }), {
+    seed: data => {
+      data.users.find(u => u.id === 'seller').balance = 35000;
+      data.orderIntents = [intent];
+      data.transactions.push({ id: intent.id, userId: 'seller', type: 'order_hold', amount: -15000 });
+    }
+  });
   assert.equal(server.db.orderIntents[0].status, 'uncertain');
   const admin = await server.login('owner', 'owner-test-password');
   const result = await server.request('/api/admin/intents/interrupted-intent/reconcile', 'POST', admin.body.token,
@@ -861,22 +880,28 @@ test('per-package custom markup overrides on buff_tim, buff_sao, and fruit_coin 
     const json = (data) => ({ ok: true, status: 200, json: async () => data });
     if (p === '/api/settings') return json({ data: { is_send_task: true, is_send_bufftimorder: true, is_send_buffsaoorder: true, is_send_fruitorder: true } });
     if (p === '/api/buff-tim-price-packages') {
-      return json({ data: [
-        { id: 7, quantity: 1000, is_active: true, total_price: 10000, original_price: 10000 },
-        { id: 99, quantity: 500000, is_active: true, total_price: tim500Cost, original_price: tim500Cost },
-      ] });
+      return json({
+        data: [
+          { id: 7, quantity: 1000, is_active: true, total_price: 10000, original_price: 10000 },
+          { id: 99, quantity: 500000, is_active: true, total_price: tim500Cost, original_price: tim500Cost },
+        ]
+      });
     }
     if (p === '/api/buff-sao-price-packages') {
-      return json({ data: [
-        { id: 11, quantity: 10000, is_active: true, total_price: 35000, original_price: 35000 },
-        { id: 12, quantity: 100000, is_active: true, total_price: 300000, original_price: 300000 },
-      ] });
+      return json({
+        data: [
+          { id: 11, quantity: 10000, is_active: true, total_price: 35000, original_price: 35000 },
+          { id: 12, quantity: 100000, is_active: true, total_price: 300000, original_price: 300000 },
+        ]
+      });
     }
     if (p === '/api/fruit-coin-price-packages') {
-      return json({ data: [
-        { id: 21, coin_quantity: 10000000, is_active: true, total_price: 7000, original_price: 7000 },
-        { id: 22, coin_quantity: 100000000, is_active: true, total_price: 65000, original_price: 65000 },
-      ] });
+      return json({
+        data: [
+          { id: 21, coin_quantity: 10000000, is_active: true, total_price: 7000, original_price: 7000 },
+          { id: 22, coin_quantity: 100000000, is_active: true, total_price: 65000, original_price: 65000 },
+        ]
+      });
     }
     if (p === '/api/fruit-stock') {
       return json({ data: [], meta: { coin_tiers: [{ min_coin: 0, markup_percent: 0, is_default: true }, { min_coin: 50000, markup_percent: 10 }] } });
@@ -1084,16 +1109,24 @@ test('weather_buff full workflow: Admin pricing, package-first order creation, s
     const method = (options.method || 'GET').toUpperCase();
     const body = options.body ? JSON.parse(options.body) : null;
     if (p === '/api/weather-buff-price-packages') {
-      return { ok: true, status: 200, json: async () => ({ success: true, data: [
-        { id: 16, quantity: 10, total_price: 2000, original_price: 2000, effective_price: 2000, is_active: true, is_on_sale: false },
-        { id: 23, quantity: 200, total_price: 25000, original_price: 25000, effective_price: 25000, is_active: true, is_on_sale: false },
-      ] }) };
+      return {
+        ok: true, status: 200, json: async () => ({
+          success: true, data: [
+            { id: 16, quantity: 10, total_price: 2000, original_price: 2000, effective_price: 2000, is_active: true, is_on_sale: false },
+            { id: 23, quantity: 200, total_price: 25000, original_price: 25000, effective_price: 25000, is_active: true, is_on_sale: false },
+          ]
+        })
+      };
     }
     if (p === '/api/weather-buff-types') {
-      return { ok: true, status: 200, json: async () => ({ success: true, data: [
-        { id: 1, name: 'Mưa', enum_key: 'Rain', icon_path_and_name: 'Weather/icon_weather_Rain', diamond: 50, is_active: true, sort_order: 1 },
-        { id: 2, name: 'Bão', enum_key: 'Thunderstorm', icon_path_and_name: 'Weather/icon_weather_Thunderstorm', diamond: 60, is_active: true, sort_order: 2 },
-      ] }) };
+      return {
+        ok: true, status: 200, json: async () => ({
+          success: true, data: [
+            { id: 1, name: 'Mưa', enum_key: 'Rain', icon_path_and_name: 'Weather/icon_weather_Rain', diamond: 50, is_active: true, sort_order: 1 },
+            { id: 2, name: 'Bão', enum_key: 'Thunderstorm', icon_path_and_name: 'Weather/icon_weather_Thunderstorm', diamond: 60, is_active: true, sort_order: 2 },
+          ]
+        })
+      };
     }
     if (p === '/api/weather-buff-orders' && method === 'POST') {
       upstreamCalls.push({ p, method, body });
@@ -1252,8 +1285,10 @@ test('weather_buff full workflow: Admin pricing, package-first order creation, s
 });
 
 test('empty weather deletion enforces ownership and age, rechecks the source and reconciles the original sale exactly once', async t => {
-  const row = { id: 81, status: 'pending', is_active: false, completed_cnt: 0, sending_cnt: 0, failed_cnt: 0,
-    weathers: [], slots: [{ customer_id: null, customer: null }] };
+  const row = {
+    id: 81, status: 'pending', is_active: false, completed_cnt: 0, sending_cnt: 0, failed_cnt: 0,
+    weathers: [], slots: [{ customer_id: null, customer: null }]
+  };
   let mode = 'reject', spent = 10000, present = true, deletes = 0;
   const json = (data, status = 200) => ({ ok: status === 200, status, json: async () => data });
   const server = await startTestServer(t, async (url, options) => {
@@ -1271,12 +1306,16 @@ test('empty weather deletion enforces ownership and age, rechecks the source and
     }
     const orders = present && p.pathname === '/api/weather-buff-orders' && p.searchParams.get('status_group') === 'active' ? [row] : [];
     return json({ success: true, data: { data: orders, total: orders.length } });
-  }, { seed(data) {
-    data.localOrders.push({ id: 'weather-81', remoteOrderId: 81, category: 'weather_buff', sellPrice: 15000, costPrice: 10000,
-      status: 'pending', placedBy: { id: 'seller', role: 'ctv' }, createdAt: new Date().toISOString() });
-    data.transactions.push({ id: 'debit', userId: 'seller', type: 'order_debit', amount: -15000 });
-    data.users.push({ id: 'other', role: 'ctv', balance: 2500 });
-  } });
+  }, {
+    seed(data) {
+      data.localOrders.push({
+        id: 'weather-81', remoteOrderId: 81, category: 'weather_buff', sellPrice: 15000, costPrice: 10000,
+        status: 'pending', placedBy: { id: 'seller', role: 'ctv' }, createdAt: new Date().toISOString()
+      });
+      data.transactions.push({ id: 'debit', userId: 'seller', type: 'order_debit', amount: -15000 });
+      data.users.push({ id: 'other', role: 'ctv', balance: 2500 });
+    }
+  });
   const seller = (await server.login('seller', 'seller-test-password')).body.token;
   const admin = (await server.login('owner', 'owner-test-password')).body.token;
   const del = () => server.request('/api/orders/weather_buff/81', 'DELETE', seller, { amount: 99999 });
@@ -1307,8 +1346,10 @@ test('empty weather deletion enforces ownership and age, rechecks the source and
   assert.equal((await del()).status, 409);
   assert.equal(deletes, 0);
   delete row.created_at;
-  for (const [key, value] of Object.entries({ status: 'assigned', is_active: true, completed_cnt: 1, failed_cnt: 1,
-    sending_cnt: 1, remote_ref: 'started', casting: {}, slots: [{ customer_id: 55 }], weathers: [{ quantity: 1 }] })) {
+  for (const [key, value] of Object.entries({
+    status: 'assigned', is_active: true, completed_cnt: 1, failed_cnt: 1,
+    sending_cnt: 1, remote_ref: 'started', casting: {}, slots: [{ customer_id: 55 }], weathers: [{ quantity: 1 }]
+  })) {
     const prev = row[key];
     row[key] = value;
     assert.equal((await del()).status, 409, key);
@@ -1352,10 +1393,14 @@ test('admin can settle an interrupted weather deletion only after checking activ
     assert.equal(options.method, 'GET');
     const rows = completed && new URL(url).searchParams.get('status_group') === 'completed' ? [{ id: 81, status: 'completed' }] : [];
     return { ok: true, status: 200, json: async () => ({ success: true, data: { data: rows, total: rows.length } }) };
-  }, { seed(data) {
-    data.localOrders.push({ id: 'pending-delete', remoteOrderId: 81, category: 'weather_buff', sellPrice: 7000, costPrice: 4500,
-      status: 'pending', placedBy: { id: 'seller', role: 'ctv' }, createdAt: new Date(Date.now() - 30000).toISOString(), weatherDeletePending: true });
-  } });
+  }, {
+    seed(data) {
+      data.localOrders.push({
+        id: 'pending-delete', remoteOrderId: 81, category: 'weather_buff', sellPrice: 7000, costPrice: 4500,
+        status: 'pending', placedBy: { id: 'seller', role: 'ctv' }, createdAt: new Date(Date.now() - 30000).toISOString(), weatherDeletePending: true
+      });
+    }
+  });
   const seller = (await server.login('seller', 'seller-test-password')).body.token;
   const admin = (await server.login('owner', 'owner-test-password')).body.token;
   const del = (token, confirmed_deleted) => server.request('/api/orders/weather_buff/81', 'DELETE', token, { confirmed_deleted });
@@ -1513,9 +1558,9 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
       value: '',
       children: [],
       parentNode: null,
-      classList: { remove() {}, toggle() {}, contains: () => false },
-      setAttribute() {},
-      addEventListener() {},
+      classList: { remove() { }, toggle() { }, contains: () => false },
+      setAttribute() { },
+      addEventListener() { },
       appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
       remove() {
         if (this.id) byId.delete(this.id);
@@ -1539,7 +1584,7 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
       },
       window: {
         location: { reload() { reloads += 1; } },
-        addEventListener() {},
+        addEventListener() { },
       },
       document: {
         hidden: false,
@@ -1554,16 +1599,16 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
         createElement: tag => makeEl(tag),
         getElementById: id => byId.get(id) || makeEl('div'),
         querySelectorAll: () => [],
-        addEventListener() {},
+        addEventListener() { },
       },
       fetch: async url => {
         if (url === '/api/ping') return { ok: true, status: 200, json: async () => ({ ok: true, maintenance: false, updateVersion: remoteVer }) };
         if (url === '/api/auth/me') return { ok: true, status: 200, json: async () => ({ success: true, user: { id: 'seller', role: 'ctv', name: 'CTV' }, updateVersion: remoteVer }) };
         return { ok: true, status: 200, json: async () => ({ success: true }) };
       },
-      console: { ...console, error() {} },
-      setTimeout() {},
-      setInterval() {},
+      console: { ...console, error() { } },
+      setTimeout() { },
+      setInterval() { },
     });
     vm.runInContext(toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', ctx);
     return { ctx, getReloads: () => reloads, getNotice: () => byId.get('znCtvUpdatedNotice') };
@@ -1756,28 +1801,32 @@ test('order category and history tables omit sending, completed, failed, and not
 });
 
 test('monitor uses the complete ledger, caps activity at 50 and finds orders beyond the first page', async t => {
-  const server = await startTestServer(t, undefined, { seed(db) {
-    const createdAt = new Date().toISOString();
-    db.auditLog = Array.from({ length: 65 }, (_, i) => ({ id: String(i), actorId: 'seller', createdAt }));
-    db.localOrders = Array.from({ length: 321 }, (_, i) => ({ id: `order-${i}`, intentId: `intent-${i}`, category: 'buff_tim',
-      placedBy: { id: 'seller' }, summary: `package-${i}`, sellPrice: 100, createdAt }));
-    db.transactions = db.localOrders.map(o => ({ id: o.intentId, userId: 'seller', amount: -100, type: 'order_debit', createdAt }));
-    for (const [type, amount] of [['admin_topup',50000], ['admin_deduct',-500], ['order_refund',60], ['order_hold',-200], ['order_release',100]]) {
-      db.transactions.unshift({ id: crypto.randomUUID(), userId: 'seller', type, amount, createdAt });
+  const server = await startTestServer(t, undefined, {
+    seed(db) {
+      const createdAt = new Date().toISOString();
+      db.auditLog = Array.from({ length: 65 }, (_, i) => ({ id: String(i), actorId: 'seller', createdAt }));
+      db.localOrders = Array.from({ length: 321 }, (_, i) => ({
+        id: `order-${i}`, intentId: `intent-${i}`, category: 'buff_tim',
+        placedBy: { id: 'seller' }, summary: `package-${i}`, sellPrice: 100, createdAt
+      }));
+      db.transactions = db.localOrders.map(o => ({ id: o.intentId, userId: 'seller', amount: -100, type: 'order_debit', createdAt }));
+      for (const [type, amount] of [['admin_topup', 50000], ['admin_deduct', -500], ['order_refund', 60], ['order_hold', -200], ['order_release', 100]]) {
+        db.transactions.unshift({ id: crypto.randomUUID(), userId: 'seller', type, amount, createdAt });
+      }
+      db.users[1].balance = 17360;
+      for (let i = 0; i < 20; i++) {
+        db.users.push({ id: `other-${i}`, role: 'ctv', balance: 0 });
+      }
+      db.users.at(-1).balance = 700;
+      db.users.at(-1).isLocked = true;
+      db.transactions.push(
+        { id: 'last-topup', userId: 'other-19', type: 'admin_topup', amount: 1000, createdAt },
+        { id: 'last-debit', userId: 'other-19', type: 'order_debit', amount: -300, createdAt },
+        { id: 'owner-topup', userId: 'owner', type: 'admin_topup', amount: 9000, createdAt }
+      );
     }
-    db.users[1].balance = 17360;
-    for (let i = 0; i < 20; i++) {
-      db.users.push({ id: `other-${i}`, role: 'ctv', balance: 0 });
-    }
-    db.users.at(-1).balance = 700;
-    db.users.at(-1).isLocked = true;
-    db.transactions.push(
-      { id: 'last-topup', userId: 'other-19', type: 'admin_topup', amount: 1000, createdAt },
-      { id: 'last-debit', userId: 'other-19', type: 'order_debit', amount: -300, createdAt },
-      { id: 'owner-topup', userId: 'owner', type: 'admin_topup', amount: 9000, createdAt }
-    );
-  } });
-  const token = (await server.login('owner','owner-test-password')).body.token;
+  });
+  const token = (await server.login('owner', 'owner-test-password')).body.token;
   const get = async path => (await server.request('/api/admin/monitor' + path, 'GET', token)).body;
   const overview = await get('');
   assert.equal(overview.ctvs.length, 20);
@@ -1804,7 +1853,7 @@ test('monitor uses the complete ledger, caps activity at 50 and finds orders bey
   assert.equal(more.orders.length, 40);
   assert.equal(more.summary.totalSpent, first.summary.totalSpent);
   const hit = await get('/ctv/seller?q=package-320');
-  assert.deepEqual(hit.orders.map(o => [o.id,o.debit]), [['order-320',100]]);
+  assert.deepEqual(hit.orders.map(o => [o.id, o.debit]), [['order-320', 100]]);
 });
 
 test('remote pagination merges all source pages and retains known orders on an interrupted refresh', async t => {
@@ -1814,10 +1863,16 @@ test('remote pagination merges all source pages and retains known orders on an i
     const match = u.pathname.endsWith('guestbook-orders');
     const page = Number(u.searchParams.get('page'));
     if (outage && match && page === 2) throw new Error('Unavailable');
-    return { ok: true, status: 200, json: async () => ({ data: { current_page: page, last_page: match ? 2 : 1,
-      data: match ? Array.from({ length: 17 }, (_, i) => ({ id: i + 1 + (page - 1) * 17, created_at: new Date().toISOString() })) : [] } }) };
+    return {
+      ok: true, status: 200, json: async () => ({
+        data: {
+          current_page: page, last_page: match ? 2 : 1,
+          data: match ? Array.from({ length: 17 }, (_, i) => ({ id: i + 1 + (page - 1) * 17, created_at: new Date().toISOString() })) : []
+        }
+      })
+    };
   });
-  const token = (await server.login('owner','owner-test-password')).body.token;
+  const token = (await server.login('owner', 'owner-test-password')).body.token;
   const get = async query => (await server.request('/api/orders?' + query, 'GET', token)).body;
   const first = await get('limit=20');
   assert.equal(first.partial, false);
@@ -1835,18 +1890,20 @@ test('Sunday midnight Vietnam time clears previous history and preserves open or
   const boundary = Date.parse('2026-11-28T17:00:00Z');
   let now = boundary - 1000;
   class Clock extends Date { static now() { return now; } }
-  const server = await startTestServer(t, undefined, { clock: Clock, seed(db) {
-    const old = new Date(now).toISOString();
-    db.localOrders = ['completed','pending','cancelled'].map((status, i) => ({ id: String(i), status, createdAt: old }));
-    db.localOrders.push({ id: 'new', status: 'completed', createdAt: new Date(boundary).toISOString() });
-    db.transactions = [{ id: 'deposit', type: 'admin_topup', userId: 'seller', amount: 50000, createdAt: old }];
-    db.auditLog = [{ id: 'old', createdAt: old }, { id: 'new', createdAt: new Date(boundary).toISOString() }];
-  } });
+  const server = await startTestServer(t, undefined, {
+    clock: Clock, seed(db) {
+      const old = new Date(now).toISOString();
+      db.localOrders = ['completed', 'pending', 'cancelled'].map((status, i) => ({ id: String(i), status, createdAt: old }));
+      db.localOrders.push({ id: 'new', status: 'completed', createdAt: new Date(boundary).toISOString() });
+      db.transactions = [{ id: 'deposit', type: 'admin_topup', userId: 'seller', amount: 50000, createdAt: old }];
+      db.auditLog = [{ id: 'old', createdAt: old }, { id: 'new', createdAt: new Date(boundary).toISOString() }];
+    }
+  });
   assert.equal(server.db.localOrders.length, 4);
   now = boundary;
   await server.request('/api/ping');
   await server.request('/api/ping');
-  assert.deepEqual(Array.from(server.db.localOrders, o => o.id), ['1','new']);
+  assert.deepEqual(Array.from(server.db.localOrders, o => o.id), ['1', 'new']);
   assert.deepEqual(Array.from(server.db.auditLog, e => e.id), ['new']);
   assert.equal(server.db.transactions.length, 1);
   assert.equal(server.db.users[1].balance, 50000);
@@ -2040,4 +2097,82 @@ test('on-demand customer snapshot endpoint enforces CTV isolation, caches respon
   }];
   const ctvHtml = client.context.renderOrderCategoryPageHtml('fruit_coin');
   assert.match(ctvHtml, /data-view-order-customer="18334"/);
+});
+
+test('app versions follow vx.x.text, restrict editing to admin, show 3 latest releases, and hide all upstream branding', async t => {
+  const server = await startTestServer(t, financeSource(), {
+    seed: data => {
+      data.auditLog = data.auditLog || [];
+      data.auditLog.unshift({
+        id: 'legacy-1',
+        createdAt: new Date().toISOString(),
+        actorId: 'owner',
+        actorName: 'Admin',
+        action: 'POST /api/admin/hoannguyen/reconnect',
+        details: { note: 'Synced from https://hoannguyenplaytogether.com' },
+      });
+    },
+  });
+  const admin = (await server.login('owner', 'owner-test-password')).body.token;
+  const seller = (await server.login('seller', 'seller-test-password')).body.token;
+
+  // CTV cannot edit app versions
+  const ctvEdit = await server.request('/api/admin/app-versions', 'PUT', seller, {
+    appVersions: [{ version: 'v9.9.hack', date: '25/11/2026', highlights: ['Nope'] }],
+  });
+  assert.equal(ctvEdit.status, 403);
+
+  // Admin rejects invalid version format (must be vx.x.text where x is number and text starts with letter)
+  const badVer = await server.request('/api/admin/app-versions', 'PUT', admin, {
+    appVersions: [{ version: 'v2.4.123', date: '25/11/2026', highlights: ['Invalid suffix'] }],
+  });
+  assert.equal(badVer.status, 400);
+
+  // Admin saves 3 releases and upstream mentions in highlights are automatically scrubbed to Server Zn
+  const updated = await server.request('/api/admin/app-versions', 'PUT', admin, {
+    appVersions: [
+      { version: 'v2.5.nova', date: '25/11/2026', highlights: ['Giao diện icon SVG mới', 'Đồng bộ trực tiếp với HoanNguyen'] },
+      { version: 'v2.4.auros', date: '20/11/2026', highlights: ['Tối ưu bảng giá'] },
+      { version: 'v2.3.stable', date: '15/11/2026', highlights: ['Thêm xem hồ sơ khách'] },
+    ],
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.currentVersion, 'v2.5.nova');
+  assert.equal(updated.body.appVersions.length, 3);
+  assert.equal(updated.body.appVersions[0].highlights[1], 'Đồng bộ trực tiếp với Server Zn');
+
+  // Ping, auth/me, overview, and monitor expose version info and never leak upstream brand or domain
+  const ping = await server.request('/api/ping');
+  assert.equal(ping.body.currentVersion, 'v2.5.nova');
+  assert.equal(ping.body.appVersions.length, 3);
+
+  const me = await server.request('/api/auth/me', 'GET', seller);
+  assert.equal(me.body.currentVersion, 'v2.5.nova');
+  assert.equal(me.body.appVersions.length, 3);
+
+  const overview = await server.request('/api/admin/overview', 'GET', admin);
+  assert.equal(overview.body.settings.appVersions[0].version, 'v2.5.nova');
+  assert.doesNotMatch(JSON.stringify(overview.body), /hoannguyen|hoannguyenplaytogether/i);
+
+  const monitor = await server.request('/api/admin/monitor', 'GET', admin);
+  assert.doesNotMatch(JSON.stringify(monitor.body), /hoannguyen|hoannguyenplaytogether/i);
+  assert.match(JSON.stringify(monitor.body.events), /Server Zn/);
+
+  // Admin CTV view renders version editor panel
+  const client = createClient();
+  client.state.user = { id: 'owner', role: 'admin', name: 'Admin' };
+  client.state.adminOverview = overview.body;
+  const adminCtvHtml = client.context.renderAdminCtvPageHtml();
+  assert.match(adminCtvHtml, /id="adminVersionManagerPanel"/);
+  assert.match(adminCtvHtml, /v2\.5\.nova/);
+
+  // Every SVG in index.html, app.js, tools.js must have explicit width and height attributes so no icon can expand unbounded
+  const htmlRaw = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
+  for (const [fname, content] of [['index.html', htmlRaw], ['app.js', clientSource], ['tools.js', toolsSource]]) {
+    const svgs = content.match(/<svg\b[^>]*>/gi) || [];
+    for (const tag of svgs) {
+      assert.match(tag, /\bwidth=/i, `SVG missing width in ${fname}: ${tag}`);
+      assert.match(tag, /\bheight=/i, `SVG missing height in ${fname}: ${tag}`);
+    }
+  }
 });

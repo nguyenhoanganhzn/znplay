@@ -377,6 +377,33 @@ const DEFAULT_DB = {
     fruitMutationPrices: {},
     // Mức cộng mặc định cho mỗi trái cây nếu chưa chỉnh riêng từng trái (VNĐ/trái)
     defaultFruitUnitMarkup: 40,
+    appVersions: [
+      {
+        version: 'v2.4.auros',
+        date: '25/11/2026',
+        highlights: [
+          'Nâng cấp giao diện Auros Abyssal Terminal và bộ biểu tượng SVG hiện đại.',
+          'Bổ sung hiển thị phiên bản hệ thống và nhật ký 3 bản cập nhật gần nhất.',
+          'Chuẩn hóa đồng bộ trạng thái đơn hàng trực tiếp trên Server Zn.',
+        ],
+      },
+      {
+        version: 'v2.3.stable',
+        date: '20/11/2026',
+        highlights: [
+          'Thêm nút xem nhanh hồ sơ khách hàng và hạn mức nhận trái cây trong ngày.',
+          'Tối ưu hiển thị hộp thoại và bảng dữ liệu mượt mà trên điện thoại.',
+        ],
+      },
+      {
+        version: 'v2.2.core',
+        date: '15/11/2026',
+        highlights: [
+          'Cập nhật tiến độ chạy đơn tự động theo danh mục đang mở.',
+          'Tăng tốc tải danh mục và bảo vệ chống gửi trùng đơn hàng.',
+        ],
+      },
+    ],
     hoanNguyen: {
       baseUrl: 'https://hoannguyenplaytogether.com',
       email: process.env.HOANNGUYEN_EMAIL || '',
@@ -446,6 +473,80 @@ async function saveDb(data) {
   }
 }
 
+const VERSION_CODE_REGEX = /^v\d+\.\d+\.[a-zA-Z][a-zA-Z0-9_-]{0,23}$/;
+
+function normalizeVersionCode(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  const withPrefix = /^[vV]/.test(trimmed) ? `v${trimmed.slice(1)}` : `v${trimmed}`;
+  return VERSION_CODE_REGEX.test(withPrefix) ? withPrefix : '';
+}
+
+function normalizeAppVersions(rawList) {
+  if (!Array.isArray(rawList)) return structuredClone(DEFAULT_DB.settings.appVersions);
+  const cleaned = [];
+  for (const item of rawList) {
+    if (!item || typeof item !== 'object') continue;
+    const version = normalizeVersionCode(item.version);
+    if (!version) continue;
+    const date = sanitizeUpstreamText(String(item.date || '').trim()).slice(0, 40);
+    const rawHighlights = Array.isArray(item.highlights)
+      ? item.highlights
+      : typeof item.highlights === 'string'
+      ? item.highlights.split(/\r?\n/)
+      : [];
+    const highlights = rawHighlights
+      .map(line => sanitizeUpstreamText(String(line || '').replace(/^[-•*]\s*/, '').trim()).slice(0, 240))
+      .filter(Boolean)
+      .slice(0, 8);
+    if (!highlights.length) continue;
+    cleaned.push({ version, date, highlights });
+    if (cleaned.length >= 3) break;
+  }
+  return cleaned.length > 0 ? cleaned : structuredClone(DEFAULT_DB.settings.appVersions);
+}
+
+function getPublicAppVersions() {
+  return normalizeAppVersions(db?.settings?.appVersions);
+}
+
+function sanitizeUpstreamText(text) {
+  if (typeof text !== 'string' || !text) return '';
+  return text
+    .replace(/https?:\/\/[^\s"'<>]*hoannguyen[^\s"'<>]*/gi, 'Server Zn')
+    .replace(/\/api\/admin\/hoannguyen\//gi, '/api/admin/server-zn/')
+    .replace(/\/admin\/hoannguyen\//gi, '/admin/server-zn/')
+    .replace(/hoan\s*nguyen(?:\s*play\s*together)?(?:\.com)?/gi, 'Server Zn')
+    .replace(/hoàn\s*nguyễn/gi, 'Server Zn')
+    .replace(/hoannguyen[a-z0-9.-]*/gi, 'Server Zn');
+}
+
+function sanitizeAuditEvent(e) {
+  if (!e || typeof e !== 'object') return e;
+  const action = sanitizeUpstreamText(String(e.action || ''));
+  let details = e.details;
+  if (details && typeof details === 'object') {
+    details = Object.fromEntries(
+      Object.entries(details).map(([k, v]) => [k, typeof v === 'string' ? sanitizeUpstreamText(v) : v])
+    );
+  }
+  return { ...e, action, details };
+}
+
+function sanitizeTransaction(t) {
+  if (!t || typeof t !== 'object') return t;
+  return { ...t, note: sanitizeUpstreamText(String(t.note || '')) };
+}
+
+function getSafeServerZnStatus() {
+  return {
+    email: db.settings.hoanNguyen.email,
+    ...upstreamStatus,
+    lastError: sanitizeUpstreamText(upstreamStatus.lastError || ''),
+    lastLoginAt: db.settings.hoanNguyen.lastLoginAt,
+  };
+}
+
 function normalizeDb(raw) {
   const merged = {
     ...DEFAULT_DB,
@@ -453,6 +554,7 @@ function normalizeDb(raw) {
     settings: {
       ...DEFAULT_DB.settings,
       ...(raw.settings || {}),
+      appVersions: normalizeAppVersions(raw.settings?.appVersions),
       categoryMarkups: {
         ...DEFAULT_DB.settings.categoryMarkups,
         ...(raw.settings?.categoryMarkups || {}),
@@ -582,7 +684,8 @@ function validMoney(value, allowZero = true) {
 }
 
 function publicError(req, error, fallback) {
-  return req.user?.role === 'ctv' && error.upstream ? `${fallback} Liên hệ admin nếu lỗi tiếp diễn.` : error.message || fallback;
+  const safeMsg = sanitizeUpstreamText(error?.message || '');
+  return req.user?.role === 'ctv' && error?.upstream ? `${fallback} Liên hệ quản trị viên nếu lỗi tiếp diễn.` : safeMsg || fallback;
 }
 
 function enabled(value) { return value === true || value === 1 || value === '1' || value === 'true'; }
@@ -748,7 +851,7 @@ function releaseIntent(intent, reason) {
 const interrupted = db.orderIntents.filter(intent => intent.status === 'processing');
 for (const intent of interrupted) {
   intent.status = 'uncertain';
-  intent.message = 'Máy chủ khởi động lại khi đang gửi đơn. Cần admin đối soát nguồn trước khi xử lý tiếp.';
+  intent.message = 'Máy chủ khởi động lại khi đang gửi đơn. Cần quản trị viên đối soát trên Server Zn trước khi xử lý tiếp.';
 }
 if (interrupted.length) await saveDb(db);
 
@@ -873,7 +976,7 @@ function getPackageSellingPrice(categoryKey, pkgId, costEffective, costOriginal,
   const adjustedCostEffective = Math.round(Number(costEffective || 0) * factor);
   const adjustedCostOriginal = Math.round(Number(costOriginal || costEffective || 0) * factor);
   if (!validMoney(adjustedCostEffective) || !validMoney(adjustedCostOriginal) || !validMoney(catMarkup) || !validPercent(catPercent)) {
-    throw new Error('Giá nguồn hoặc bảng giá chưa hợp lệ.');
+    throw new Error('Giá gốc Server Zn hoặc bảng giá chưa hợp lệ.');
   }
 
   const hasMarkupOverride = Boolean(
@@ -1014,17 +1117,17 @@ const upstreamStatus = { connected: false, lastCheckedAt: null, lastError: '' };
 
 function upstreamFailure(error) {
   const code = error.cause?.code || error.code;
-  let message = error.message;
+  let message = sanitizeUpstreamText(error.message);
   if (code === 'EACCES' || code === 'EPERM') {
-    message = 'Máy chủ localhost đang bị chặn kết nối mạng tới nguồn HoanNguyen. Cần khởi động lại máy chủ với quyền truy cập mạng.';
+    message = 'Máy chủ localhost đang bị chặn kết nối mạng tới Server Zn. Cần khởi động lại máy chủ với quyền truy cập mạng.';
   } else if (['TimeoutError', 'AbortError'].includes(error.name) || code === 'UND_ERR_CONNECT_TIMEOUT') {
-    message = 'Nguồn HoanNguyen phản hồi quá chậm. Vui lòng thử kết nối lại.';
+    message = 'Server Zn phản hồi quá chậm. Vui lòng thử kết nối lại.';
   } else if (['ENOTFOUND', 'EAI_AGAIN'].includes(code)) {
-    message = 'Không phân giải được địa chỉ nguồn HoanNguyen. Vui lòng kiểm tra mạng hoặc DNS.';
+    message = 'Không phân giải được địa chỉ Server Zn. Vui lòng kiểm tra mạng hoặc DNS.';
   } else if (message === 'fetch failed') {
-    message = 'Không thể kết nối tới nguồn HoanNguyen. Vui lòng kiểm tra kết nối mạng của máy chủ.';
+    message = 'Không thể kết nối tới Server Zn. Vui lòng kiểm tra kết nối mạng của máy chủ.';
   }
-  const failure = new Error(message || 'Không thể kết nối tới nguồn HoanNguyen.');
+  const failure = new Error(message || 'Không thể kết nối tới Server Zn.');
   failure.upstream = true;
   failure.status = error.status || 502;
   failure.data = error.data;
@@ -1049,7 +1152,7 @@ async function loginToHoanNguyen(force = false) {
   if (!force && hn.token) return hn.token;
   if (loginPromise) return loginPromise;
   if (!hn.email || !hn.password) {
-    throw upstreamFailure(new Error('Chưa cấu hình tài khoản nguồn. Đặt HOANNGUYEN_EMAIL và HOANNGUYEN_PASSWORD hoặc nhập tại Cấu hình nguồn API.'));
+    throw upstreamFailure(new Error('Chưa cấu hình tài khoản kết nối Server Zn. Vui lòng nhập thông tin tại mục Cấu hình Server Zn.'));
   }
 
   loginPromise = (async () => {
@@ -1068,7 +1171,7 @@ async function loginToHoanNguyen(force = false) {
       });
       const data = await res.json();
       if (!res.ok || !data.token) {
-        throw new Error(data.message || 'Không thể đăng nhập hệ thống nguồn');
+        throw new Error(sanitizeUpstreamText(data.message) || 'Không thể đăng nhập Server Zn');
       }
       db.settings.hoanNguyen.token = data.token;
       db.settings.hoanNguyen.user = data.user || null;
@@ -1112,10 +1215,10 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, tim
   try {
     data = await res.json();
   } catch {
-    throw upstreamFailure(new Error(`Nguồn HoanNguyen trả về dữ liệu không hợp lệ (HTTP ${res.status}).`));
+    throw upstreamFailure(new Error(`Server Zn trả về dữ liệu không hợp lệ (HTTP ${res.status}).`));
   }
   if ((!res.ok || data.success === false) && !data.needs_confirmation) {
-    const err = new Error(data.message || `API Error (${res.status})`);
+    const err = new Error(sanitizeUpstreamText(data.message) || `Lỗi phản hồi từ Server Zn (${res.status})`);
     err.status = res.status;
     err.data = data;
     throw upstreamFailure(err);
@@ -1140,11 +1243,11 @@ async function queryGameClient(request, timeoutMs) {
     await loginToHoanNguyen(false);
     if (!db.settings.hoanNguyen.user?.id) await loginToHoanNguyen(true);
     const userId = db.settings.hoanNguyen.user?.id;
-    if (!userId) throw new Error('Nguồn chưa xác nhận tài khoản tìm kiếm. Liên hệ admin.');
+    if (!userId) throw new Error('Server Zn chưa xác nhận tài khoản tìm kiếm. Liên hệ quản trị viên.');
 
     return await new Promise((resolve, reject) => {
       const ws = new WebSocket(PROFILE_SOCKET_URL);
-      const timer = setTimeout(() => finish(new Error('Nguồn game phản hồi quá chậm. Vui lòng thử lại.')), timeoutMs);
+      const timer = setTimeout(() => finish(new Error('Server Zn phản hồi quá chậm. Vui lòng thử lại.')), timeoutMs);
       let settled = false;
       function finish(error, value) {
         if (settled) return;
@@ -1156,9 +1259,9 @@ async function queryGameClient(request, timeoutMs) {
       }
       ws.onopen = () => {
         try { ws.send(JSON.stringify({ ...request, user_id: userId })); }
-        catch { finish(new Error('Không gửi được yêu cầu tới nguồn game.')); }
+        catch { finish(new Error('Không gửi được yêu cầu tới Server Zn.')); }
       };
-      ws.onerror = ws.onclose = () => finish(new Error('Mất kết nối với nguồn game. Vui lòng thử lại.'));
+      ws.onerror = ws.onclose = () => finish(new Error('Mất kết nối với Server Zn. Vui lòng thử lại.'));
       ws.onmessage = event => {
         let msg;
         try {
@@ -1168,13 +1271,13 @@ async function queryGameClient(request, timeoutMs) {
         } catch { return; }
         if (!msg || typeof msg !== 'object') return;
         if (msg.type === 'error' && (!msg.request_context || msg.request_context === request.type)) {
-          finish(new Error(msg.message || 'Nguồn game chưa trả được kết quả.'));
+          finish(new Error(sanitizeUpstreamText(msg.message) || 'Server Zn chưa trả được kết quả.'));
         } else if (msg.type === request.type + '_result') {
           if (request.type === 'profile_search' && Array.isArray(msg.profiles)) finish(null, msg.profiles);
           else if (request.type === 'request_profile' && msg.profile?.Profile &&
               String(msg.profile.UserSuid ?? msg.profile.Profile.suid) === request.suid &&
               String(msg.profile.Profile.suid ?? request.suid) === request.suid) finish(null, msg.profile);
-          else finish(new Error('Hồ sơ nguồn trả về không khớp với yêu cầu. Vui lòng thử lại.'));
+          else finish(new Error('Hồ sơ trả về từ Server Zn không khớp với yêu cầu. Vui lòng thử lại.'));
         }
       };
     });
@@ -1374,10 +1477,13 @@ app.get('/assets/playtogether/*', async (req, res) => {
 // AUTH & HEALTH ENDPOINTS
 // ============================================================================
 app.get('/api/ping', (req, res) => {
+  const versions = getPublicAppVersions();
   res.json({
     ok: true,
     maintenance: isMaintenanceActive(),
     updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    currentVersion: versions[0]?.version || 'v2.4.auros',
+    appVersions: versions,
     ts: Date.now(),
   });
 });
@@ -1454,11 +1560,14 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   req.user = user;
   req.needsSave = true;
 
+  const versions = getPublicAppVersions();
   res.json({
     success: true,
     message: 'Đăng nhập thành công',
     token,
     updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    currentVersion: versions[0]?.version || 'v2.4.auros',
+    appVersions: versions,
     user: sanitizeUser(user),
   });
 }));
@@ -1478,10 +1587,13 @@ app.get('/api/auth/me', (req, res) => {
     });
   }
   user.lastSeenAt = new Date().toISOString();
+  const versions = getPublicAppVersions();
   res.json({
     success: true,
     maintenance: isMaintenanceActive(),
     updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    currentVersion: versions[0]?.version || 'v2.4.auros',
+    appVersions: versions,
     user: sanitizeUser(user),
   });
 });
@@ -1753,7 +1865,7 @@ function resolveActiveSale(pkg) {
 }
 
 function buildPublicPackage(pkg, categoryKey, isAdmin, tierMarkupPercent = 0) {
-  if (!Number.isSafeInteger(Number(pkg.id)) || Number(pkg.id) <= 0) throw new Error('Mã gói nguồn không hợp lệ.');
+  if (!Number.isSafeInteger(Number(pkg.id)) || Number(pkg.id) <= 0) throw new Error('Mã gói Server Zn không hợp lệ.');
   const { isOnSale, sale } = resolveActiveSale(pkg);
   const rawBaseCost = Number(pkg.original_price ?? pkg.total_price ?? 0);
   const rawEffectiveCost = Number(
@@ -2034,7 +2146,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       pricingVersion: settingsVersion,
       systemStatus,
       processingRates: scope ? undefined : raw.processingRates,
-      hnSettings: {
+      serverSettings: {
         min_coin_per_fruit: raw.hnSettings?.min_coin_per_fruit ?? 400000,
         max_coin_for_fruit_order: raw.hnSettings?.max_coin_for_fruit_order ?? 600000,
         max_fruits_per_customer_per_day: raw.hnSettings?.max_fruits_per_customer_per_day ?? 30,
@@ -2087,7 +2199,7 @@ app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req
     const costPrice = Number(previewRes?.data?.total_price ?? 0);
     const sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts);
     if (!validMoney(costPrice) || !validMoney(sellPrice, false) || sellPrice < costPrice) {
-      throw new Error('Bảng giá chưa hợp lệ hoặc giá bán thấp hơn chi phí nguồn. Liên hệ admin để cập nhật giá.');
+      throw new Error('Bảng giá chưa hợp lệ hoặc giá bán thấp hơn chi phí Server Zn. Liên hệ quản trị viên để cập nhật giá.');
     }
 
     const responseData = {
@@ -2150,11 +2262,11 @@ app.post('/api/tools/identity', requireAuth, limitInteractive, async (req, res) 
       players.push({ nickname, roleId: id, gameCode: gameCodeFromId(id) });
       seen.add(id);
     }
-    if (profiles.length && !players.length) throw new Error('Hồ sơ nguồn trả về thiếu tên hoặc ID nhân vật.');
+    if (profiles.length && !players.length) throw new Error('Hồ sơ trả về từ Server Zn thiếu tên hoặc ID nhân vật.');
     req.auditDetails = { resultCount: players.length, ...(mode === 'id' ? { roleId: term } : { nickname: term }) };
     res.json({ success: true, players });
   } catch (error) {
-    res.status(error.status === 503 ? 503 : 502).json({ success: false, message: publicError(req, error, 'Chưa tra cứu được nhân vật từ nguồn game.') });
+    res.status(error.status === 503 ? 503 : 502).json({ success: false, message: publicError(req, error, 'Chưa tra cứu được nhân vật trên Server Zn.') });
   }
 });
 
@@ -2349,7 +2461,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Yêu cầu này đang xử lý hoặc chờ admin đối soát. Không gửi đơn mới để tránh trừ tiền hai lần.' });
     }
     if (db.orderIntents.some(i => i.userId === user.id && (i.status === 'uncertain' || i.requiresReview))) {
-      return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Có đơn chưa xác định kết quả tại nguồn. Liên hệ admin đối soát trước khi đặt tiếp.' });
+      return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Có đơn chưa xác định kết quả trên Server Zn. Liên hệ quản trị viên đối soát trước khi đặt tiếp.' });
     }
     const {
       category,
@@ -2605,7 +2717,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     }
 
     if (!validMoney(costPrice) || !validMoney(sellPrice, false) || sellPrice < costPrice) {
-      throw new Error('Bảng giá không hợp lệ hoặc thấp hơn chi phí nguồn. Đã chặn đặt đơn; liên hệ admin.');
+      throw new Error('Bảng giá không hợp lệ hoặc thấp hơn chi phí Server Zn. Đã chặn đặt đơn; liên hệ quản trị viên.');
     }
     if (req.body.expected_price !== sellPrice) {
       return res.status(409).json({ success: false, code: 'PRICE_CHANGED', message: 'Giá đã thay đổi. Vui lòng làm mới bảng giá và xác nhận lại trước khi đặt đơn.' });
@@ -2616,7 +2728,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     if (racedIntent) {
       if (racedIntent.payloadHash !== payloadHash) return res.status(409).json({ success: false, message: 'Mã yêu cầu đã được dùng với nội dung khác.' });
       if (racedIntent.response) return res.status(racedIntent.responseStatus || 200).json({ ...racedIntent.response, userBalance: user.balance });
-      return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Yêu cầu đã được tiếp nhận, không gửi lại trong khi đang chờ nguồn.' });
+      return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Yêu cầu đã được tiếp nhận, không gửi lại trong khi đang chờ Server Zn xử lý.' });
     }
     // Reserve funds synchronously and persist BEFORE any billable source request.
     if (!isAdmin && (!validMoney(user.balance) || user.balance < sellPrice)) {
@@ -2647,14 +2759,14 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     const hnResult = await hnApiCall(apiPath, 'POST', hnPayload);
 
     if (hnResult?.needs_confirmation && hnResult?.code === 'duplicate_customer') {
-      releaseIntent(intent, 'Nguồn yêu cầu xác nhận đơn trùng; đã trả khoản giữ tiền.');
+      releaseIntent(intent, 'Server Zn yêu cầu xác nhận đơn trùng; đã trả khoản giữ tiền.');
       intent.status = 'confirmation_required';
       intent.response = {
         success: false,
         needs_confirmation: true,
         code: 'duplicate_customer',
         message:
-          hnResult.message ||
+          sanitizeUpstreamText(hnResult.message) ||
           'Khách hàng này đang có đơn hàng đang chạy. Bạn có chắc chắn muốn tạo thêm đơn mới?',
       };
       req.needsSave = true;
@@ -2662,14 +2774,14 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     }
 
     if (!hnResult?.success) {
-      throw Object.assign(new Error('Nguồn từ chối tạo đơn.'), { status: 400 });
+      throw Object.assign(new Error('Server Zn từ chối tạo đơn.'), { status: 400 });
     }
 
     const createdRemoteOrder = hnResult.data || {};
     const remoteOrderId = createdRemoteOrder.id || null;
-    if (!Number.isSafeInteger(Number(remoteOrderId)) || Number(remoteOrderId) <= 0) throw new Error('Nguồn chưa trả mã đơn hợp lệ.');
+    if (!Number.isSafeInteger(Number(remoteOrderId)) || Number(remoteOrderId) <= 0) throw new Error('Server Zn chưa trả mã đơn hợp lệ.');
     if (db.localOrders.some(order => order.category === category && String(order.remoteOrderId) === String(remoteOrderId))) {
-      throw new Error('Nguồn trả mã đơn đã được liên kết. Cần admin đối soát trước khi ghi thêm giao dịch.');
+      throw new Error('Server Zn trả mã đơn đã được liên kết. Cần quản trị viên đối soát trước khi ghi thêm giao dịch.');
     }
     const actualCost = createdRemoteOrder.total_price === undefined ? costPrice : Number(createdRemoteOrder.total_price);
     const needsReview = !validMoney(actualCost) || actualCost !== costPrice;
@@ -2759,15 +2871,15 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     const definitiveRejection = err.status >= 400 && err.status < 500 || (err.status === 200 && err.data?.success === false);
     if (intent && sourceDispatched && !definitiveRejection) {
       intent.status = 'uncertain';
-      intent.message = 'Chưa xác định nguồn đã tạo đơn hay chưa; khoản tiền vẫn được giữ để admin đối soát. Không đặt lại đơn này.';
+      intent.message = 'Chưa xác định Server Zn đã tạo đơn hay chưa; khoản tiền vẫn được giữ để quản trị viên đối soát. Không đặt lại đơn này.';
       try { await saveDb(db); } catch {}
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: intent.message });
     }
     if (intent && storageHealthy) {
-      releaseIntent(intent, 'Nguồn từ chối đơn; đã trả khoản giữ tiền.');
+      releaseIntent(intent, 'Server Zn từ chối đơn; đã trả khoản giữ tiền.');
       intent.status = 'rejected';
       intent.responseStatus = 400;
-      intent.response = { success: false, message: 'Nguồn đã từ chối đơn. Khoản giữ tiền đã được trả lại.' };
+      intent.response = { success: false, message: 'Server Zn đã từ chối đơn. Khoản giữ tiền đã được trả lại.' };
       req.needsSave = true;
       return res.status(400).json(intent.response);
     }
@@ -2929,17 +3041,17 @@ async function fetchOrderGroup(path, previous) {
       const response = await hnApiCall(path.replace('page=1&', `page=${page}&`));
       const data = response?.data;
       if (!Array.isArray(data?.data) || (data.current_page != null && Number(data.current_page) !== page)) {
-        throw new Error('Trang đơn nguồn không hợp lệ.');
+        throw new Error('Trang đơn Server Zn không hợp lệ.');
       }
       first ??= response;
       const before = rows.size;
       for (const order of data.data) if (order?.id != null) rows.set(String(order.id), order);
-      if (page > 1 && rows.size === before && data.data.length) throw new Error('Trang đơn nguồn bị lặp.');
+      if (page > 1 && rows.size === before && data.data.length) throw new Error('Trang đơn Server Zn bị lặp.');
       if (data.last_page != null ? page >= Number(data.last_page) : !data.next_page_url) break;
-      if (!data.data.length) throw new Error('Trang đơn nguồn bị thiếu.');
+      if (!data.data.length) throw new Error('Trang đơn Server Zn bị thiếu.');
     }
     if (first.data.total != null && Number(first.data.total) !== rows.size) {
-      throw new Error('Tổng số đơn nguồn thay đổi trong khi tải.');
+      throw new Error('Tổng số đơn Server Zn thay đổi trong khi tải.');
     }
     return { page: { ...first, data: { ...first.data, data: [...rows.values()] } }, partial: false };
   } catch {
@@ -3173,7 +3285,9 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           sellPrice: cost,
           placedBy: {
             id: 'usr_admin_1',
-            name: rem.creator?.name || 'HoanNguyen',
+            name: (rem.creator?.name && !/hoan\s*nguyen/i.test(String(rem.creator.name)))
+              ? sanitizeUpstreamText(String(rem.creator.name))
+              : 'Server Zn',
             role: 'admin',
           },
           status: rem.status || 'assigned',
@@ -3183,10 +3297,10 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           completedCnt: rem.completed_cnt ?? 0,
           failedCnt: rem.failed_cnt ?? 0,
           lastAssignedAt: rem.last_assigned_at || null,
-          note: rem.price_adjustment_note || rem.note || null,
+          note: sanitizeUpstreamText(rem.price_adjustment_note || rem.note || '') || null,
           weather: cat === 'weather_buff' ? weatherMeta : undefined,
           createdAt: rem.created_at || new Date().toISOString(),
-          source: 'hoannguyen_sync',
+          source: 'server_zn_sync',
         });
       }
     }
@@ -3771,9 +3885,9 @@ function emptyWeatherOrder(row) {
 
 async function findSourceWeatherOrder(id, group) {
   const list = await hnApiCall(`/api/weather-buff-orders?status_group=${group}&search=${id}&per_page=100`);
-  if (list?.success !== true || !Array.isArray(list.data?.data)) throw new Error('Chưa đọc được trạng thái đơn tại nguồn.');
+  if (list?.success !== true || !Array.isArray(list.data?.data)) throw new Error('Chưa đọc được trạng thái đơn trên Server Zn.');
   const match = list.data.data.find(o => String(o.id) === id);
-  if (!match && list.data.data.length !== Number(list.data.total)) throw new Error('Chưa xác minh hết kết quả tại nguồn.');
+  if (!match && list.data.data.length !== Number(list.data.total)) throw new Error('Chưa xác minh hết kết quả trên Server Zn.');
   return match;
 }
 
@@ -3806,7 +3920,7 @@ async function deleteEmptyWeatherOrder(req, res, order) {
   if (reconciling && !emptyWeatherOrder(row) && (row || await findSourceWeatherOrder(id, 'completed'))) {
     delete order.weatherDeletePending;
     orderCache = {};
-    return reject(409, 'Đơn vẫn tồn tại và đã thay đổi tại nguồn. Đã đóng yêu cầu xóa và giữ nguyên ví CTV.');
+    return reject(409, 'Đơn vẫn tồn tại và đã thay đổi trên Server Zn. Đã đóng yêu cầu xóa và giữ nguyên ví CTV.');
   }
   if (!reconciling || row) {
     const effectiveCreatedMs = weatherOrderCreatedMs(order, row);
@@ -3814,7 +3928,7 @@ async function deleteEmptyWeatherOrder(req, res, order) {
       return reject(409, 'Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được.');
     }
     if (!emptyWeatherOrder(row)) return reject(409, order.weatherDeletePending
-      ? 'Yêu cầu xóa cần admin kiểm tra tại nguồn để đối soát.' : 'Chỉ có thể xóa đơn chưa chạy, chưa gán khách và chưa chọn thời tiết.');
+      ? 'Yêu cầu xóa cần quản trị viên kiểm tra trên Server Zn để đối soát.' : 'Chỉ có thể xóa đơn chưa chạy, chưa gán khách và chưa chọn thời tiết.');
     if (!canRefund()) return reject(409, 'Ví hoặc đơn đã thay đổi. Vui lòng làm mới.');
     order.weatherDeletePending = true;
     await saveDb(db);
@@ -3824,9 +3938,9 @@ async function deleteEmptyWeatherOrder(req, res, order) {
     } catch (error) {
       if (error.data?.success === false && error.status < 500 && error.status !== 404) {
         delete order.weatherDeletePending;
-        return reject(409, 'Nguồn từ chối xóa đơn. Ví CTV chưa thay đổi.');
+        return reject(409, 'Server Zn từ chối xóa đơn. Ví CTV chưa thay đổi.');
       }
-      return reject(503, 'Chưa xác nhận được kết quả xóa. Vui lòng nhờ admin kiểm tra tại nguồn để đối soát ví.');
+      return reject(503, 'Chưa xác nhận được kết quả xóa. Vui lòng nhờ quản trị viên kiểm tra trên Server Zn để đối soát ví.');
     }
   }
   if (!canRefund()) return reject(409, 'Cần admin đối soát ví để ghi nhận tiền hoàn.');
@@ -3868,7 +3982,7 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
       if (r && r.success === false) {
         return res.status(400).json({
           success: false,
-          message: publicError(req, new Error(r.message || ''), 'Nguồn từ chối xóa đơn hàng này.'),
+          message: publicError(req, new Error(r.message || ''), 'Server Zn từ chối xóa đơn hàng này.'),
         });
       }
     }
@@ -3982,10 +4096,10 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
         success: true,
         mode: 'admin',
         weekStart,
-        hnSettlement: hnSettle?.data || null,
+        znSettlement: hnSettle?.data || null,
         localOrders: req.query.limit === undefined ? db.localOrders : undefined,
         transactionCount: db.transactions.length,
-        transactions: db.transactions.slice(0, listLimit(req.query.limit)),
+        transactions: db.transactions.slice(0, listLimit(req.query.limit)).map(sanitizeTransaction),
       });
     } else {
       const myOrders = db.localOrders.filter((o) => o.status !== 'cancelled' && o.placedBy?.id === user.id);
@@ -4002,7 +4116,7 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
         },
         orders: req.query.limit === undefined ? myOrders.map(order => publicOrder({ ...order, note: null }, false)) : undefined,
         transactionCount: myTrx.length,
-        transactions: myTrx.slice(0, listLimit(req.query.limit)),
+        transactions: myTrx.slice(0, listLimit(req.query.limit)).map(sanitizeTransaction),
       });
     }
   } catch (err) {
@@ -4055,7 +4169,7 @@ app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
     ctvs: ctvs.slice(0, listLimit(req.query.ctvs)),
     intents: req.query.summary === '1' ? undefined : db.orderIntents.filter(i => ['processing', 'uncertain'].includes(i.status) || i.requiresReview).slice(0, 200),
     eventCount: Math.min(50, db.auditLog.length),
-    events: db.auditLog.slice(0, Math.min(50, listLimit(req.query.events))),
+    events: db.auditLog.slice(0, Math.min(50, listLimit(req.query.events))).map(sanitizeAuditEvent),
   });
 }));
 
@@ -4144,8 +4258,8 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       trackUrl: o.weather?.trackUrl || null,
       createdAt: o.createdAt,
     })),
-    transactions: ctvTransactions.slice(0, listLimit(req.query.transactions)),
-    events: ctvEvents.slice(0, listLimit(req.query.events)),
+    transactions: ctvTransactions.slice(0, listLimit(req.query.transactions)).map(sanitizeTransaction),
+    events: ctvEvents.slice(0, listLimit(req.query.events)).map(sanitizeAuditEvent),
   });
 });
 
@@ -4153,7 +4267,7 @@ app.post('/api/admin/intents/:id/acknowledge', asyncRoute(async (req, res) => {
   const intent = db.orderIntents.find(i => i.id === req.params.id);
   const { note, confirmed } = req.body || {};
   if (!intent?.requiresReview || confirmed !== true || typeof note !== 'string' || note.trim().length < 10 || note.length > 500) {
-    return res.status(400).json({ success: false, message: 'Cần đơn có cảnh báo, ghi chú và xác nhận đã kiểm tra chi phí tại nguồn.' });
+    return res.status(400).json({ success: false, message: 'Cần đơn có cảnh báo, ghi chú và xác nhận đã kiểm tra chi phí trên Server Zn.' });
   }
   intent.requiresReview = false;
   intent.reviewNote = note.trim();
@@ -4163,7 +4277,7 @@ app.post('/api/admin/intents/:id/acknowledge', asyncRoute(async (req, res) => {
   if (order) order.requiresReview = false;
   req.auditDetails = { intentId: intent.id, note: intent.reviewNote };
   req.needsSave = true;
-  res.json({ success: true, message: 'Đã ghi nhận chi phí nguồn. Không tự điều chỉnh thêm tiền ví CTV.' });
+  res.json({ success: true, message: 'Đã ghi nhận chi phí Server Zn. Không tự điều chỉnh thêm tiền ví CTV.' });
 }));
 
 app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
@@ -4171,17 +4285,17 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
   const { resolution, note, remoteOrderId, actualCost, confirmed } = req.body || {};
   if (!intent || intent.status !== 'uncertain') return res.status(409).json({ success: false, message: 'Yêu cầu không còn chờ đối soát.' });
   if (confirmed !== true || typeof note !== 'string' || note.trim().length < 10 || note.length > 500) {
-    return res.status(400).json({ success: false, message: 'Cần xác nhận đã kiểm tra nguồn và ghi chú đối soát ít nhất 10 ký tự.' });
+    return res.status(400).json({ success: false, message: 'Cần xác nhận đã kiểm tra Server Zn và ghi chú đối soát ít nhất 10 ký tự.' });
   }
   if (resolution === 'not_created') {
-    releaseIntent(intent, `Admin xác nhận nguồn chưa tạo đơn: ${note.trim()}`);
+    releaseIntent(intent, `Quản trị viên xác nhận Server Zn chưa tạo đơn: ${note.trim()}`);
     intent.status = 'rejected';
     intent.responseStatus = 400;
-    intent.response = { success: false, message: 'Admin đã đối soát: nguồn chưa tạo đơn, khoản giữ tiền đã được trả lại.' };
+    intent.response = { success: false, message: 'Quản trị viên đã đối soát: Server Zn chưa tạo đơn, khoản giữ tiền đã được trả lại.' };
   } else if (resolution === 'created') {
     if (!Number.isSafeInteger(remoteOrderId) || remoteOrderId <= 0 || !validMoney(actualCost) ||
         db.localOrders.some(o => o.category === intent.category && Number(o.remoteOrderId) === remoteOrderId)) {
-      return res.status(400).json({ success: false, message: 'Mã đơn/chi phí nguồn không hợp lệ hoặc đơn đã được liên kết.' });
+      return res.status(400).json({ success: false, message: 'Mã đơn hoặc chi phí Server Zn không hợp lệ hoặc đơn đã được liên kết.' });
     }
     const owner = db.users.find(u => u.id === intent.userId);
     if (!owner) return res.status(409).json({ success: false, message: 'Tài khoản đặt đơn không còn tồn tại.' });
@@ -4193,7 +4307,7 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
       status: 'pending', isActive: true, createdAt: intent.createdAt, note: note.trim() };
     db.localOrders.unshift(order);
     const debit = db.transactions.find(t => t.id === intent.id);
-    if (debit) { debit.type = 'order_debit'; debit.note = `Đối soát đơn nguồn #${remoteOrderId}`; }
+    if (debit) { debit.type = 'order_debit'; debit.note = `Đối soát đơn #${remoteOrderId} trên Server Zn`; }
     intent.status = 'completed';
     intent.remoteOrderId = remoteOrderId;
     intent.response = { success: true, message: 'Đơn đã được admin đối soát.', order: publicOrder(order, owner.role === 'admin'), userBalance: owner.balance };
@@ -4220,7 +4334,7 @@ app.post('/api/admin/orders/:id/refund', asyncRoute(async (req, res) => {
   if (confirmed !== true || typeof note !== 'string' || note.trim().length < 10 || note.length > 500 ||
       !validMoney(amount, false) || !validMoney(sourceRefund) || sourceTotal > order.costPrice || sourceTotal < Number(order.sourceRefunded || 0) ||
       refundedTotal > order.sellPrice || refundedTotal > refundLimit) {
-    return res.status(400).json({ success: false, message: 'Số hoàn không được vượt phần đã đối soát nguồn, giá trị đơn hoặc số chưa hoàn; cần ghi chú và xác nhận.' });
+    return res.status(400).json({ success: false, message: 'Số hoàn không được vượt phần đã đối soát Server Zn, giá trị đơn hoặc số chưa hoàn; cần ghi chú và xác nhận.' });
   }
   const owner = db.users.find(u => u.id === order.placedBy.id);
   if (!owner || !validMoney(owner.balance + amount)) return res.status(409).json({ success: false, message: 'Số dư tài khoản nhận không hợp lệ.' });
@@ -4303,6 +4417,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       brandName: db.settings.brandName,
       maintenanceMode: isMaintenanceActive(),
       clientUpdateVersion: Number(db.settings.clientUpdateVersion || 0),
+      appVersions: getPublicAppVersions(),
       defaultMarkup: db.settings.defaultMarkup,
       defaultFruitUnitMarkup: db.settings.defaultFruitUnitMarkup ?? 40,
       categoryMarkups: db.settings.categoryMarkups,
@@ -4312,18 +4427,8 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       packageMarkupOverrides: db.settings.packageMarkupOverrides || {},
       fruitUnitPrices: db.settings.fruitUnitPrices,
       fruitMutationPrices: db.settings.fruitMutationPrices,
-      hoanNguyen: {
-        baseUrl: db.settings.hoanNguyen.baseUrl,
-        email: db.settings.hoanNguyen.email,
-        ...upstreamStatus,
-        user: db.settings.hoanNguyen.user,
-        lastLoginAt: db.settings.hoanNguyen.lastLoginAt,
-      },
-      source: {
-        email: db.settings.hoanNguyen.email,
-        ...upstreamStatus,
-        lastLoginAt: db.settings.hoanNguyen.lastLoginAt,
-      },
+      serverZn: getSafeServerZnStatus(),
+      source: getSafeServerZnStatus(),
     },
     stats: {
       totalLocalOrders,
@@ -4335,7 +4440,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       totalTransactions: db.transactions.length,
     },
     ctvs: ctvList,
-    transactions: db.transactions.slice(0, 80),
+    transactions: db.transactions.slice(0, 80).map(sanitizeTransaction),
   });
 });
 
@@ -4368,12 +4473,73 @@ app.post('/api/admin/notify-update', requireAdmin, asyncRoute(async (req, res) =
   });
 }));
 
+// Update System Version & 3-Release Changelog (ADMIN ONLY — shown to both CTV and Admin under ZnStudio)
+app.put('/api/admin/app-versions', requireAdmin, asyncRoute(async (req, res) => {
+  const rawList = req.body?.appVersions;
+  if (!Array.isArray(rawList) || rawList.length < 1 || rawList.length > 3) {
+    return res.status(400).json({
+      success: false,
+      message: 'Vui lòng nhập từ 1 đến tối đa 3 phiên bản hiển thị.',
+    });
+  }
+  const todayStr = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date());
+
+  const validated = [];
+  for (let i = 0; i < rawList.length; i++) {
+    const item = rawList[i];
+    if (!item || typeof item !== 'object') {
+      return res.status(400).json({ success: false, message: `Dữ liệu phiên bản #${i + 1} không hợp lệ.` });
+    }
+    const version = normalizeVersionCode(item.version);
+    if (!version) {
+      return res.status(400).json({
+        success: false,
+        message: `Mã phiên bản #${i + 1} phải theo định dạng vx.x.chữ (ví dụ: v2.4.auros hoặc v1.2.stable).`,
+      });
+    }
+    const date = sanitizeUpstreamText(String(item.date || '').trim()).slice(0, 40) || todayStr;
+    const rawHighlights = Array.isArray(item.highlights)
+      ? item.highlights
+      : typeof item.highlights === 'string'
+      ? item.highlights.split(/\r?\n/)
+      : [];
+    const highlights = rawHighlights
+      .map(line => sanitizeUpstreamText(String(line || '').replace(/^[-•*]\s*/, '').trim()).slice(0, 240))
+      .filter(Boolean)
+      .slice(0, 8);
+    if (!highlights.length) {
+      return res.status(400).json({
+        success: false,
+        message: `Vui lòng nhập ít nhất 1 dòng nội dung cập nhật cho phiên bản ${version}.`,
+      });
+    }
+    validated.push({ version, date, highlights });
+  }
+
+  db.settings.appVersions = validated;
+  req.auditDetails = { version: validated[0].version, count: validated.length };
+  req.needsSave = true;
+  res.json({
+    success: true,
+    currentVersion: validated[0].version,
+    appVersions: validated,
+    message: `Đã lưu phiên bản hiện tại (${validated[0].version}) và danh sách ${validated.length} phiên bản gần nhất!`,
+  });
+}));
+
 // Admin Backup Export & Import (Safe snapshot for migration / disaster recovery)
 app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
   const safeSettings = structuredClone(db.settings);
   if (safeSettings.hoanNguyen) {
+    safeSettings.hoanNguyen.baseUrl = '';
     safeSettings.hoanNguyen.password = '';
     safeSettings.hoanNguyen.token = '';
+    safeSettings.hoanNguyen.user = null;
   }
   const snapshot = {
     version: 1,
@@ -4413,6 +4579,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
       ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}),
       hoanNguyen: {
         ...(raw.settings?.hoanNguyen || {}),
+        baseUrl: currentHn.baseUrl || DEFAULT_DB.settings.hoanNguyen.baseUrl,
         email: currentHn.email || raw.settings?.hoanNguyen?.email || '',
         password: currentHn.password || '',
         token: currentHn.token || '',
@@ -4535,8 +4702,8 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
         if (label === 'categoryMarkups' && !validMoney(value)) throw new Error('Mức cộng danh mục không hợp lệ.');
       }
     }
-    if (upstreamEmail !== undefined && (typeof upstreamEmail !== 'string' || upstreamEmail.length > 254)) throw new Error('Email nguồn không hợp lệ.');
-    if (upstreamPassword !== undefined && (typeof upstreamPassword !== 'string' || upstreamPassword.length > 128)) throw new Error('Mật khẩu nguồn không hợp lệ.');
+    if (upstreamEmail !== undefined && (typeof upstreamEmail !== 'string' || upstreamEmail.length > 254)) throw new Error('Email kết nối Server Zn không hợp lệ.');
+    if (upstreamPassword !== undefined && (typeof upstreamPassword !== 'string' || upstreamPassword.length > 128)) throw new Error('Mật khẩu kết nối Server Zn không hợp lệ.');
 
     if (defaultMarkup !== undefined) {
       db.settings.defaultMarkup = Math.max(0, Number(defaultMarkup));
@@ -4663,22 +4830,18 @@ async function handleReconnectSource(req, res) {
     await fetchRawCatalogFromHoanNguyen(true);
     res.json({
       success: true,
-      message: 'Đã kết nối lại và đồng bộ dữ liệu mới nhất từ hệ thống nguồn!',
-      hoanNguyen: {
-        email: db.settings.hoanNguyen.email,
-        ...upstreamStatus,
-        user: db.settings.hoanNguyen.user,
-        lastLoginAt: db.settings.hoanNguyen.lastLoginAt,
-      },
+      message: 'Đã kết nối lại và đồng bộ dữ liệu mới nhất từ Server Zn!',
+      serverZn: getSafeServerZnStatus(),
+      source: getSafeServerZnStatus(),
     });
   } catch (err) {
     res.status(502).json({
       success: false,
-      message: publicError(req, err, 'Không thể kết nối tới hệ thống nguồn.'),
+      message: publicError(req, err, 'Không thể kết nối tới Server Zn.'),
     });
   }
 }
-app.post('/api/admin/hoannguyen/reconnect', requireAdmin, handleReconnectSource);
+app.post('/api/admin/server-zn/reconnect', requireAdmin, handleReconnectSource);
 app.post('/api/admin/source/reconnect', requireAdmin, handleReconnectSource);
 
 // Create CTV Account

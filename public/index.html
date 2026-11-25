@@ -18,9 +18,13 @@
     <form class="auth-gate-card" id="gateLoginForm">
       <div style="display:flex;align-items:center;gap:14px;">
         <img src="/logo.jpg" alt="Biểu tượng ZnStudio" class="brand-logo-img brand-logo-lg" />
-        <div>
-          <div class="brand-title" style="font-size:23px;">ZnStudio</div>
-          <div style="font-size:12px;color:var(--color-fog-veil);">Hệ thống quản lý & chạy đơn Play Together</div>
+        <div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;">
+          <div class="brand-title" style="font-size:23px;line-height:1.1;">ZnStudio</div>
+          <button type="button" class="brand-version-btn" id="btnGateVersionChangelog" title="Xem nhật ký 3 phiên bản gần nhất">
+            <span class="brand-version-dot" aria-hidden="true"></span>
+            <span id="gateVersionText">Version v2.4.auros</span>
+          </button>
+          <div style="font-size:12px;color:var(--color-fog-veil);margin-top:2px;">Hệ thống quản lý &amp; chạy đơn Play Together</div>
         </div>
       </div>
 
@@ -45,7 +49,8 @@
       <div id="gateLoginError" style="color:var(--color-ember-glow);font-size:12px;display:none;"></div>
 
       <button type="submit" class="btn-violet" id="btnGateSubmitLogin" style="width:100%;padding:11px;">
-        Đăng nhập hệ thống →
+        <span>Đăng nhập hệ thống</span>
+        <svg class="zn-icon" width="16" height="16" style="width:16px;height:16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
       </button>
 
     </form>
@@ -59,21 +64,35 @@
     <!-- Mobile Sidebar Backdrop -->
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- LEFT SIDEBAR NAVIGATION (EXACT STRUCTURE FROM SCREENSHOTS) -->
+    <!-- LEFT SIDEBAR NAVIGATION -->
     <aside class="app-sidebar" id="appSidebar">
       <div class="sidebar-brand">
-        <a href="#" class="brand-logo-wrap" id="brandHomeLink">
-          <img src="/logo.jpg" alt="Biểu tượng ZnStudio" class="brand-logo-img" />
-          <span class="brand-title">ZnStudio</span>
-        </a>
-        <span class="badge-tag violet" id="sidebarRoleBadge">CTV</span>
+        <div class="brand-identity">
+          <a href="#" class="brand-logo-link" id="brandHomeLink" aria-label="Trang chủ ZnStudio">
+            <img src="/logo.jpg" alt="Biểu tượng ZnStudio" class="brand-logo-img" />
+          </a>
+          <div class="brand-meta">
+            <div class="brand-title-row">
+              <a href="#" class="brand-title-link" id="brandTitleHomeLink">
+                <span class="brand-title">ZnStudio</span>
+              </a>
+              <span class="badge-tag violet" id="sidebarRoleBadge">CTV</span>
+            </div>
+            <button type="button" class="brand-version-btn" id="btnOpenVersionChangelog" title="Nhấn để xem 3 phiên bản cập nhật gần nhất">
+              <span class="brand-version-dot" aria-hidden="true"></span>
+              <span id="sidebarVersionText">Version v2.4.auros</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <nav class="sidebar-nav">
         <!-- Bảng điều khiển -->
         <button type="button" class="sidebar-item" data-view="dashboard">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">🏠</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
+            </span>
             <span>Bảng điều khiển</span>
           </span>
           <span class="badge-tag red" id="sidebarActiveOrdersCount">0</span>
@@ -84,7 +103,9 @@
 
         <button type="button" class="sidebar-item" data-view="farm_gift">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">🏪</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C9.8 3 12 8 12 8s2.2-5 4.5-5a2.5 2.5 0 0 1 0 5"/></svg>
+            </span>
             <span>Quà nông trại</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_farm_gift" title="Đang đồng bộ trạng thái..."></span>
@@ -92,7 +113,9 @@
 
         <button type="button" class="sidebar-item" data-view="mail_gift">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">✉️</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+            </span>
             <span>Quà thư</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_mail_gift" title="Đang đồng bộ trạng thái..."></span>
@@ -100,7 +123,9 @@
 
         <button type="button" class="sidebar-item" data-view="guestbook">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">📰</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8"/><path d="M8 13h5"/></svg>
+            </span>
             <span>Bài viết</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_guestbook" title="Đang đồng bộ trạng thái..."></span>
@@ -108,7 +133,9 @@
 
         <button type="button" class="sidebar-item" data-view="buff_tim">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">🤍</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+            </span>
             <span>Buff Tim</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_buff_tim" title="Đang đồng bộ trạng thái..."></span>
@@ -116,7 +143,9 @@
 
         <button type="button" class="sidebar-item" data-view="buff_sao">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">☆</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            </span>
             <span>Buff Sao</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_buff_sao" title="Đang đồng bộ trạng thái..."></span>
@@ -124,7 +153,9 @@
 
         <button type="button" class="sidebar-item" data-view="weather_buff">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">☁️</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+            </span>
             <span>Buff Thời Tiết</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_weather_buff" title="Đang đồng bộ trạng thái..."></span>
@@ -132,7 +163,9 @@
 
         <button type="button" class="sidebar-item is-active" data-view="fruit_coin">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">🪙</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></svg>
+            </span>
             <span>Trái cây</span>
           </span>
           <span class="sidebar-status-dot is-loading" id="dot_fruit_coin" title="Đang đồng bộ trạng thái..."></span>
@@ -140,14 +173,18 @@
 
         <button type="button" class="sidebar-item" data-view="weekly_settlements">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">💲</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg>
+            </span>
             <span>Đối soát tuần</span>
           </span>
         </button>
 
         <button type="button" class="sidebar-item" data-view="order_history">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">📄</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            </span>
             <span>Lịch sử đơn hàng</span>
           </span>
         </button>
@@ -155,10 +192,11 @@
         <!-- CÔNG CỤ -->
         <div class="sidebar-section-label">CÔNG CỤ</div>
 
-
         <button type="button" class="sidebar-item" data-view="identity_tools">
           <span class="sidebar-item-left">
-            <span class="sidebar-icon">🔎</span>
+            <span class="sidebar-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+            </span>
             <span>Trích xuất ID Game / Tên nhân vật</span>
           </span>
         </button>
@@ -167,27 +205,38 @@
         <div id="sidebarAdminSection" style="display:none;flex-direction:column;gap:4px;">
           <div class="sidebar-section-label" style="color:var(--color-lavender-phosphor);">QUẢN TRỊ ZNSTUDIO</div>
           <button type="button" class="sidebar-item" data-view="admin_monitor">
-            <span class="sidebar-item-left"><span class="sidebar-icon">🛡️</span><span>Giám sát & đối soát CTV</span></span>
+            <span class="sidebar-item-left">
+              <span class="sidebar-icon" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+              </span>
+              <span>Giám sát &amp; đối soát CTV</span>
+            </span>
           </button>
 
           <button type="button" class="sidebar-item" data-view="admin_pricing">
             <span class="sidebar-item-left">
-              <span class="sidebar-icon">🏷️</span>
+              <span class="sidebar-icon" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
+              </span>
               <span>Tùy chỉnh Giá Sản phẩm</span>
             </span>
           </button>
 
           <button type="button" class="sidebar-item" data-view="admin_ctv">
             <span class="sidebar-item-left">
-              <span class="sidebar-icon">👥</span>
+              <span class="sidebar-icon" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </span>
               <span>Quản lý Tài khoản CTV</span>
             </span>
           </button>
 
           <button type="button" class="sidebar-item" data-view="admin_system">
             <span class="sidebar-item-left">
-              <span class="sidebar-icon">⚙️</span>
-              <span>Cấu hình Nguồn API</span>
+              <span class="sidebar-icon" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+              </span>
+              <span>Cấu hình Server Zn</span>
             </span>
           </button>
         </div>
@@ -199,15 +248,17 @@
       <!-- Top Navbar -->
       <header class="top-navbar">
         <div class="navbar-heading">
-          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Mở danh mục điều hướng" aria-controls="appSidebar" aria-expanded="false">☰</button>
+          <button type="button" class="mobile-menu-btn" id="btnToggleMobileSidebar" aria-label="Mở danh mục điều hướng" aria-controls="appSidebar" aria-expanded="false">
+            <svg class="zn-icon" width="20" height="20" style="width:20px;height:20px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
           <div class="navbar-view-title" id="topNavbarViewTitle">
-            Đơn Trái cây & Xu nông trại
+            Đơn Trái cây &amp; Xu nông trại
           </div>
         </div>
 
         <div class="navbar-details">
           <button type="button" class="btn-frost navbar-reload-btn" id="btnTopReloadPage" title="Tải lại trang" aria-label="Tải lại trang">
-            <span aria-hidden="true">↻</span>
+            <svg class="zn-icon" width="14" height="14" style="width:14px;height:14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
             <span class="navbar-reload-label">Tải lại trang</span>
           </button>
 
@@ -243,7 +294,8 @@
           Thêm đơn hàng
         </h3>
         <button type="button" class="btn-frost" id="btnCloseAppModal" style="padding:5px 10px;font-size:12px;">
-          ✕ Đóng
+          <svg class="zn-icon" width="13" height="13" style="width:13px;height:13px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          <span>Đóng</span>
         </button>
       </div>
       <div id="appModalBody" style="display:flex;flex-direction:column;gap:16px;"></div>

@@ -1,12 +1,94 @@
 // ============================================================================
-// ZNPLAY — SELLER & CTV SYSTEM (AUTHKIT FROSTED GLASS + SIDEBAR MENU)
+// ZNSTUDIO — SELLER & CTV SYSTEM (AUROS ABYSSAL TERMINAL)
 // ============================================================================
 
 import { createToolViews } from './tools.js';
 
+const DEFAULT_APP_VERSIONS = [
+  {
+    version: 'v2.4.auros',
+    date: '25/11/2026',
+    highlights: [
+      'Nâng cấp giao diện Auros Abyssal Terminal và bộ biểu tượng SVG hiện đại.',
+      'Bổ sung hiển thị phiên bản hệ thống và nhật ký 3 bản cập nhật gần nhất.',
+      'Chuẩn hóa đồng bộ trạng thái đơn hàng trực tiếp trên Server Zn.',
+    ],
+  },
+  {
+    version: 'v2.3.stable',
+    date: '20/11/2026',
+    highlights: [
+      'Thêm nút xem nhanh hồ sơ khách hàng và hạn mức nhận trái cây trong ngày.',
+      'Tối ưu hiển thị hộp thoại và bảng dữ liệu mượt mà trên điện thoại.',
+    ],
+  },
+  {
+    version: 'v2.2.core',
+    date: '15/11/2026',
+    highlights: [
+      'Cập nhật tiến độ chạy đơn tự động theo danh mục đang mở.',
+      'Tăng tốc tải danh mục và bảo vệ chống gửi trùng đơn hàng.',
+    ],
+  },
+];
+
+const ZN_ICON_PATHS = {
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>',
+  gift: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C9.8 3 12 8 12 8s2.2-5 4.5-5a2.5 2.5 0 0 1 0 5"/>',
+  mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8"/><path d="M8 13h5"/>',
+  heart: '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>',
+  star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+  cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+  coins: '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>',
+  fruit: '<path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z"/><path d="M10 2c1 .5 2 2 2 5"/>',
+  wallet: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+  tag: '<path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  server: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>',
+  orders: '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6"/><path d="M9 16h6"/>',
+  layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+  zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  external: '<path d="M7 17 17 7"/><path d="M7 7h10v10"/>',
+  edit: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+  trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
+  save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  package: '<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  sparkles: '<path d="m12 3-1.91 5.81a2 2 0 0 1-1.28 1.28L3 12l5.81 1.91a2 2 0 0 1 1.28 1.28L12 21l1.91-5.81a2 2 0 0 1 1.28-1.28L21 12l-5.81-1.91a2 2 0 0 1-1.28-1.28Z"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/>',
+  git: '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+  close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+};
+
+function znIcon(name, size = 15) {
+  const path = ZN_ICON_PATHS[name] || ZN_ICON_PATHS.activity;
+  return `<svg class="zn-icon" width="${size}" height="${size}" style="width:${size}px;height:${size}px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+}
+
 const state = {
   token: sessionStorage.getItem('znplay_token') || '',
   user: null,
+  appVersions: DEFAULT_APP_VERSIONS.slice(),
   catalogData: null,
   catalogWarning: '',
   ordersWarning: '',
@@ -63,7 +145,85 @@ const state = {
 localStorage.removeItem('znplay_token');
 
 const { renderIdentityToolsHtml, bindIdentityToolsEvents, loadAdminMonitor, renderAdminMonitorHtml, bindAdminMonitorEvents } =
-  createToolViews({ state, apiFetch, pageLimit, moreButton, renderLocalPages, escapeHtml, showToast, copyTextToClipboard, formatVnd, formatDateVi, renderCurrentView, loadOrders });
+  createToolViews({ state, apiFetch, pageLimit, moreButton, renderLocalPages, escapeHtml, showToast, copyTextToClipboard, formatVnd, formatDateVi, renderCurrentView, loadOrders, znIcon });
+
+function syncAppVersionsState(list) {
+  if (Array.isArray(list) && list.length > 0) {
+    state.appVersions = list.slice(0, 3);
+  }
+  const curVer = state.appVersions?.[0]?.version || 'v2.4.auros';
+  const label = `Version ${curVer}`;
+  if (typeof document !== 'undefined') {
+    const sideEl = document.getElementById('sidebarVersionText');
+    if (sideEl) sideEl.textContent = label;
+    const gateEl = document.getElementById('gateVersionText');
+    if (gateEl) gateEl.textContent = label;
+  }
+}
+
+async function openVersionChangelogModal() {
+  const overlay = document.getElementById('appModalOverlay');
+  const box = document.getElementById('appModalBox');
+  const title = document.getElementById('appModalTitle');
+  const body = document.getElementById('appModalBody');
+  if (!overlay || !box || !title || !body) return;
+
+  box.className = 'modal-box';
+  title.textContent = 'Nhật ký cập nhật phiên bản ZnStudio';
+
+  const paintChangelog = () => {
+    const list = (state.appVersions || DEFAULT_APP_VERSIONS).slice(0, 3);
+    const isAdmin = state.user?.role === 'admin';
+    body.innerHTML = `
+      <div style="font-size:12.5px;color:var(--color-silver-mist);">
+        Tổng hợp <strong>${list.length} phiên bản gần nhất</strong> của hệ thống ZnStudio:
+      </div>
+      <div class="version-changelog-list">
+        ${list.map((item, idx) => `
+          <div class="version-release-card ${idx === 0 ? 'is-latest' : ''}">
+            <div class="version-release-head">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="version-release-code">Version ${escapeHtml(item.version)}</span>
+                ${idx === 0 ? '<span class="badge-tag green">Phiên bản hiện tại</span>' : `<span class="badge-tag">Bản trước #${idx + 1}</span>`}
+              </div>
+              ${item.date ? `<span style="font-size:11.5px;color:var(--color-silver-mist);">${escapeHtml(item.date)}</span>` : ''}
+            </div>
+            <ul class="version-release-list">
+              ${(item.highlights || []).map(h => `<li>${escapeHtml(h)}</li>`).join('')}
+            </ul>
+          </div>
+        `).join('')}
+      </div>
+      <div class="action-row align-end" style="padding-top:4px;">
+        ${isAdmin ? `<button type="button" class="btn-frost" id="btnJumpEditVersions">${znIcon('edit', 13)} <span>Chỉnh sửa phiên bản</span></button>` : ''}
+        <button type="button" class="btn-violet" id="btnCloseVersionModal">Đóng</button>
+      </div>
+    `;
+    body.querySelector('#btnCloseVersionModal')?.addEventListener('click', () => {
+      overlay.style.display = 'none';
+    });
+    body.querySelector('#btnJumpEditVersions')?.addEventListener('click', () => {
+      overlay.style.display = 'none';
+      if (state.currentView !== 'admin_ctv') {
+        switchView('admin_ctv');
+      }
+      setTimeout(() => {
+        document.getElementById('adminVersionManagerPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 120);
+    });
+  };
+
+  paintChangelog();
+  overlay.style.display = 'flex';
+
+  try {
+    const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
+    if (p?.appVersions && overlay.style.display !== 'none') {
+      syncAppVersionsState(p.appVersions);
+      paintChangelog();
+    }
+  } catch { }
+}
 
 function pageLimit(key) {
   return state.listLimits[key] || 20;
@@ -110,7 +270,7 @@ const VIEW_TITLES = {
   admin_monitor: 'Quản trị: Giám sát hoạt động & đối soát CTV',
   admin_pricing: 'Quản trị: Tùy chỉnh Giá từng Sản phẩm & Danh mục',
   admin_ctv: 'Quản trị: Quản lý Tài khoản CTV đặt đơn',
-  admin_system: 'Quản trị: Cấu hình kết nối Nguồn API',
+  admin_system: 'Quản trị: Cấu hình kết nối Server Zn',
 };
 
 const ORDER_VIEWS = [
@@ -265,13 +425,13 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
     el.innerHTML = `
       <div style="max-width:440px;width:100%;background:var(--color-liquid-kelp);border:1px solid rgba(203,255,252,0.22);border-radius:16px;padding:30px 26px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px;">
         <img src="/logo.jpg" alt="ZnStudio" class="brand-logo-img brand-logo-lg" />
-        <span class="badge-tag amber" style="font-size:12px;">🛠️ ĐANG BẢO TRÌ</span>
+        <span class="badge-tag amber" style="font-size:12px;">${znIcon('shield', 13)} <span>ĐANG BẢO TRÌ</span></span>
         <h2 id="znMaintenanceTitle" style="margin:0;color:#fff;font-size:22px;font-weight:500;letter-spacing:-0.02em;">${escapeHtml(message)}</h2>
         <p style="margin:0;color:var(--color-moon-mist);font-size:13.5px;line-height:1.6;">
           Hệ thống đang được quản trị viên bảo trì để cập nhật. Trang sẽ tự động mở lại ngay khi hoàn tất.
         </p>
         <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px;">
-          <button type="button" class="btn-violet" id="btnRetryMaintenanceCheck">↻ Kiểm tra lại</button>
+          <button type="button" class="btn-violet" id="btnRetryMaintenanceCheck">${znIcon('refresh', 14)} <span>Kiểm tra lại</span></button>
           <button type="button" class="btn-frost" id="btnLogoutFromMaintenance">Đăng xuất</button>
         </div>
       </div>
@@ -280,9 +440,10 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
     el.querySelector('#btnRetryMaintenanceCheck')?.addEventListener('click', async (ev) => {
       const b = ev.currentTarget;
       b.disabled = true;
-      b.textContent = '⏳ Đang kiểm tra...';
+      b.textContent = 'Đang kiểm tra...';
       try {
         const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
+        if (p?.appVersions) syncAppVersionsState(p.appVersions);
         if (p && !p.maintenance) {
           setCtvMaintenanceOverlay(false);
           if (handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: true })) return;
@@ -294,7 +455,7 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
       } finally {
         if (document.getElementById('znMaintenanceOverlay')) {
           b.disabled = false;
-          b.textContent = '↻ Kiểm tra lại';
+          b.innerHTML = `${znIcon('refresh', 14)} <span>Kiểm tra lại</span>`;
         }
       }
     });
@@ -325,14 +486,14 @@ function readStoredCtvUpdateVer() {
 function writeStoredCtvUpdateVer(ver) {
   try {
     localStorage.setItem(CTV_UPDATE_VER_KEY, String(Number(ver || 0)));
-  } catch {}
+  } catch { }
 }
 
 function clearStoredCtvUpdateState() {
   try {
     localStorage.removeItem(CTV_UPDATE_VER_KEY);
     localStorage.removeItem(CTV_UPDATED_NOTICE_KEY);
-  } catch {}
+  } catch { }
 }
 
 function showCtvUpdatedNotice(message = 'Zn đã tự động cập nhật phiên bản mới') {
@@ -345,12 +506,12 @@ function showCtvUpdatedNotice(message = 'Zn đã tự động cập nhật phiê
   bar.setAttribute('role', 'status');
   bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:var(--color-liquid-kelp);color:var(--color-liquid-mist);border:1px solid rgba(203,255,252,0.45);border-radius:6px;padding:10px 18px;font-size:13.5px;font-weight:500;display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);text-align:center;';
   const text = document.createElement('span');
-  text.textContent = `✓ ${message}`;
+  text.textContent = message;
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
-  closeBtn.textContent = '✕';
+  closeBtn.innerHTML = znIcon('close', 12);
   closeBtn.setAttribute('aria-label', 'Đóng thông báo');
-  closeBtn.style.cssText = 'background:rgba(255,255,255,0.18);color:#fff;border:none;border-radius:999px;width:22px;height:22px;cursor:pointer;font-size:12px;line-height:22px;padding:0;flex-shrink:0;';
+  closeBtn.style.cssText = 'background:rgba(255,255,255,0.18);color:#fff;border:none;border-radius:999px;width:22px;height:22px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;';
   closeBtn.addEventListener('click', () => bar.remove());
   bar.appendChild(text);
   bar.appendChild(closeBtn);
@@ -371,7 +532,7 @@ function showCtvUpdatedNoticeIfPending() {
       localStorage.removeItem(CTV_UPDATED_NOTICE_KEY);
       shouldShow = true;
     }
-  } catch {}
+  } catch { }
   if (shouldShow) {
     showCtvUpdatedNotice('Zn đã tự động cập nhật phiên bản mới');
   }
@@ -385,7 +546,7 @@ function triggerCtvAutoReload(nextVer) {
   try {
     localStorage.setItem(CTV_UPDATED_NOTICE_KEY, '1');
     sessionStorage.removeItem('znplay_catalog_cache');
-  } catch {}
+  } catch { }
   if (typeof window !== 'undefined' && window.location && typeof window.location.reload === 'function') {
     window.location.reload();
   }
@@ -490,7 +651,7 @@ function saveCachedCatalog(data) {
       cachedAt: Date.now(),
       data,
     }));
-  } catch {}
+  } catch { }
 }
 
 function isUserTypingOrModalOpen() {
@@ -519,6 +680,7 @@ async function initAuth() {
   if (state.token) {
     try {
       const r = await apiFetch('/api/auth/me');
+      if (r.appVersions) syncAppVersionsState(r.appVersions);
       if (r.success && r.user) {
         state.user = r.user;
         if (r.user.role === 'admin') {
@@ -550,6 +712,7 @@ async function initAuth() {
 
 async function loginWithCredentials(identifier, password) {
   const r = await apiFetch('/api/auth/login', 'POST', { identifier, password });
+  if (r.appVersions) syncAppVersionsState(r.appVersions);
   if (r.success && r.token) {
     clearAuthState();
     state.token = r.token;
@@ -575,7 +738,7 @@ async function logout() {
   updateShellAuthUI();
   try {
     await logoutRequest;
-  } catch {}
+  } catch { }
 }
 
 function updateShellAuthUI() {
@@ -597,6 +760,8 @@ function updateShellAuthUI() {
   const userBadge = document.getElementById('topUserNameBadge');
   const walletPill = document.getElementById('topWalletPill');
   const walletText = document.getElementById('topWalletText');
+
+  syncAppVersionsState(state.appVersions);
 
   if (roleBadge) {
     roleBadge.textContent = isAdmin ? 'QUẢN TRỊ' : 'CTV';
@@ -688,19 +853,19 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
     const prev = state.catalogData;
     const merged = r.partialScope && prev
       ? {
-          ...prev,
-          syncedAt: r.syncedAt || prev.syncedAt,
-          pricingVersion: r.pricingVersion ?? prev.pricingVersion,
-          systemStatus: r.systemStatus || prev.systemStatus,
-          hnSettings: r.hnSettings || prev.hnSettings,
-          coinStock: r.coinStock !== undefined ? r.coinStock : prev.coinStock,
-          coinTiers: r.coinTiers !== undefined ? r.coinTiers : prev.coinTiers,
-          mutations: r.mutations || prev.mutations,
-          catalog: {
-            ...(prev.catalog || {}),
-            ...(r.catalog || {}),
-          },
-        }
+        ...prev,
+        syncedAt: r.syncedAt || prev.syncedAt,
+        pricingVersion: r.pricingVersion ?? prev.pricingVersion,
+        systemStatus: r.systemStatus || prev.systemStatus,
+        serverSettings: r.serverSettings || prev.serverSettings,
+        coinStock: r.coinStock !== undefined ? r.coinStock : prev.coinStock,
+        coinTiers: r.coinTiers !== undefined ? r.coinTiers : prev.coinTiers,
+        mutations: r.mutations || prev.mutations,
+        catalog: {
+          ...(prev.catalog || {}),
+          ...(r.catalog || {}),
+        },
+      }
       : r;
 
     expandCompactFruitMutations(merged, prev?.mutations);
@@ -733,7 +898,7 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
     if (state.token === requestToken) {
       state.catalogWarning = err?.code === 'TIMEOUT'
         ? err.message
-        : 'Chưa đồng bộ được bảng giá nguồn. Bấm Làm mới dữ liệu để thử lại.';
+        : 'Chưa đồng bộ được bảng giá từ Server Zn. Bấm Làm mới dữ liệu để thử lại.';
     }
     return false;
   } finally {
@@ -787,7 +952,7 @@ async function loadOrders(forceRefresh = false, { live = false } = {}) {
       state.lastOrdersSig = sig;
       state.orders = nextOrders;
       state.remoteSummaries = r.remoteSummaries || {};
-      state.ordersWarning = r.partial ? 'Một phần danh sách đơn chưa đồng bộ được với nguồn.' : '';
+      state.ordersWarning = r.partial ? 'Một phần danh sách đơn chưa đồng bộ được với Server Zn.' : '';
       const activeCount = state.orderPage?.activeCount ?? state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
       const badge = document.getElementById('sidebarActiveOrdersCount');
       if (badge) badge.textContent = String(activeCount);
@@ -808,6 +973,7 @@ async function loadAdminOverview() {
     const r = await apiFetch('/api/admin/overview');
     if (r.success && state.token === requestToken && state.user?.role === 'admin') {
       state.adminOverview = r;
+      if (r.settings?.appVersions) syncAppVersionsState(r.settings.appVersions);
     }
   } catch (err) {
     console.error('Error loading admin overview:', err);
@@ -869,7 +1035,7 @@ function switchView(viewKey) {
       if (changed && state.currentView === viewKey && !isUserTypingOrModalOpen()) renderCurrentView();
     });
   }
-  if (ORDER_VIEWS.includes(viewKey) || ['order_history','dashboard'].includes(viewKey)) {
+  if (ORDER_VIEWS.includes(viewKey) || ['order_history', 'dashboard'].includes(viewKey)) {
     loadOrders().then(changed => { if (changed && state.currentView === viewKey) renderCurrentView(); });
   }
 }
@@ -888,9 +1054,9 @@ function renderCurrentView() {
   const isCtvZeroBalance = state.user.role !== 'admin' && Number(state.user.balance || 0) <= 0;
   const zeroBannerHtml = isCtvZeroBalance
     ? `
-      <div class="glass-panel" style="background:rgba(228,109,76,0.16);box-shadow:rgba(228,109,76,0.45) 0 0 0 1px inset;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div class="glass-panel" style="background:rgba(136,19,55,0.22);box-shadow:rgba(253,164,175,0.35) 0 0 0 1px inset;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
         <div>
-          <div style="font-weight:600;color:#fca5a5;font-size:14px;">⚠️ Tài khoản CTV của bạn chưa có số dư (0đ)</div>
+          <div style="font-weight:500;color:#fda4af;font-size:14px;display:flex;align-items:center;gap:7px;">${znIcon('alert', 16)} <span>Tài khoản CTV của bạn chưa có số dư (0đ)</span></div>
           <div style="font-size:12px;color:var(--color-moon-mist);margin-top:2px;">
             Bạn vẫn có thể dùng công cụ tra cứu. Để đặt đơn, cần có đủ số dư và hệ thống lưu trữ ví an toàn. Liên hệ Admin khi cần nạp ví.
           </div>
@@ -957,7 +1123,7 @@ function renderOrderCategoryPageHtml(catKey) {
       : o.category === catKey
   );
 
-  // Admin uses HoanNguyen's live summary totals when available so numbers match source 100%.
+  // Admin uses Server Zn live summary totals when available so numbers match 100%.
   const remSum = state.orderPage?.categoryStats || (state.user?.role === 'admin' ? state.remoteSummaries?.[catKey] : null);
 
   const totalOrders = remSum ? Number(remSum.total_orders ?? catOrders.length) : catOrders.length;
@@ -970,13 +1136,13 @@ function renderOrderCategoryPageHtml(catKey) {
   const activeRemainingUnits = remSum
     ? Number(remSum.active_units ?? 0)
     : catOrders
-        .filter((o) => o.status !== 'completed' && o.isActive)
-        .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
+      .filter((o) => o.status !== 'completed' && o.isActive)
+      .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
   const pausedRemainingUnits = remSum
     ? Number(remSum.inactive_units ?? 0)
     : catOrders
-        .filter((o) => o.status !== 'completed' && !o.isActive)
-        .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
+      .filter((o) => o.status !== 'completed' && !o.isActive)
+      .reduce((s, o) => s + Math.max(0, Number(o.totalCnt || 0) - Number(o.completedCnt || 0)), 0);
 
   const syncedTimeText = r?.syncedAt
     ? new Date(r.syncedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -998,15 +1164,15 @@ function renderOrderCategoryPageHtml(catKey) {
   if (catKey === 'fruit_coin') {
     footerButtonsHtml = `
       <div class="cat-footer-actions">
-        <button type="button" class="btn-frost" id="btnViewFruitWarehouse">📦 Xem kho trái cây</button>
-        <button type="button" class="btn-frost" id="btnViewCoinWarehouse">🪙 Xem kho xu</button>
-        <button type="button" class="btn-frost" id="btnViewCategoryPrices">🏷️ Xem bảng giá gói xu</button>
+        <button type="button" class="btn-frost" id="btnViewFruitWarehouse">${znIcon('package', 14)} <span>Xem kho trái cây</span></button>
+        <button type="button" class="btn-frost" id="btnViewCoinWarehouse">${znIcon('coins', 14)} <span>Xem kho xu</span></button>
+        <button type="button" class="btn-frost" id="btnViewCategoryPrices">${znIcon('tag', 14)} <span>Xem bảng giá gói xu</span></button>
       </div>
     `;
   } else if (['buff_tim', 'buff_sao', 'guestbook', 'mail_gift', 'farm_gift', 'weather_buff'].includes(catKey)) {
     footerButtonsHtml = `
       <div class="cat-footer-actions">
-        <button type="button" class="btn-frost" id="btnViewCategoryPrices">🏷️ Xem bảng giá ${escapeHtml(VIEW_TITLES[catKey])}</button>
+        <button type="button" class="btn-frost" id="btnViewCategoryPrices">${znIcon('tag', 14)} <span>Xem bảng giá ${escapeHtml(VIEW_TITLES[catKey])}</span></button>
       </div>
     `;
   }
@@ -1023,14 +1189,14 @@ function renderOrderCategoryPageHtml(catKey) {
           ${syncedTimeText ? `<span style="font-size:11px;color:var(--color-fog-veil);">Đồng bộ: ${escapeHtml(syncedTimeText)}</span>` : ''}
         </div>
         <button type="button" class="btn-frost" id="btnRefreshCatPage" style="font-size:12px;">
-          ↻ Làm mới dữ liệu
+          ${znIcon('refresh', 13)} <span>Làm mới dữ liệu</span>
         </button>
       </div>
 
       <div class="stats-three-grid">
         <div class="stat-subcard">
           <div class="stat-subcard-head">
-            <div class="stat-icon-box blue">📋</div>
+            <div class="stat-icon-box blue">${znIcon('orders', 16)}</div>
             <span>Đơn hàng</span>
           </div>
           <div class="stat-main-metric">
@@ -1040,14 +1206,14 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
           <hr class="stat-divider" />
           <div class="stat-meta-row">
-            <span><span style="color:#4ade80;">▶ Đang bật</span> <strong>${activeOrdersCount}</strong></span>
-            <span><span style="color:#f87171;">⏸ Đang tắt</span> <strong>${inactiveOrdersCount}</strong></span>
+            <span><span style="color:#5eead4;">● Đang bật</span> <strong>${activeOrdersCount}</strong></span>
+            <span><span style="color:#fda4af;">○ Đang tắt</span> <strong>${inactiveOrdersCount}</strong></span>
           </div>
         </div>
 
         <div class="stat-subcard">
           <div class="stat-subcard-head">
-            <div class="stat-icon-box amber">🎁</div>
+            <div class="stat-icon-box amber">${znIcon('layers', 16)}</div>
             <span>Tiến độ ${escapeHtml(unitName)}</span>
           </div>
           <div class="stat-main-metric">
@@ -1057,26 +1223,26 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
           <hr class="stat-divider" />
           <div class="stat-meta-row">
-            <span><span style="color:#4ade80;">↗ Đang chạy</span> <strong>${formatNum(activeRemainingUnits)}</strong></span>
-            <span><span style="color:#f87171;">⏹ Tạm dừng</span> <strong>${formatNum(pausedRemainingUnits)}</strong></span>
+            <span><span style="color:#5eead4;">↗ Đang chạy</span> <strong>${formatNum(activeRemainingUnits)}</strong></span>
+            <span><span style="color:#fda4af;">— Tạm dừng</span> <strong>${formatNum(pausedRemainingUnits)}</strong></span>
           </div>
         </div>
 
         <div class="stat-subcard">
           <div class="stat-subcard-head">
-            <div class="stat-icon-box violet">⚡</div>
+            <div class="stat-icon-box violet">${znIcon('zap', 16)}</div>
             <span>Tốc độ xử lý</span>
           </div>
           <div class="stat-meta-row">
-            <span>☁️ Tốc độ gửi:</span>
+            <span style="display:inline-flex;align-items:center;gap:5px;">${znIcon('activity', 13)} <span>Tốc độ gửi:</span></span>
             <strong style="color:#fff;">${Number(rateObj.assigned_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
           </div>
           <div class="stat-meta-row">
-            <span>✓ Thành công:</span>
-            <strong style="color:#4ade80;">${Number(rateObj.completed_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
+            <span style="display:inline-flex;align-items:center;gap:5px;">${znIcon('check', 13)} <span>Thành công:</span></span>
+            <strong style="color:#5eead4;">${Number(rateObj.completed_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
           </div>
           <div class="stat-meta-row">
-            <span>🕒 Chờ sau lỗi:</span>
+            <span style="display:inline-flex;align-items:center;gap:5px;">${znIcon('clock', 13)} <span>Chờ sau lỗi:</span></span>
             <strong style="color:#fff;">${rateObj.cooldown_second ?? 180} giây</strong>
           </div>
         </div>
@@ -1085,35 +1251,33 @@ function renderOrderCategoryPageHtml(catKey) {
       ${footerButtonsHtml}
     </div>
 
-    ${
-      catKey === 'weather_buff'
-        ? `
+    ${catKey === 'weather_buff'
+      ? `
       <div class="glass-panel" style="padding:14px 18px;border-left:3px solid var(--color-aurora-gradient);">
-        <div style="font-size:13px;font-weight:500;color:var(--color-liquid-mist);margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
+        <div style="font-size:13px;font-weight:500;color:var(--color-liquid-mist);margin-bottom:6px;display:flex;align-items:center;gap:6px;">${znIcon('info', 15)} <span>Lưu ý quy tắc Buff Thời Tiết:</span></div>
         <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--color-moon-mist);line-height:1.7;">
           <li><strong>Bước 1:</strong> Bấm <strong>+ Thêm Đơn Hàng</strong> để mua gói số lần thời tiết trước (chưa cần chọn khách khi tạo gói).</li>
-          <li><strong>Bước 2:</strong> Sau khi tạo đơn, chọn khách và ít nhất một thời tiết để chạy đơn, hoặc bấm <strong>📋 Sao chép liên kết</strong> gửi liên kết công khai cho khách tự xem & chỉnh.</li>
+          <li><strong>Bước 2:</strong> Sau khi tạo đơn, chọn khách và ít nhất một thời tiết để chạy đơn, hoặc bấm <strong>Sao chép liên kết</strong> gửi liên kết công khai cho khách tự xem &amp; chỉnh.</li>
           <li>Sau khi bật đơn vẫn đổi được khách. Khách mới nhận phần thời tiết còn lại. Phần thời tiết đã chạy xong thì không đổi được.</li>
           <li>Đơn chưa hoàn thành, <strong>tạo quá 3 tiếng thì không xóa được</strong> (chỉ hỗ trợ xóa đơn trống chưa gán khách, chưa chọn thời tiết trong vòng 3 tiếng kể từ lúc tạo).</li>
-          <li style="color:#fbbf24;font-weight:600;">Hãy cân nhắc trước khi lên đơn vì Quản trị viên chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</li>
+          <li style="color:#fde68a;font-weight:500;">Hãy cân nhắc trước khi lên đơn vì Quản trị viên chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</li>
         </ul>
       </div>
     `
-        : ''
+      : ''
     }
 
     <div class="glass-panel">
       <div class="panel-title-row">
         <div class="panel-title-left">
           <span class="panel-title-text">Quản lý đơn hàng</span>
-          ${
-            catOrders.some((o) => o.isActive && !['completed', 'cancelled', 'canceled'].includes(String(o.status || '').toLowerCase()))
-              ? `<span class="live-sync-pill" title="Tự động cập nhật tiến độ đơn đang chạy mỗi 12 giây"><span class="live-sync-dot"></span>Tự động cập nhật tiến độ</span>`
-              : ''
-          }
+          ${catOrders.some((o) => o.isActive && !['completed', 'cancelled', 'canceled'].includes(String(o.status || '').toLowerCase()))
+      ? `<span class="live-sync-pill" title="Tự động cập nhật tiến độ đơn đang chạy mỗi 12 giây"><span class="live-sync-dot"></span>Tự động cập nhật tiến độ</span>`
+      : ''
+    }
         </div>
         <button type="button" class="btn-violet" id="btnOpenAddOrderModal">
-          + Thêm Đơn Hàng
+          ${znIcon('plus', 14)} <span>Thêm Đơn Hàng</span>
         </button>
       </div>
 
@@ -1123,7 +1287,7 @@ function renderOrderCategoryPageHtml(catKey) {
             type="text"
             id="catOrderSearchInput"
             class="input-box"
-            placeholder="🔍 Tìm kiếm theo tên, SUID, mã đơn..."
+            placeholder="Tìm kiếm theo tên, SUID, mã đơn..."
             value="${escapeHtml(state.orderSearch)}"
           />
         </div>
@@ -1260,22 +1424,20 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
   const customerCellHtml = isWeather
     ? `
       <div style="display:flex;flex-direction:column;gap:4px;">
-        ${
-          wbHasCust
-            ? `<div style="font-weight:600;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
+        ${wbHasCust
+      ? `<div style="font-weight:500;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
                <div style="font-size:11px;color:var(--color-fog-veil);">#${escapeHtml(o.remoteOrderId || o.id)} · SUID: ${escapeHtml(o.customer?.suid || '—')}</div>`
-            : `<div><span class="badge-tag amber">⚠️ Chưa gán khách</span></div>
+      : `<div><span class="badge-tag amber">${znIcon('alert', 12)} <span>Chưa gán khách</span></span></div>
                <div style="font-size:11px;color:var(--color-fog-veil);">Đơn #${escapeHtml(o.remoteOrderId || o.id)}</div>`
-        }
-        ${
-          canEditWeather
-            ? `<div><button type="button" class="${wbHasCust ? 'btn-frost' : 'btn-violet'}" style="padding:3px 9px;font-size:11px;" data-weather-slot-order="${escapeHtml(o.remoteOrderId)}">${wbHasCust ? '✏️ Đổi khách' : '👤 Gán khách'}</button></div>`
-            : ''
-        }
+    }
+        ${canEditWeather
+      ? `<div><button type="button" class="${wbHasCust ? 'btn-frost' : 'btn-violet'}" style="padding:3px 9px;font-size:11px;" data-weather-slot-order="${escapeHtml(o.remoteOrderId)}">${wbHasCust ? `${znIcon('edit', 12)} <span>Đổi khách</span>` : `${znIcon('user', 12)} <span>Gán khách</span>`}</button></div>`
+      : ''
+    }
       </div>
     `
     : `
-      <div style="font-weight:600;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
+      <div style="font-weight:500;color:#fff;">${escapeHtml(o.customer?.nickname || '—')}</div>
       <div style="font-size:11px;color:var(--color-fog-veil);">
         #${escapeHtml(o.remoteOrderId || o.id)} · SUID: ${escapeHtml(o.customer?.suid || '—')}
       </div>
@@ -1284,33 +1446,31 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
   const packageCellHtml = isWeather
     ? `
       <div style="display:flex;flex-direction:column;gap:5px;">
-        ${
-          wbLines.length > 0
-            ? `<div style="display:flex;flex-wrap:wrap;gap:4px;">
+        ${wbLines.length > 0
+      ? `<div style="display:flex;flex-wrap:wrap;gap:4px;">
                 ${wbLines
-                  .map(
-                    (w) => `
+        .map(
+          (w) => `
                   <span class="badge-tag" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;">
-                    ${w.icon ? `<img src="${escapeHtml(w.icon)}" alt="" style="width:14px;height:14px;object-fit:contain;" />` : '☁️'}
+                    ${w.icon ? `<img src="${escapeHtml(w.icon)}" alt="" style="width:14px;height:14px;object-fit:contain;" />` : znIcon('cloud', 12)}
                     ${escapeHtml(w.name)}: <strong>${formatNum(w.completed_cnt || 0)}/${formatNum(w.quantity || 0)}</strong>
                   </span>
                 `
-                  )
-                  .join('')}
+        )
+        .join('')}
               </div>`
-            : `<div><span class="badge-tag amber">⚠️ Chưa chọn thời tiết</span> <span style="font-size:11px;color:var(--color-fog-veil);">(Gói ${formatNum(wbPkgQty)} lần)</span></div>`
-        }
-        ${
-          canEditWeather
-            ? `<div><button type="button" class="${wbLines.length > 0 ? 'btn-frost' : 'btn-violet'}" style="padding:3px 9px;font-size:11px;" data-weather-config-order="${escapeHtml(o.remoteOrderId)}">${wbLines.length > 0 ? '✏️ Sửa thời tiết' : '☁️ Chọn thời tiết'}</button></div>`
-            : ''
-        }
+      : `<div><span class="badge-tag amber">${znIcon('alert', 12)} <span>Chưa chọn thời tiết</span></span> <span style="font-size:11px;color:var(--color-fog-veil);">(Gói ${formatNum(wbPkgQty)} lần)</span></div>`
+    }
+        ${canEditWeather
+      ? `<div><button type="button" class="${wbLines.length > 0 ? 'btn-frost' : 'btn-violet'}" style="padding:3px 9px;font-size:11px;" data-weather-config-order="${escapeHtml(o.remoteOrderId)}">${wbLines.length > 0 ? `${znIcon('edit', 12)} <span>Sửa thời tiết</span>` : `${znIcon('cloud', 12)} <span>Chọn thời tiết</span>`}</button></div>`
+      : ''
+    }
       </div>
     `
     : `<span class="badge-tag order-summary-badge">${escapeHtml(o.summary)}</span>`;
 
   const wbTrackUrl = isWeather ? String(o.weather?.trackUrl || '') : '';
-  const eyeIconSvg = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const eyeIconSvg = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
   const eyeBtnHtml = o.remoteOrderId
     ? `<button type="button" class="btn-frost btn-eye-view" data-view-order-customer="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="Xem thông tin khách lúc lên đơn" aria-label="Xem thông tin khách lúc lên đơn">${eyeIconSvg}</button>`
     : '';
@@ -1318,52 +1478,47 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
     ? `
       <td>
         <div style="display:flex;flex-direction:column;gap:5px;min-width:146px;">
-          ${
-            o.remoteOrderId && o.status !== 'cancelled'
-              ? `
+          ${o.remoteOrderId && o.status !== 'cancelled'
+      ? `
                 <div style="display:flex;align-items:center;gap:5px;">
                   ${eyeBtnHtml}
                   <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;white-space:nowrap;" data-copy-weather-link="${escapeHtml(o.remoteOrderId)}" data-track-url="${escapeHtml(wbTrackUrl)}">
-                    📋 Sao chép liên kết
+                    ${znIcon('copy', 12)} <span>Sao chép liên kết</span>
                   </button>
-                  ${
-                    wbTrackUrl
-                      ? `<a href="${escapeHtml(wbTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="padding:5px 8px;font-size:11px;text-decoration:none;white-space:nowrap;" title="Mở liên kết theo dõi">↗</a>`
-                      : ''
-                  }
+                  ${wbTrackUrl
+        ? `<a href="${escapeHtml(wbTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="padding:5px 8px;font-size:11px;text-decoration:none;white-space:nowrap;" title="Mở liên kết theo dõi">${znIcon('external', 13)}</a>`
+        : ''
+      }
                 </div>
-                ${
-                  wbTrackUrl
-                    ? `<div style="font-size:10px;color:var(--color-fog-veil);max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(wbTrackUrl)}">${escapeHtml(wbTrackUrl.replace(/^https?:\/\//, ''))}</div>`
-                    : ''
-                }
+                ${wbTrackUrl
+        ? `<div style="font-size:10px;color:var(--color-fog-veil);max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(wbTrackUrl)}">${escapeHtml(wbTrackUrl.replace(/^https?:\/\//, ''))}</div>`
+        : ''
+      }
               `
-              : (eyeBtnHtml || '—')
-          }
-          ${
-            isAdmin && o.remoteOrderId && o.status !== 'cancelled'
-              ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fca5a5;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">${o.weatherDeletePending ? 'Đối soát xóa đơn' : 'Hủy tại nguồn'}</button></div>`
-              : o.weatherDeletePending ? '<span class="tool-note">Chờ đối soát xóa đơn</span>'
-              : Number.isFinite(o.weatherDeleteAt) ? `<div><button type="button" class="btn-frost" style="white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${o.weatherDeleteAt}" ${Number.isFinite(o.weatherDeleteUntil) ? `data-expire-at="${o.weatherDeleteUntil}"` : ''} disabled>Xóa đơn</button></div>` : ''
-          }
+      : (eyeBtnHtml || '—')
+    }
+          ${isAdmin && o.remoteOrderId && o.status !== 'cancelled'
+      ? `<div><button type="button" class="btn-frost" style="padding:3px 8px;font-size:10px;color:#fda4af;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff">${o.weatherDeletePending ? 'Đối soát xóa đơn' : 'Hủy trên Server Zn'}</button></div>`
+      : o.weatherDeletePending ? '<span class="tool-note">Chờ đối soát xóa đơn</span>'
+        : Number.isFinite(o.weatherDeleteAt) ? `<div><button type="button" class="btn-frost" style="white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="weather_buff" data-unlock-at="${o.weatherDeleteAt}" ${Number.isFinite(o.weatherDeleteUntil) ? `data-expire-at="${o.weatherDeleteUntil}"` : ''} disabled>Xóa đơn</button></div>` : ''
+    }
         </div>
       </td>
     `
     : isAdmin
-    ? `
+      ? `
       <td>
         <div class="order-row-actions">
           ${eyeBtnHtml}
-          ${
-            o.remoteOrderId && o.status !== 'cancelled'
-              ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fca5a5;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy tại nguồn</button>`
-              : ''
-          }
+          ${o.remoteOrderId && o.status !== 'cancelled'
+        ? `<button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;color:#fda4af;white-space:nowrap;" data-delete-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}">Hủy trên Server Zn</button>`
+        : ''
+      }
           ${!eyeBtnHtml && (!o.remoteOrderId || o.status === 'cancelled') ? '—' : ''}
         </div>
       </td>
     `
-    : `
+      : `
       <td>
         <div class="order-row-actions">
           ${eyeBtnHtml || '—'}
@@ -1373,17 +1528,16 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
 
   return `
     <tr>
-      <td>${customerCellHtml}${isAdmin && o.placedBy ? `<div class="tool-note">${o.source !== 'znplay' ? 'Nguồn' : o.placedBy.role === 'ctv' ? 'CTV' : 'Quản trị'} · ${escapeHtml(o.placedBy.name)}</div>` : ''}</td>
+      <td>${customerCellHtml}${isAdmin && o.placedBy ? `<div class="tool-note">${o.source && o.source !== 'znplay' ? 'Server Zn' : o.placedBy.role === 'ctv' ? 'CTV' : 'Quản trị'} · ${escapeHtml(o.placedBy.name)}</div>` : ''}</td>
       <td>${packageCellHtml}</td>
       <td style="white-space:nowrap;"><strong>${formatNum(o.totalCnt || 0)}</strong></td>
       <td style="white-space:nowrap;">
         <div style="font-weight:500;color:var(--color-lavender-phosphor);font-variant-numeric:tabular-nums;">${formatVnd(o.sellPrice)}</div>
         ${adminNote}
       </td>
-      ${
-        isWeather && !inHistory
-          ? ''
-          : `
+      ${isWeather && !inHistory
+      ? ''
+      : `
             <td>
               <div class="progress-cell" title="Đã hoàn thành ${formatNum(o.completedCnt || 0)} / ${formatNum(o.totalCnt || 0)}">
                 <span class="progress-pct ${pct >= 100 ? 'is-done' : ''}">${pct}%</span>
@@ -1391,14 +1545,13 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
               </div>
             </td>
           `
-      }
+    }
       <td>${statusBadge}</td>
       <td>
-        ${
-          o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview && !o.weatherDeletePending
-            ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" role="switch" aria-checked="${Boolean(o.isActive)}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
-            : '—'
-        }
+        ${o.remoteOrderId && !['completed', 'cancelled'].includes(o.status) && !o.requiresReview && !o.weatherDeletePending
+      ? `<button type="button" class="switch-btn ${o.isActive ? 'is-on' : ''}" role="switch" aria-checked="${Boolean(o.isActive)}" data-toggle-order="${escapeHtml(o.remoteOrderId)}" data-order-cat="${escapeHtml(o.category)}" title="${!wbReadyToRun && !o.isActive ? 'Cần gán khách và chọn thời tiết trước khi bật' : 'Bật/Tắt đơn'}"></button>`
+      : '—'
+    }
       </td>
       <td style="font-size:12px;color:var(--color-fog-veil);white-space:nowrap;">
         ${formatDateVi(o.createdAt)}
@@ -1463,7 +1616,7 @@ async function copyTextToClipboard(text) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
-    } catch {}
+    } catch { }
   }
   const ta = document.createElement('textarea');
   ta.value = text;
@@ -1472,7 +1625,7 @@ async function copyTextToClipboard(text) {
   document.body.appendChild(ta);
   ta.select();
   let ok = false;
-  try { ok = document.execCommand('copy'); } catch {}
+  try { ok = document.execCommand('copy'); } catch { }
   ta.remove();
   return ok;
 }
@@ -1523,11 +1676,11 @@ function bindOrderRowActionButtons() {
     btn.addEventListener('click', async () => {
       const remId = btn.dataset.copyWeatherLink;
       let url = String(btn.dataset.trackUrl || '').trim();
-      const origLabel = btn.textContent;
+      const origHtml = btn.innerHTML;
       btn.disabled = true;
       try {
         if (!url) {
-          btn.textContent = '⏳ Đang lấy liên kết...';
+          btn.textContent = 'Đang lấy liên kết...';
           const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/share-link`, 'POST');
           url = String(res?.url || '').trim();
           if (!url) throw new Error('Không lấy được liên kết theo dõi.');
@@ -1540,84 +1693,84 @@ function bindOrderRowActionButtons() {
         const copied = await copyTextToClipboard(url);
         if (copied) {
           showToast('Đã sao chép liên kết theo dõi thời tiết!');
-          btn.textContent = '✓ Đã sao chép';
-          setTimeout(() => { btn.textContent = origLabel; btn.disabled = false; }, 1600);
+          btn.innerHTML = `${znIcon('check', 12)} <span>Đã sao chép</span>`;
+          setTimeout(() => { btn.innerHTML = origHtml; btn.disabled = false; }, 1600);
         } else {
           window.prompt('Sao chép liên kết theo dõi thời tiết:', url);
-          btn.textContent = origLabel;
+          btn.innerHTML = origHtml;
           btn.disabled = false;
         }
       } catch (err) {
         showToast(err.message || 'Không sao chép được liên kết.');
-        btn.textContent = origLabel;
+        btn.innerHTML = origHtml;
         btn.disabled = false;
       }
     });
   });
 
   document.querySelectorAll('[data-delete-order]').forEach((btn) => {
-      const expireAt = btn.hasAttribute('data-expire-at') ? Number(btn.dataset.expireAt) : NaN;
-      const isExpired = () => Number.isFinite(expireAt) && (Date.now() + (state.orderClockOffset || 0)) >= expireAt;
-      if (btn.hasAttribute('data-unlock-at')) {
-        const tick = () => {
-          if (!btn.isConnected) return;
-          if (isExpired()) {
-            (btn.parentElement || btn).remove();
-            return;
-          }
-          const nowServer = Date.now() + (state.orderClockOffset || 0);
-          const left = Math.ceil((Number(btn.dataset.unlockAt) - nowServer) / 1000);
-          btn.disabled = left > 0;
-          btn.textContent = left > 0 ? `Xóa sau ${left} giây` : 'Xóa đơn';
-          if (left > 0) {
-            setTimeout(tick, 1000);
-          } else if (Number.isFinite(expireAt)) {
-            const msUntilExpire = expireAt - nowServer;
-            if (msUntilExpire <= 0) (btn.parentElement || btn).remove();
-            else if (msUntilExpire <= 2147483647) setTimeout(tick, Math.min(msUntilExpire + 200, 60000));
-          }
-        };
-        tick();
-      }
-      btn.addEventListener('click', async () => {
+    const expireAt = btn.hasAttribute('data-expire-at') ? Number(btn.dataset.expireAt) : NaN;
+    const isExpired = () => Number.isFinite(expireAt) && (Date.now() + (state.orderClockOffset || 0)) >= expireAt;
+    if (btn.hasAttribute('data-unlock-at')) {
+      const tick = () => {
+        if (!btn.isConnected) return;
         if (isExpired()) {
-          showToast('Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được.');
           (btn.parentElement || btn).remove();
           return;
         }
-        const remId = btn.dataset.deleteOrder;
-        const cat = btn.dataset.orderCat;
-        const ord = state.orders.find((o) => o.category === cat && String(o.remoteOrderId) === String(remId));
-        let confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn?`;
-        if (state.user?.role === 'ctv') {
-          confirmMsg = `Xóa đơn Buff Thời Tiết #${remId} và hoàn ${formatVnd(ord?.sellPrice)} vào ví của bạn?`;
-        } else if (ord?.weatherDeletePending) {
-          confirmMsg = `Đã kiểm tra tại nguồn đơn #${remId} chưa chạy và đã xóa hoặc vẫn trống? Xác nhận để hoàn ${formatVnd(ord.sellPrice)} vào ví CTV sau khi kiểm tra lại tại nguồn.`;
-        } else if (ord?.placedBy?.role === 'ctv') {
-          if (ord.status === 'completed') {
-            confirmMsg = `Xóa đơn #${remId} đã hoàn thành khỏi hệ thống? (Đơn đã giao đủ nên không hoàn tiền ví CTV.)`;
-          } else if (Number(ord.completedCnt || 0) > 0 && Number(ord.totalCnt || 0) > 0) {
-            confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn (đã chạy ${ord.completedCnt}/${ord.totalCnt})? Hệ thống sẽ xóa đơn và tự động hoàn phần chưa chạy vào ví CTV "${ord.placedBy.name}".`;
-          } else {
-            confirmMsg = `Hủy & xóa đơn #${remId} tại nguồn? Sau khi nguồn xóa thành công, đơn sẽ mất khỏi bảng và tự động hoàn lại ${formatVnd(ord.sellPrice)} vào ví CTV "${ord.placedBy.name}".`;
-          }
+        const nowServer = Date.now() + (state.orderClockOffset || 0);
+        const left = Math.ceil((Number(btn.dataset.unlockAt) - nowServer) / 1000);
+        btn.disabled = left > 0;
+        btn.textContent = left > 0 ? `Xóa sau ${left} giây` : 'Xóa đơn';
+        if (left > 0) {
+          setTimeout(tick, 1000);
+        } else if (Number.isFinite(expireAt)) {
+          const msUntilExpire = expireAt - nowServer;
+          if (msUntilExpire <= 0) (btn.parentElement || btn).remove();
+          else if (msUntilExpire <= 2147483647) setTimeout(tick, Math.min(msUntilExpire + 200, 60000));
         }
-        if (!confirm(confirmMsg)) return;
-        btn.disabled = true;
-        try {
-          const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
-            deletion_note: 'Xóa đơn từ ZnStudio',
-            confirmed_deleted: state.user?.role === 'admin' && !!ord?.weatherDeletePending,
-          });
-          showToast(res.message || 'Đã hủy & xóa đơn hàng');
-          await Promise.all([loadOrders(true), initAuth()]);
-          renderCurrentView();
-        } catch (err) {
-          showToast(`Không thể xóa: ${err.message}`);
-          await loadOrders(true);
-          renderCurrentView();
+      };
+      tick();
+    }
+    btn.addEventListener('click', async () => {
+      if (isExpired()) {
+        showToast('Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được.');
+        (btn.parentElement || btn).remove();
+        return;
+      }
+      const remId = btn.dataset.deleteOrder;
+      const cat = btn.dataset.orderCat;
+      const ord = state.orders.find((o) => o.category === cat && String(o.remoteOrderId) === String(remId));
+      let confirmMsg = `Hủy & xóa đơn #${remId} trên Server Zn?`;
+      if (state.user?.role === 'ctv') {
+        confirmMsg = `Xóa đơn Buff Thời Tiết #${remId} và hoàn ${formatVnd(ord?.sellPrice)} vào ví của bạn?`;
+      } else if (ord?.weatherDeletePending) {
+        confirmMsg = `Đã kiểm tra trên Server Zn đơn #${remId} chưa chạy và đã xóa hoặc vẫn trống? Xác nhận để hoàn ${formatVnd(ord.sellPrice)} vào ví CTV sau khi kiểm tra lại.`;
+      } else if (ord?.placedBy?.role === 'ctv') {
+        if (ord.status === 'completed') {
+          confirmMsg = `Xóa đơn #${remId} đã hoàn thành khỏi hệ thống? (Đơn đã giao đủ nên không hoàn tiền ví CTV.)`;
+        } else if (Number(ord.completedCnt || 0) > 0 && Number(ord.totalCnt || 0) > 0) {
+          confirmMsg = `Hủy & xóa đơn #${remId} trên Server Zn (đã chạy ${ord.completedCnt}/${ord.totalCnt})? Hệ thống sẽ xóa đơn và tự động hoàn phần chưa chạy vào ví CTV "${ord.placedBy.name}".`;
+        } else {
+          confirmMsg = `Hủy & xóa đơn #${remId} trên Server Zn? Sau khi xóa thành công, đơn sẽ mất khỏi bảng và tự động hoàn lại ${formatVnd(ord.sellPrice)} vào ví CTV "${ord.placedBy.name}".`;
         }
-      });
+      }
+      if (!confirm(confirmMsg)) return;
+      btn.disabled = true;
+      try {
+        const res = await apiFetch(`/api/orders/${cat}/${remId}`, 'DELETE', {
+          deletion_note: 'Xóa đơn từ ZnStudio',
+          confirmed_deleted: state.user?.role === 'admin' && !!ord?.weatherDeletePending,
+        });
+        showToast(res.message || 'Đã hủy & xóa đơn hàng');
+        await Promise.all([loadOrders(true), initAuth()]);
+        renderCurrentView();
+      } catch (err) {
+        showToast(`Không thể xóa: ${err.message}`);
+        await loadOrders(true);
+        renderCurrentView();
+      }
+    });
   });
 }
 
@@ -1672,16 +1825,14 @@ async function openOrderCustomerSnapshotModal(cat, remoteOrderId, { force = fals
     body.innerHTML = `
       <div class="customer-snapshot-card">
         <div class="snapshot-card-label">Thông tin khách lúc lên đơn</div>
-        ${
-          p
-            ? `
+        ${p
+        ? `
           <div class="snapshot-profile-head">
             <div class="snapshot-avatar-wrap">
-              ${
-                p.photoUrl
-                  ? `<img src="${escapeHtml(p.photoUrl)}" alt="${escapeHtml(displayName)}" class="snapshot-avatar-img" referrerpolicy="no-referrer" />`
-                  : ''
-              }
+              ${p.photoUrl
+          ? `<img src="${escapeHtml(p.photoUrl)}" alt="${escapeHtml(displayName)}" class="snapshot-avatar-img" referrerpolicy="no-referrer" />`
+          : ''
+        }
               <div class="snapshot-avatar-fallback" ${p.photoUrl ? 'style="display:none;"' : ''}>${avatarFallbackSvg}</div>
               <span class="snapshot-level-badge" title="Cấp độ thành tích">${formatNum(p.achievementLevel || 0)}</span>
             </div>
@@ -1695,35 +1846,34 @@ async function openOrderCustomerSnapshotModal(cat, remoteOrderId, { force = fals
           </div>
 
           <div class="snapshot-stats-row">
-            <span class="snapshot-stat-item" title="Lượt thích (Tim)"><strong>${formatNum(p.userLikes || 0)}</strong> <span aria-hidden="true">❤️</span></span>
-            <span class="snapshot-stat-item" title="Sao nhà"><strong>${formatNum(p.homeLikes || 0)}</strong> <span aria-hidden="true">⭐</span></span>
-            <span class="snapshot-stat-item" title="Lượt ghé thăm nhà"><span style="color:#a78bfa;" aria-hidden="true">👣</span> <strong>${formatNum(p.totalHomeVisitCount || 0)}</strong></span>
-            <span class="snapshot-stat-item" title="Người theo dõi"><span class="snapshot-follow-icon" aria-hidden="true">★</span> <strong>${formatNum(p.followerCount || 0)}</strong></span>
+            <span class="snapshot-stat-item" title="Lượt thích (Tim)"><span style="color:#fda4af;">${znIcon('heart', 14)}</span> <strong>${formatNum(p.userLikes || 0)}</strong></span>
+            <span class="snapshot-stat-item" title="Sao nhà"><span style="color:#fde68a;">${znIcon('star', 14)}</span> <strong>${formatNum(p.homeLikes || 0)}</strong></span>
+            <span class="snapshot-stat-item" title="Lượt ghé thăm nhà"><span style="color:var(--color-aurora-gradient);">${znIcon('home', 14)}</span> <strong>${formatNum(p.totalHomeVisitCount || 0)}</strong></span>
+            <span class="snapshot-stat-item" title="Người theo dõi"><span style="color:var(--color-lavender-phosphor);">${znIcon('users', 14)}</span> <strong>${formatNum(p.followerCount || 0)}</strong></span>
           </div>
 
           <div class="snapshot-captured-line">
             Chụp thông tin lúc: <strong>${escapeHtml(formatDateTimeSecVi(p.capturedAt || ord.createdAt))}</strong>
           </div>
         `
-            : `
+        : `
           <div class="snapshot-empty-profile">
             <div style="font-weight:600;color:#fff;">${escapeHtml(displayName)}</div>
             <div style="font-size:12.5px;color:var(--color-fog-veil);margin-top:4px;">Đơn này chưa lưu thông tin khách (đơn cũ hoặc chưa gán khách).</div>
           </div>
         `
-        }
+      }
 
-        ${
-          isFruit
-            ? `
+        ${isFruit
+        ? `
           <div class="snapshot-fruit-quota">
             <span class="snapshot-quota-label">Trái đã nhận hôm nay</span>
             ${quota ? quotaBadgeHtml : '<span class="snapshot-region-pill">Chưa có dữ liệu hôm nay</span>'}
             <span class="snapshot-quota-reset">Đặt lại lúc 07:00 giờ Việt Nam</span>
           </div>
         `
-            : ''
-        }
+        : ''
+      }
       </div>
 
       <div class="snapshot-order-meta">
@@ -1734,7 +1884,7 @@ async function openOrderCustomerSnapshotModal(cat, remoteOrderId, { force = fals
       </div>
 
       <div class="action-row align-end">
-        <button type="button" class="btn-frost" id="btnRefreshOrderSnapshot" style="font-size:12px;">↻ Cập nhật mới</button>
+        <button type="button" class="btn-frost" id="btnRefreshOrderSnapshot" style="font-size:12px;">${znIcon('refresh', 13)} <span>Cập nhật mới</span></button>
         <button type="button" class="btn-violet" id="btnCloseOrderSnapshot" style="font-size:12px;">Đóng</button>
       </div>
     `;
@@ -1793,10 +1943,10 @@ async function openOrderCustomerSnapshotModal(cat, remoteOrderId, { force = fals
     if (mySeq !== customerSnapshotModalSeq || overlay.style.display === 'none') return;
     body.innerHTML = `
       <div class="sync-loading-screen" style="padding:24px 12px;">
-        <div style="font-size:26px;">⚠️</div>
-        <div class="sync-loading-title" style="color:#fca5a5;">Chưa tải được thông tin khách hàng</div>
+        <div style="color:#fda4af;">${znIcon('alert', 28)}</div>
+        <div class="sync-loading-title" style="color:#fda4af;">Chưa tải được thông tin khách hàng</div>
         <div class="sync-loading-sub">${escapeHtml(err.message || 'Vui lòng thử lại sau ít giây.')}</div>
-        <button type="button" class="btn-violet" id="btnRetryOrderSnapshot">↻ Thử lại</button>
+        <button type="button" class="btn-violet" id="btnRetryOrderSnapshot">${znIcon('refresh', 14)} <span>Thử lại</span></button>
       </div>
     `;
     body.querySelector('#btnRetryOrderSnapshot')?.addEventListener('click', () => {
@@ -1841,10 +1991,10 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
   if (!r || state.catalogWarning) {
     body.innerHTML = `
       <div class="sync-loading-screen" style="padding:28px 16px;">
-        <div style="font-size:28px;">⚠️</div>
-        <div class="sync-loading-title" style="color:#fca5a5;">Không thể cập nhật bảng giá mới nhất từ Zn</div>
-        <div class="sync-loading-sub">${escapeHtml(state.catalogWarning || 'Hệ thống nguồn tạm thời không phản hồi. Để tránh sai giá, vui lòng thử cập nhật lại trước khi đặt đơn.')}</div>
-        <button type="button" class="btn-violet" id="btnRetryModalCatalogSync">↻ Thử cập nhật lại</button>
+        <div style="color:#fda4af;">${znIcon('alert', 30)}</div>
+        <div class="sync-loading-title" style="color:#fda4af;">Không thể cập nhật bảng giá mới nhất từ Server Zn</div>
+        <div class="sync-loading-sub">${escapeHtml(state.catalogWarning || 'Server Zn tạm thời không phản hồi. Để tránh sai giá, vui lòng thử cập nhật lại trước khi đặt đơn.')}</div>
+        <button type="button" class="btn-violet" id="btnRetryModalCatalogSync">${znIcon('refresh', 14)} <span>Thử cập nhật lại</span></button>
       </div>
     `;
     body.querySelector('#btnRetryModalCatalogSync')?.addEventListener('click', () => openCreateOrderModal(catKey, presetOptions));
@@ -1908,25 +2058,24 @@ function renderCreateOrderModalBody() {
         <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Hình thức đặt đơn Trái cây:</label>
         <div class="order-mode-options">
           <button type="button" class="btn-frost ${isByCoin ? 'is-active' : ''}" id="modalTabByCoin" style="flex:1;">
-            🪙 Gửi Xu Nông Trại (Theo Gói)
+            ${znIcon('coins', 14)} <span>Gửi Xu Nông Trại (Theo Gói)</span>
           </button>
           <button type="button" class="btn-frost ${!isByCoin ? 'is-active' : ''}" id="modalTabByFruit" style="flex:1;">
-            🍎 Gửi Trái Cây (Theo Số Lượng & Đột Biến)
+            ${znIcon('fruit', 14)} <span>Gửi Trái Cây (Theo Số Lượng &amp; Đột Biến)</span>
           </button>
         </div>
       </div>
 
-      ${
-        isByCoin
-          ? `
+      ${isByCoin
+        ? `
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn gói số lượng Xu:</label>
           <div class="pkg-picker-list">
             ${coinPkgs.slice(0, pageLimit('modalPackages'))
-              .map((p) => {
-                const isSel = Number(state.modalOrder.coin_price_package_id) === Number(p.id);
-                const tObj = p.prices_by_tier?.[state.modalOrder.min_coin_filter] || p;
-                return `
+          .map((p) => {
+            const isSel = Number(state.modalOrder.coin_price_package_id) === Number(p.id);
+            const tObj = p.prices_by_tier?.[state.modalOrder.min_coin_filter] || p;
+            return `
                   <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-coin-pkg="${p.id}">
                     <span style="display:flex;justify-content:space-between;align-items:center;">
                       <strong style="color:#fff;font-size:14px;">${formatNum(p.coin_quantity || p.quantity)} Xu</strong>
@@ -1938,39 +2087,39 @@ function renderCreateOrderModalBody() {
                     </span>
                   </button>
                 `;
-              })
-              .join('')}${moreButton('modalPackages', coinPkgs.length)}
+          })
+          .join('')}${moreButton('modalPackages', coinPkgs.length)}
           </div>
         </div>
         <div style="min-width:0;max-width:100%;">
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Lọc giá trị trái tối thiểu:</label>
           <select id="modalCoinTierSelect" class="input-box">
             ${tiers
-              .map(
-                (t) => `
+          .map(
+            (t) => `
               <option value="${t.min_coin}" ${Number(state.modalOrder.min_coin_filter) === Number(t.min_coin) ? 'selected' : ''}>
                 Trái ≥ ${formatNum(t.min_coin)} Xu ${t.markup_percent > 0 ? `(+${t.markup_percent}%)` : '(Mặc định)'} · Kho: ${formatNum(t.quantity)} Xu
               </option>
             `
-              )
-              .join('')}
+          )
+          .join('')}
           </select>
         </div>
       `
-          : `
+        : `
         <div class="fruit-order-fields">
           <div>
             <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn loại trái cây (${fruits.length} loại):</label>
             <select id="modalFruitItemSelect" class="input-box">
               ${fruits
-                .map(
-                  (f) => `
+          .map(
+            (f) => `
                 <option value="${f.id}" ${Number(f.id) === Number(curFruit?.id) ? 'selected' : ''}>
                   ${escapeHtml(f.name)} — Đơn giá: ${formatVnd(f.unit_price)}/trái (Kho: ${formatNum(f.stock_quantity)})
                 </option>
               `
-                )
-                .join('')}
+          )
+          .join('')}
             </select>
           </div>
           <div>
@@ -1991,14 +2140,13 @@ function renderCreateOrderModalBody() {
           </div>
         </div>
 
-        ${
-          state.modalOrder.fruit_variant_mode === 'specify'
-            ? `
+        ${state.modalOrder.fruit_variant_mode === 'specify'
+          ? `
           <div class="mutation-grid">
             ${availMuts
-              .map((m) => {
-                const isSel = state.modalOrder.fruit_mutation_list.includes(Number(m.mutation_key));
-                return `
+            .map((m) => {
+              const isSel = state.modalOrder.fruit_mutation_list.includes(Number(m.mutation_key));
+              return `
                   <button type="button" class="mutation-tile ${isSel ? 'is-selected' : ''}" data-modal-mut="${m.mutation_key}">
                     <span style="display:inline-flex;align-items:center;gap:6px;">
                       <span style="width:8px;height:8px;border-radius:999px;background:${m.mutation_color};"></span>
@@ -2007,11 +2155,11 @@ function renderCreateOrderModalBody() {
                     <span style="font-size:11px;color:#fbbf24;">${formatVnd(m.unit_price)}</span>
                   </button>
                 `;
-              })
-              .join('')}
+            })
+            .join('')}
           </div>
         `
-            : ''
+          : ''
         }
       `
       }
@@ -2023,18 +2171,17 @@ function renderCreateOrderModalBody() {
     categoryFormHtml = `
       <div>
         <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn gói số lượng${catKey === 'weather_buff' ? ' (Buff Thời Tiết)' : ''}:</label>
-        ${
-          pkgs.length === 0
-            ? `<div style="padding:14px;background:rgba(228,109,76,0.14);border-radius:8px;color:#fca5a5;">Hiện chưa có gói giá đang mở cho danh mục này.</div>`
-            : `
+        ${pkgs.length === 0
+        ? `<div style="padding:14px;background:rgba(228,109,76,0.14);border-radius:8px;color:#fca5a5;">Hiện chưa có gói giá đang mở cho danh mục này.</div>`
+        : `
           <div class="pkg-picker-list">
             ${pkgs.slice(0, pageLimit('modalPackages'))
-              .map((p) => {
-                const isSel = Number(state.modalOrder.price_package_id) === Number(p.id);
-                return `
+          .map((p) => {
+            const isSel = Number(state.modalOrder.price_package_id) === Number(p.id);
+            return `
                   <button type="button" aria-pressed="${isSel}" class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-std-pkg="${p.id}">
                     <span style="display:flex;justify-content:space-between;align-items:center;">
-                      <strong style="color:#fff;font-size:14px;">${catKey === 'weather_buff' ? '☁️ ' : ''}${formatNum(p.quantity)} ${unitTxt}</strong>
+                      <strong style="color:#fff;font-size:14px;">${catKey === 'weather_buff' ? `${znIcon('cloud', 14)} ` : ''}${formatNum(p.quantity)} ${unitTxt}</strong>
                       ${p.is_on_sale && p.sale ? `<span class="badge-tag amber">Còn ${p.sale.slots_remaining} suất</span>` : ''}
                     </span>
                     <span style="display:flex;align-items:baseline;gap:8px;">
@@ -2043,21 +2190,20 @@ function renderCreateOrderModalBody() {
                     </span>
                   </button>
                 `;
-              })
-              .join('')}${moreButton('modalPackages', pkgs.length)}
+          })
+          .join('')}${moreButton('modalPackages', pkgs.length)}
           </div>
         `
-        }
+      }
       </div>
-      ${
-        catKey === 'guestbook'
-          ? `
+      ${catKey === 'guestbook'
+        ? `
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Nội dung bài viết lưu bút (*):</label>
           <input type="text" id="modalGuestbookMsgInput" class="input-box" maxlength="100" value="${escapeHtml(state.modalOrder.guest_book_message)}" placeholder="Nhập lời nhắn lưu bút..." />
         </div>
       `
-          : ''
+        : ''
       }
     `;
   } else if (catKey === 'farm_gift' || catKey === 'mail_gift') {
@@ -2076,24 +2222,24 @@ function renderCreateOrderModalBody() {
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn quà tặng:</label>
           <select id="modalGiftSelect" class="input-box">
             ${gifts
-              .map(
-                (g) => `<option value="${g.id}" ${Number(g.id) === Number(curGift?.id) ? 'selected' : ''}>${escapeHtml(g.name)}</option>`
-              )
-              .join('')}
+          .map(
+            (g) => `<option value="${g.id}" ${Number(g.id) === Number(curGift?.id) ? 'selected' : ''}>${escapeHtml(g.name)}</option>`
+          )
+          .join('')}
           </select>
         </div>
         <div class="pkg-picker-list">
           ${pkgs.slice(0, pageLimit('modalPackages'))
-            .map((p) => {
-              const isSel = Number(state.modalOrder.gift_plant_id) === Number(p.id);
-              return `
+          .map((p) => {
+            const isSel = Number(state.modalOrder.gift_plant_id) === Number(p.id);
+            return `
                 <div class="pkg-picker-card ${isSel ? 'is-selected' : ''}" data-modal-gift-pkg="${p.id}">
                   <strong style="color:#fff;">Số lượng: ${formatNum(p.quantity)}</strong>
                   <span style="font-weight:700;color:#5eead4;">${formatVnd(p.total_price)}</span>
                 </div>
               `;
-            })
-            .join('')}${moreButton('modalPackages', pkgs.length)}
+          })
+          .join('')}${moreButton('modalPackages', pkgs.length)}
         </div>
       `;
     }
@@ -2106,25 +2252,24 @@ function renderCreateOrderModalBody() {
   }
 
   body.innerHTML = `
-    ${
-      !isWorking
-        ? `
-      <div style="padding:12px 14px;background:rgba(228,109,76,0.18);border-radius:8px;color:#fca5a5;font-size:13px;">
-        ⚠️ Hệ thống chạy đơn <strong>${escapeHtml(VIEW_TITLES[catKey])}</strong> hiện đang ở trạng thái <strong>Không hoạt động</strong> trên máy chủ.
+    ${!isWorking
+      ? `
+      <div style="padding:12px 14px;background:rgba(136,19,55,0.25);border-radius:8px;color:#fda4af;font-size:13px;display:flex;align-items:center;gap:8px;">
+        ${znIcon('alert', 16)} <span>Hệ thống chạy đơn <strong>${escapeHtml(VIEW_TITLES[catKey])}</strong> hiện đang ở trạng thái <strong>Không hoạt động</strong> trên Server Zn.</span>
       </div>
     `
-        : ''
+      : ''
     }
 
-    ${
-      catKey === 'weather_buff'
-        ? `
+    ${catKey === 'weather_buff'
+      ? `
       <div style="padding:11px 14px;background:var(--color-liquid-deep);border-radius:10px;border:1px solid rgba(203,255,252,0.2);color:var(--color-liquid-mist);font-size:12.5px;line-height:1.55;">
-        ☁️ <strong>Quy tắc Buff Thời Tiết:</strong> Chọn gói số lần và bấm <strong>Xác Nhận</strong> để tạo đơn trước (chưa cần chọn khách ngay lúc này). Sau khi tạo xong, bấm <strong>👤 Gán khách</strong> và <strong>☁️ Chọn thời tiết</strong> trên bảng đơn rồi bật chạy!
-        <div style="margin-top:6px;color:#fde68a;font-weight:500;">⚠️ Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được. Hãy cân nhắc trước khi lên đơn vì Admin chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">${znIcon('cloud', 15)} <strong>Quy tắc Buff Thời Tiết:</strong></div>
+        Chọn gói số lần và bấm <strong>Xác Nhận</strong> để tạo đơn trước (chưa cần chọn khách ngay lúc này). Sau khi tạo xong, bấm <strong>Gán khách</strong> và <strong>Chọn thời tiết</strong> trên bảng đơn rồi bật chạy!
+        <div style="margin-top:6px;color:#fde68a;font-weight:500;">Lưu ý: Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được. Hãy cân nhắc trước khi lên đơn vì Quản trị viên chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</div>
       </div>
     `
-        : `
+      : `
       <div style="background:var(--color-liquid-deep);padding:14px;border-radius:12px;box-shadow:var(--shadow-subtle);display:flex;flex-direction:column;gap:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
           <strong style="color:#fff;font-size:13px;">1. Chọn khách hàng Play Together</strong>
@@ -2141,37 +2286,35 @@ function renderCreateOrderModalBody() {
           </div>
         </div>
 
-        ${
-          cust
-            ? `
+        ${cust
+        ? `
           <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;background:rgba(0,130,124,0.22);padding:10px 14px;border-radius:8px;box-shadow:rgba(203,255,252,0.38) 0 0 0 1px inset;">
             <div>
-              <div style="font-weight:600;color:#fff;font-size:14px;">✓ ${escapeHtml(cust.nickname)}</div>
+              <div style="font-weight:600;color:#fff;font-size:14px;display:inline-flex;align-items:center;gap:6px;">${znIcon('check', 14)} <span>${escapeHtml(cust.nickname)}</span></div>
               <div style="font-size:11px;color:var(--color-moon-mist);">SUID: ${escapeHtml(cust.suid || '—')} ${cust.region ? `· ${escapeHtml(cust.region)}` : ''}</div>
             </div>
             <button type="button" class="btn-frost" id="btnModalClearCust" style="padding:4px 10px;font-size:11px;">Đổi khách</button>
           </div>
         `
-            : `
+        : `
           <div class="inline-search-row">
             <input
               type="text"
               id="modalCustSearchInput"
               class="input-box"
-              placeholder="${
-                state.modalOrder.customerTab === 'ingame'
-                  ? 'Nhập tên nhân vật cần tìm trong game...'
-                  : state.modalOrder.customerTab === 'roleid'
-                  ? 'Nhập mã ID nhân vật (XXXX-XXXX-XXXX)...'
-                  : 'Nhập tên hoặc SUID khách quen...'
-              }"
+              placeholder="${state.modalOrder.customerTab === 'ingame'
+          ? 'Nhập tên nhân vật cần tìm trong game...'
+          : state.modalOrder.customerTab === 'roleid'
+            ? 'Nhập mã ID nhân vật (XXXX-XXXX-XXXX)...'
+            : 'Nhập tên hoặc SUID khách quen...'
+        }"
             />
             <button type="button" class="btn-violet" id="btnModalSearchCust">Tìm</button>
           </div>
           <div id="modalCustSearchStatus" style="font-size:12px;color:var(--color-fog-veil);"></div>
           <div id="modalCustSearchResults" style="display:flex;flex-direction:column;gap:6px;max-height:190px;overflow-y:auto;overflow-x:hidden;"></div>
         `
-        }
+      }
       </div>
     `
     }
@@ -2416,7 +2559,7 @@ async function runModalCustomerSearch() {
       showToast('Vui lòng nhập tên nhân vật cần tìm.');
       return;
     }
-    statusEl.textContent = '⏳ Đang kết nối máy chủ Play Together tìm nhân vật...';
+    statusEl.textContent = 'Đang kết nối Server Zn tìm nhân vật...';
     resultsEl.innerHTML = '';
     try {
       const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
@@ -2465,7 +2608,7 @@ async function runModalCustomerSearch() {
       showToast('Vui lòng nhập mã ID nhân vật.');
       return;
     }
-    statusEl.textContent = '⏳ Đang kiểm tra mã ID nhân vật...';
+    statusEl.textContent = 'Đang kiểm tra mã ID nhân vật...';
     try {
       const r = await apiFetch('/api/customer/resolve-role-id', 'POST', { role_id: q });
       if (r.success && r.customer) {
@@ -2476,7 +2619,7 @@ async function runModalCustomerSearch() {
       statusEl.textContent = `Lỗi: ${err.message}`;
     }
   } else if (mode === 'saved') {
-    statusEl.textContent = '⏳ Đang tải danh sách khách hàng...';
+    statusEl.textContent = 'Đang tải danh sách khách hàng...';
     try {
       const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
       const list = r.customers || [];
@@ -2569,7 +2712,7 @@ async function submitModalOrder(confirmDuplicate = false) {
   payload.idempotency_key = m.requestKey;
   if (btn) {
     btn.disabled = true;
-    btn.textContent = '⏳ Đang xác thực giá & gửi đơn...';
+    btn.textContent = 'Đang xác thực giá & gửi đơn...';
   }
 
   try {
@@ -2598,19 +2741,19 @@ async function submitModalOrder(confirmDuplicate = false) {
       if (isWeather && wbUrl) {
         const title = document.getElementById('appModalTitle');
         const body = document.getElementById('appModalBody');
-        if (title) title.textContent = `✓ Đã tạo đơn Buff Thời Tiết #${r.order?.remoteOrderId || ''}`;
+        if (title) title.textContent = `Đã tạo đơn Buff Thời Tiết #${r.order?.remoteOrderId || ''}`;
         if (body) {
           body.innerHTML = `
             <div style="display:flex;flex-direction:column;gap:12px;">
               <div style="font-size:13px;color:var(--color-moon-mist);line-height:1.6;">
-                Đơn gói <strong>${formatNum(r.order?.totalCnt || 0)} lần</strong> đã tạo thành công! Gửi liên kết theo dõi bên dưới cho khách tự chọn nhân vật & thời tiết, hoặc chỉnh trực tiếp trên bảng đơn:
+                Đơn gói <strong>${formatNum(r.order?.totalCnt || 0)} lần</strong> đã tạo thành công! Gửi liên kết theo dõi bên dưới cho khách tự chọn nhân vật &amp; thời tiết, hoặc chỉnh trực tiếp trên bảng đơn:
               </div>
               <div class="inline-search-row">
                 <input type="text" class="input-box" id="createdWbLinkInput" readonly value="${escapeHtml(wbUrl)}" />
-                <button type="button" class="btn-violet" id="btnCopyCreatedWbLink" style="white-space:nowrap;">📋 Sao chép liên kết</button>
+                <button type="button" class="btn-violet" id="btnCopyCreatedWbLink" style="white-space:nowrap;">${znIcon('copy', 13)} <span>Sao chép liên kết</span></button>
               </div>
               <div class="action-row align-end">
-                <a href="${escapeHtml(wbUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="text-decoration:none;">↗ Mở liên kết</a>
+                <a href="${escapeHtml(wbUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost" style="text-decoration:none;">${znIcon('external', 13)} <span>Mở liên kết</span></a>
                 <button type="button" class="btn-violet" id="btnDoneCreatedWb">Xong</button>
               </div>
             </div>
@@ -2619,7 +2762,7 @@ async function submitModalOrder(confirmDuplicate = false) {
             const ok = await copyTextToClipboard(wbUrl);
             if (ok) {
               showToast('Đã sao chép liên kết theo dõi thời tiết!');
-              ev.currentTarget.textContent = '✓ Đã sao chép';
+              ev.currentTarget.innerHTML = `${znIcon('check', 13)} <span>Đã sao chép</span>`;
             }
           });
           body.querySelector('#btnDoneCreatedWb')?.addEventListener('click', () => {
@@ -2666,22 +2809,21 @@ function openWeatherSlotModal(order) {
   const canClear = hasCust && !order.weather?.remoteRef && !order.isActive && Number(order.completedCnt || 0) === 0;
 
   box.className = 'modal-box';
-  title.textContent = `${hasCust ? '✏️ Đổi khách hàng' : '👤 Gán khách hàng'} — Đơn Buff Thời Tiết #${remId}`;
+  title.textContent = `${hasCust ? 'Đổi khách hàng' : 'Gán khách hàng'} — Đơn Buff Thời Tiết #${remId}`;
 
   const renderSlotBody = () => {
     body.innerHTML = `
-      ${
-        hasCust
-          ? `
+      ${hasCust
+        ? `
         <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:rgba(0,130,124,0.2);border-radius:10px;border:1px solid rgba(203,255,252,0.3);">
           <div>
             <div style="font-size:11px;color:var(--color-moon-mist);">Khách hiện tại:</div>
             <div style="font-weight:600;color:#fff;">${escapeHtml(order.customer?.nickname || '—')} <span style="font-weight:400;font-size:11px;color:var(--color-fog-veil);">(SUID: ${escapeHtml(order.customer?.suid || '—')})</span></div>
           </div>
-          ${canClear ? `<button type="button" class="btn-frost" id="btnWbClearSlot" style="color:#fca5a5;font-size:11px;padding:5px 10px;">🗑️ Gỡ khách</button>` : ''}
+          ${canClear ? `<button type="button" class="btn-frost" id="btnWbClearSlot" style="color:#fca5a5;font-size:11px;padding:5px 10px;">${znIcon('trash', 12)} <span>Gỡ khách</span></button>` : ''}
         </div>
       `
-          : ''
+        : ''
       }
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button type="button" class="btn-frost ${tab === 'ingame' ? 'is-active' : ''}" data-wb-cust-tab="ingame" style="padding:5px 11px;font-size:12px;">Tìm theo Tên (Trong Game)</button>
@@ -2698,7 +2840,7 @@ function openWeatherSlotModal(order) {
 
     const assignCustomerId = async (customerId) => {
       const stEl = body.querySelector('#wbCustSearchStatus');
-      if (stEl) stEl.textContent = '⏳ Đang gán khách vào đơn Buff Thời Tiết...';
+      if (stEl) stEl.textContent = 'Đang gán khách vào đơn Buff Thời Tiết...';
       try {
         const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/slots/0`, 'PUT', {
           customer_id: Number(customerId),
@@ -2721,7 +2863,7 @@ function openWeatherSlotModal(order) {
 
       if (tab === 'ingame') {
         if (!q) { showToast('Vui lòng nhập tên nhân vật cần tìm.'); return; }
-        stEl.textContent = '⏳ Đang tìm nhân vật trong game...';
+        stEl.textContent = 'Đang tìm nhân vật trong game...';
         resEl.innerHTML = '';
         try {
           const r = await apiFetch('/api/customer/search-ingame', 'POST', { nickname: q });
@@ -2761,7 +2903,7 @@ function openWeatherSlotModal(order) {
         }
       } else if (tab === 'roleid') {
         if (!q) { showToast('Vui lòng nhập mã ID nhân vật.'); return; }
-        stEl.textContent = '⏳ Đang kiểm tra mã ID nhân vật...';
+        stEl.textContent = 'Đang kiểm tra mã ID nhân vật...';
         try {
           const r = await apiFetch('/api/customer/resolve-role-id', 'POST', { role_id: q });
           if (r.success && r.customer?.customerId) {
@@ -2771,7 +2913,7 @@ function openWeatherSlotModal(order) {
           stEl.textContent = `Lỗi: ${err.message}`;
         }
       } else if (tab === 'saved') {
-        stEl.textContent = '⏳ Đang tải danh sách khách hàng...';
+        stEl.textContent = 'Đang tải danh sách khách hàng...';
         try {
           const r = await apiFetch(`/api/customer/saved?q=${encodeURIComponent(q)}`);
           const list = r.customers || [];
@@ -2838,11 +2980,11 @@ async function openWeatherConfigModal(order) {
 
   const remId = order.remoteOrderId;
   box.className = 'modal-box';
-  title.textContent = `☁️ Chọn loại thời tiết — Đơn #${remId}`;
+  title.textContent = `Chọn loại thời tiết — Đơn #${remId}`;
   overlay.style.display = 'flex';
 
   if (!Array.isArray(state.catalogData?.catalog?.weather_buff_types) || state.catalogData.catalog.weather_buff_types.length === 0) {
-    body.innerHTML = renderSyncLoadingHtml('Đang tải danh sách thời tiết từ Zn...', 'Đang đồng bộ các loại thời tiết đang hỗ trợ.');
+    body.innerHTML = renderSyncLoadingHtml('Đang tải danh sách thời tiết từ Server Zn...', 'Đang đồng bộ các loại thời tiết đang hỗ trợ.');
     await loadCatalog(true, 'weather_buff', 6500);
     if (overlay.style.display === 'none') return;
   }
@@ -2863,7 +3005,7 @@ async function openWeatherConfigModal(order) {
     order.weather?.casting
   );
 
-  // Build draft rows following HoanNguyen's exact split rule for partially completed weather lines
+  // Build draft rows following Server Zn's split rule for partially completed weather lines
   let seq = 1;
   const draft = [];
   for (const w of (order.weather?.weathers || [])) {
@@ -2905,47 +3047,44 @@ async function openWeatherConfigModal(order) {
           <input type="number" id="wbAddQtyInput" class="input-box" min="1" max="${Math.max(1, remaining)}" value="${Math.max(1, addQty)}" />
           <button type="button" class="btn-violet" id="btnWbAddLine" ${remaining <= 0 ? 'disabled' : ''}>+ Thêm</button>
         </div>
-        ${
-          remaining > 0
-            ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${remaining > 0
+        ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
                 ${[1, 5, 10, 50].filter(n => n <= remaining).map(n => `<button type="button" class="btn-frost" style="padding:3px 9px;font-size:11px;" data-wb-quick-qty="${n}">${n} lần</button>`).join('')}
                 <button type="button" class="btn-frost" style="padding:3px 9px;font-size:11px;color:#5eead4;" data-wb-quick-qty="${remaining}">Điền hết (${formatNum(remaining)} lần)</button>
               </div>`
-            : ''
-        }
+        : ''
+      }
       </div>
 
       <div style="display:flex;flex-direction:column;gap:8px;max-height:240px;overflow-y:auto;">
-        ${
-          draft.length === 0
-            ? `<div style="text-align:center;padding:20px;color:var(--color-fog-veil);font-size:12.5px;">Chưa chọn loại thời tiết nào. Hãy chọn loại thời tiết và bấm <strong>+ Thêm</strong> ở trên.</div>`
-            : draft.map((line, idx) => `
+        ${draft.length === 0
+        ? `<div style="text-align:center;padding:20px;color:var(--color-fog-veil);font-size:12.5px;">Chưa chọn loại thời tiết nào. Hãy chọn loại thời tiết và bấm <strong>+ Thêm</strong> ở trên.</div>`
+        : draft.map((line, idx) => `
               <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;background:rgba(255,255,255,0.04);border-radius:9px;">
                 <div style="display:flex;align-items:center;gap:8px;">
-                  ${line.icon ? `<img src="${escapeHtml(line.icon)}" alt="" style="width:22px;height:22px;object-fit:contain;" />` : '<span>☁️</span>'}
+                  ${line.icon ? `<img src="${escapeHtml(line.icon)}" alt="" style="width:22px;height:22px;object-fit:contain;" />` : `<span style="color:var(--color-aurora-gradient);display:inline-flex;">${znIcon('cloud', 18)}</span>`}
                   <div>
                     <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(line.name)}</div>
                     ${line.locked ? `<div style="font-size:11px;color:#4ade80;">Đã chạy ${formatNum(line.completed_cnt)} lần (Cố định)</div>` : ''}
                   </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;">
-                  ${
-                    line.locked
-                      ? `<span class="badge-tag green">${formatNum(line.quantity)} lần</span>`
-                      : `
+                  ${line.locked
+            ? `<span class="badge-tag green">${formatNum(line.quantity)} lần</span>`
+            : `
                         <input type="number" class="input-box" style="width:82px;padding:5px 8px;text-align:center;" min="1" max="${pkgQty}" value="${line.quantity}" data-wb-line-qty="${idx}" />
-                        <button type="button" class="btn-frost" style="padding:4px 9px;font-size:11px;color:#fca5a5;" data-wb-line-del="${idx}">✕</button>
+                        <button type="button" class="btn-frost" style="padding:4px 8px;font-size:11px;color:#fca5a5;" data-wb-line-del="${idx}" aria-label="Xóa dòng">${znIcon('close', 13)}</button>
                       `
-                  }
+          }
                 </div>
               </div>
             `).join('')
-        }
+      }
       </div>
 
       <div class="action-row align-end" style="padding-top:6px;">
         <button type="button" class="btn-frost" id="btnWbCancelConfig">Hủy</button>
-        <button type="button" class="btn-violet" id="btnWbSaveConfig" ${draft.length === 0 || isOver ? 'disabled' : ''}>💾 Lưu cấu hình thời tiết</button>
+        <button type="button" class="btn-violet" id="btnWbSaveConfig" ${draft.length === 0 || isOver ? 'disabled' : ''}>${znIcon('save', 14)} <span>Lưu cấu hình thời tiết</span></button>
       </div>
     `;
 
@@ -2999,7 +3138,7 @@ async function openWeatherConfigModal(order) {
     });
     body.querySelector('#btnWbSaveConfig')?.addEventListener('click', async () => {
       const saveBtn = body.querySelector('#btnWbSaveConfig');
-      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳ Đang lưu...'; }
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Đang lưu...'; }
       try {
         const res = await apiFetch(`/api/orders/weather_buff/${encodeURIComponent(remId)}/weathers`, 'PUT', {
           weathers: draft.map(d => ({
@@ -3014,7 +3153,7 @@ async function openWeatherConfigModal(order) {
         renderCurrentView();
       } catch (err) {
         showToast(err.message);
-        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Lưu cấu hình thời tiết'; }
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = `${znIcon('save', 14)} <span>Lưu cấu hình thời tiết</span>`; }
       }
     });
   };
@@ -3033,8 +3172,8 @@ async function openFruitWarehouseModal() {
   if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box wide';
-  title.textContent = '📦 Kho Trái Cây Trực Tuyến';
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
+  title.textContent = 'Kho Trái Cây Trực Tuyến';
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Server Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_by_fruit', 6500);
@@ -3045,7 +3184,7 @@ async function openFruitWarehouseModal() {
     .sort((a, b) => b.stock_quantity - a.stock_quantity);
 
   body.innerHTML = `
-    <input type="text" id="whFruitFilterInput" class="input-box" placeholder="🔍 Tìm tên trái cây trong kho (${fruits.length} loại)..." />
+    <input type="text" id="whFruitFilterInput" class="input-box" placeholder="Tìm tên trái cây trong kho (${fruits.length} loại)..." />
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,155px),1fr));gap:10px;max-height:420px;overflow-y:auto;padding:2px;" id="whFruitGrid"></div>
   `;
 
@@ -3059,7 +3198,7 @@ async function openFruitWarehouseModal() {
           (f) => `
           <div class="pkg-picker-card" data-wh-fruit="${f.id}">
             <div style="display:flex;align-items:center;gap:10px;">
-              ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:36px;height:36px;object-fit:contain;" alt="" />` : '🍎'}
+              ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:36px;height:36px;object-fit:contain;" alt="" />` : `<span class="dashboard-cat-icon">${znIcon('fruit', 18)}</span>`}
               <div>
                 <div style="font-weight:600;color:#fff;font-size:13px;">${escapeHtml(f.name)}</div>
                 <div style="font-size:11px;color:#4ade80;">Tồn kho: ${formatNum(f.stock_quantity)}</div>
@@ -3100,8 +3239,8 @@ async function openCoinWarehouseModal() {
   if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box';
-  title.textContent = '🪙 Kho Xu Nông Trại Trực Tuyến';
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
+  title.textContent = 'Kho Xu Nông Trại Trực Tuyến';
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Server Zn...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_coin', 6500);
@@ -3128,16 +3267,16 @@ async function openCoinWarehouseModal() {
           </thead>
           <tbody>
             ${visible
-              .map(
-                (t) => `
+        .map(
+          (t) => `
               <tr>
                 <td>Trái từ <strong>${formatNum(t.min_coin)} Xu</strong> trở lên</td>
                 <td><span class="badge-tag ${t.markup_percent > 0 ? 'amber' : 'green'}">+${t.markup_percent}%</span></td>
                 <td><strong>${formatNum(t.quantity)} Xu</strong></td>
               </tr>
             `
-              )
-              .join('')}
+        )
+        .join('')}
           </tbody>
         </table>
       </div>
@@ -3153,8 +3292,8 @@ async function openCategoryPriceListModal(catKey) {
   if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box';
-  title.textContent = `🏷️ Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
-  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
+  title.textContent = `Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
+  body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Server Zn...');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, catKey, 6500);
@@ -3190,13 +3329,13 @@ function renderDashboardOverviewHtml() {
   const activeOrders = state.orderPage?.activeCount ?? state.orders.filter((o) => o.status !== 'completed' && o.isActive).length;
 
   const catCards = [
-    { key: 'farm_gift', icon: '🏪', name: 'Quà nông trại', working: st.farm_gift },
-    { key: 'mail_gift', icon: '✉️', name: 'Quà thư', working: st.mail_gift },
-    { key: 'guestbook', icon: '📰', name: 'Bài viết', working: st.guestbook },
-    { key: 'buff_tim', icon: '🤍', name: 'Buff Tim', working: st.buff_tim },
-    { key: 'buff_sao', icon: '☆', name: 'Buff Sao', working: st.buff_sao },
-    { key: 'weather_buff', icon: '☁️', name: 'Buff Thời Tiết', working: st.weather_buff },
-    { key: 'fruit_coin', icon: '🪙', name: 'Trái cây & Xu', working: st.fruit_coin },
+    { key: 'farm_gift', icon: 'gift', name: 'Quà nông trại', working: st.farm_gift },
+    { key: 'mail_gift', icon: 'mail', name: 'Quà thư', working: st.mail_gift },
+    { key: 'guestbook', icon: 'message', name: 'Bài viết', working: st.guestbook },
+    { key: 'buff_tim', icon: 'heart', name: 'Buff Tim', working: st.buff_tim },
+    { key: 'buff_sao', icon: 'star', name: 'Buff Sao', working: st.buff_sao },
+    { key: 'weather_buff', icon: 'cloud', name: 'Buff Thời Tiết', working: st.weather_buff },
+    { key: 'fruit_coin', icon: 'coins', name: 'Trái cây & Xu', working: st.fruit_coin },
   ];
 
   return `
@@ -3230,11 +3369,14 @@ function renderDashboardOverviewHtml() {
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:12px;">
         ${catCards
-          .map(
-            (c) => `
+      .map(
+        (c) => `
           <button type="button" class="stat-subcard dashboard-category" data-dash-goto="${c.key}">
-            <span style="display:flex;align-items:center;justify-content:space-between;">
-              <strong style="color:#fff;font-size:15px;">${c.icon} ${escapeHtml(c.name)}</strong>
+            <span style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <span class="dashboard-cat-title">
+                <span class="dashboard-cat-icon">${znIcon(c.icon, 16)}</span>
+                <span>${escapeHtml(c.name)}</span>
+              </span>
               <span class="system-status-chip ${c.working ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                 ● ${c.working ? 'Hoạt động' : 'Tạm ngưng'}
               </span>
@@ -3244,8 +3386,8 @@ function renderDashboardOverviewHtml() {
             </span>
           </button>
         `
-          )
-          .join('')}
+      )
+      .join('')}
       </div>
     </div>
   `;
@@ -3271,11 +3413,11 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
 
     let summaryHtml = '';
     if (isAdmin) {
-      const wl = r.hnSettlement?.weekly_limit;
-      summaryHtml = !wl ? '<p class="tool-warning">Chưa có dữ liệu hạn mức tuần từ nguồn.</p>' : `
+      const wl = (r.znSettlement || r.hnSettlement)?.weekly_limit;
+      summaryHtml = !wl ? '<p class="tool-warning">Chưa có dữ liệu hạn mức tuần từ Server Zn.</p>' : `
         <div class="stats-three-grid">
           <div class="stat-subcard">
-            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Hạn mức tuần nguồn</div>
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Hạn mức tuần Server Zn</div>
             <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-platinum);font-variant-numeric:tabular-nums;">${formatVnd(wl.limit)}</div>
           </div>
           <div class="stat-subcard">
@@ -3312,7 +3454,7 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
       ${zeroBannerHtml}
       <div class="glass-panel">
         <div class="panel-title-row">
-          <span class="panel-title-text">💲 Đối soát tuần & Biến động số dư (${escapeHtml(r.weekStart || '')})</span>
+          <span class="panel-title-text"><span class="panel-title-icon">${znIcon('wallet', 16)}</span><span>Đối soát tuần &amp; Biến động số dư (${escapeHtml(r.weekStart || '')})</span></span>
         </div>
         ${summaryHtml}
       </div>
@@ -3334,12 +3476,11 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
               </tr>
             </thead>
             <tbody>
-              ${
-                trxList.length === 0
-                  ? `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-fog-veil);">Chưa có giao dịch nào.</td></tr>`
-                  : trxList
-                      .map(
-                        (t) => `
+              ${trxList.length === 0
+        ? `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-fog-veil);">Chưa có giao dịch nào.</td></tr>`
+        : trxList
+          .map(
+            (t) => `
                     <tr>
                       <td><strong>${escapeHtml(t.id)}</strong></td>
                       <td>${escapeHtml(t.userName)}</td>
@@ -3351,9 +3492,9 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
                       <td>${formatDateVi(t.createdAt)}</td>
                     </tr>
                   `
-                      )
-                      .join('')
-              }
+          )
+          .join('')
+      }
             </tbody>
           </table>
         </div>
@@ -3371,8 +3512,8 @@ function renderOrderHistoryHtml() {
     ${state.ordersWarning ? `<p class="tool-warning" role="status">${escapeHtml(state.ordersWarning)}</p>` : ''}
     <div class="glass-panel">
       <div class="panel-title-row">
-        <span class="panel-title-text">📄 Toàn bộ Lịch sử đơn hàng (${state.orderPage?.totalCount ?? state.orders.length} đơn)</span>
-        <input type="text" id="histSearchInput" class="input-box" style="max-width:280px;" placeholder="🔍 Tìm tên khách, mã đơn, SUID..." value="${escapeHtml(state.orderSearch)}" />
+        <span class="panel-title-text"><span class="panel-title-icon">${znIcon('file', 16)}</span><span>Toàn bộ Lịch sử đơn hàng (${state.orderPage?.totalCount ?? state.orders.length} đơn)</span></span>
+        <input type="text" id="histSearchInput" class="input-box" style="max-width:280px;" placeholder="Tìm tên khách, mã đơn, SUID..." value="${escapeHtml(state.orderSearch)}" />
       </div>
       <div class="table-wrap">
         <table class="data-table">
@@ -3438,14 +3579,14 @@ function bindOrderHistoryEvents() {
 // 6. ADMIN PAGE: TÙY CHỈNH GIÁ TỪNG DANH MỤC, GÓI & SẢN PHẨM (VNĐ + %)
 // ============================================================================
 const PRICING_CATEGORIES = [
-  { key: 'fruit_coin', icon: '🪙', label: '01. Gói Xu Nông Trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
-  { key: 'fruit_by_fruit', icon: '🍎', label: '02. Trái cây lẻ & 19 Đột biến', unitHint: 'trái', isFruitUnit: true, stepFixed: 10, presetsFixed: [20, 40, 50, 100] },
-  { key: 'buff_tim', icon: '🤍', label: '03. Gói Buff Tim', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
-  { key: 'buff_sao', icon: '☆', label: '04. Gói Buff Sao', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000, 20000] },
-  { key: 'guestbook', icon: '📰', label: '05. Gói Bài viết lưu bút', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
-  { key: 'mail_gift', icon: '✉️', label: '06. Gói Quà thư', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
-  { key: 'farm_gift', icon: '🏪', label: '07. Gói Quà nông trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
-  { key: 'weather_buff', icon: '☁️', label: '08. Gói Buff Thời Tiết', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'fruit_coin', icon: 'coins', label: '01. Gói Xu Nông Trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
+  { key: 'fruit_by_fruit', icon: 'fruit', label: '02. Trái cây lẻ & 19 Đột biến', unitHint: 'trái', isFruitUnit: true, stepFixed: 10, presetsFixed: [20, 40, 50, 100] },
+  { key: 'buff_tim', icon: 'heart', label: '03. Gói Buff Tim', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
+  { key: 'buff_sao', icon: 'star', label: '04. Gói Buff Sao', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000, 20000] },
+  { key: 'guestbook', icon: 'message', label: '05. Gói Bài viết lưu bút', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'mail_gift', icon: 'mail', label: '06. Gói Quà thư', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'farm_gift', icon: 'gift', label: '07. Gói Quà nông trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'weather_buff', icon: 'cloud', label: '08. Gói Buff Thời Tiết', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
 ];
 
 function computePreviewSell(cost, mode, fixedVal, pctVal) {
@@ -3577,10 +3718,10 @@ function formatPackageRuleSubtitle(p, cm, modes, percents) {
     const label = p.customOverride.mode === 'percent'
       ? `+${p.customOverride.value}% riêng`
       : `+${formatVnd(p.customOverride.value)} riêng`;
-    return { custom: true, text: `🔒 Chỉnh riêng (${label}) · bỏ qua quy tắc chung` };
+    return { custom: true, text: `Chỉnh riêng (${label}) · bỏ qua quy tắc chung` };
   }
   if (p.hasOverride) {
-    return { custom: true, text: `🔒 Giá bán cố định riêng (${formatVnd(p.sellPrice)}) · bỏ qua quy tắc chung` };
+    return { custom: true, text: `Giá bán cố định riêng (${formatVnd(p.sellPrice)}) · bỏ qua quy tắc chung` };
   }
   const ruleText = modes[p.catKey] === 'percent'
     ? `+${percents[p.catKey] ?? 0}%`
@@ -3602,8 +3743,8 @@ function renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol =
       <td>
         <strong style="color:#fff;">${escapeHtml(p.name)}</strong>
         ${p.isOnSale ? `<span class="badge-tag amber" style="margin-left:6px;">Giảm giá</span>` : ''}
-        <div style="font-size:11px;color:${sub.custom ? '#fbbf24' : '#5eead4'};margin-top:3px;">
-          ${escapeHtml(sub.text)}
+        <div style="font-size:11px;color:${sub.custom ? '#fbbf24' : '#5eead4'};margin-top:3px;display:inline-flex;align-items:center;gap:4px;">
+          ${sub.custom ? znIcon('lock', 11) : ''}<span>${escapeHtml(sub.text)}</span>
         </div>
       </td>
       <td style="white-space:nowrap;">
@@ -3642,8 +3783,8 @@ function renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol =
       </td>
       <td>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button type="button" class="btn-violet" style="padding:5px 11px;font-size:11.5px;" data-save-pkg-row="${p.key}">✓ Lưu riêng</button>
-          ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 9px;font-size:11px;" data-reset-pkg-override="${p.key}" title="Gỡ giá riêng để chạy theo quy tắc chung của danh mục">↺ Quy tắc chung</button>` : ''}
+          <button type="button" class="btn-violet" style="padding:5px 11px;font-size:11.5px;" data-save-pkg-row="${p.key}">${znIcon('check', 12)} <span>Lưu riêng</span></button>
+          ${p.hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 9px;font-size:11px;" data-reset-pkg-override="${p.key}" title="Gỡ giá riêng để chạy theo quy tắc chung của danh mục">${znIcon('refresh', 11)} <span>Quy tắc chung</span></button>` : ''}
         </div>
       </td>
     </tr>
@@ -3687,15 +3828,15 @@ function renderAdminPricingPageHtml() {
     <div class="glass-panel">
       <div class="panel-title-row">
         <div>
-          <span class="panel-title-text">🏷️ Tùy chỉnh Giá bán CTV cho từng Danh mục & Sản phẩm</span>
+          <span class="panel-title-text"><span class="panel-title-icon">${znIcon('tag', 16)}</span><span>Tùy chỉnh Giá bán CTV cho từng Danh mục &amp; Sản phẩm</span></span>
           <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
-            Đồng bộ nguồn API lúc <strong style="color:#5eead4;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
+            Đồng bộ Server Zn lúc <strong style="color:#5eead4;">${escapeHtml(syncedText)}</strong> · Hỗ trợ chỉnh <strong>+VNĐ (thủ công)</strong> hoặc <strong>+% (phần trăm)</strong> cho từng danh mục và từng gói riêng lẻ.
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button type="button" class="btn-frost" id="btnRefreshAdminPricing">↻ Làm mới giá nguồn</button>
+          <button type="button" class="btn-frost" id="btnRefreshAdminPricing">${znIcon('refresh', 13)} <span>Làm mới giá Server Zn</span></button>
           <button type="button" class="btn-violet" id="btnSaveAllAdminPricing">
-            💾 Cập nhật tất cả thay đổi
+            ${znIcon('save', 14)} <span>Cập nhật tất cả thay đổi</span>
           </button>
         </div>
       </div>
@@ -3703,37 +3844,36 @@ function renderAdminPricingPageHtml() {
       <!-- Sub-navigation tabs -->
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
         <button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
-          ⚙️ 1. Chỉnh giá từng Danh mục (VNĐ / %) — 8 danh mục
+          ${znIcon('sliders', 14)} <span>1. Chỉnh giá từng Danh mục (VNĐ / %) — 8 danh mục</span>
         </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'packages' ? 'is-active' : ''}" data-adm-ptab="packages">
-          📦 2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)
+          ${znIcon('package', 14)} <span>2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)</span>
         </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'fruits' ? 'is-active' : ''}" data-adm-ptab="fruits">
-          🍎 3. Chỉnh từng loại Trái cây & 19 Đột biến (${fruits.length} loại)
+          ${znIcon('fruit', 14)} <span>3. Chỉnh từng loại Trái cây &amp; 19 Đột biến (${fruits.length} loại)</span>
         </button>
       </div>
 
-      ${
-        state.adminPricingTab === 'categories'
-          ? `
+      ${state.adminPricingTab === 'categories'
+      ? `
         <div class="pricing-cat-grid">
           ${PRICING_CATEGORIES.map((cat) => {
-            const mode = modes[cat.key] === 'percent' ? 'percent' : 'fixed';
-            const fixedVal = cat.isFruitUnit ? defaultFruitMarkup : Number(cm[cat.key] ?? 5000);
-            const pctVal = Number(percents[cat.key] ?? 0);
-            const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
-            const isWorking = !!sysStatus[cat.key];
-            const overrideCount = countCategoryOverrides(cat.key, adm);
-            const catPkgCount = cat.isFruitUnit ? fruits.length : (pkgCatCounts[cat.key] || 0);
-            const showPerPkgBtn = !cat.isFruitUnit && (FEATURED_PER_PKG_CATS.has(cat.key) || catPkgCount > 0);
-            const sample = getCategorySampleItem(cat.key, r?.catalog);
-            const sampleSell = sample ? computePreviewSell(sample.cost, mode, fixedVal, pctVal) : 0;
-            const sampleProfit = sample ? sampleSell - sample.cost : 0;
+        const mode = modes[cat.key] === 'percent' ? 'percent' : 'fixed';
+        const fixedVal = cat.isFruitUnit ? defaultFruitMarkup : Number(cm[cat.key] ?? 5000);
+        const pctVal = Number(percents[cat.key] ?? 0);
+        const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
+        const isWorking = !!sysStatus[cat.key];
+        const overrideCount = countCategoryOverrides(cat.key, adm);
+        const catPkgCount = cat.isFruitUnit ? fruits.length : (pkgCatCounts[cat.key] || 0);
+        const showPerPkgBtn = !cat.isFruitUnit && (FEATURED_PER_PKG_CATS.has(cat.key) || catPkgCount > 0);
+        const sample = getCategorySampleItem(cat.key, r?.catalog);
+        const sampleSell = sample ? computePreviewSell(sample.cost, mode, fixedVal, pctVal) : 0;
+        const sampleProfit = sample ? sampleSell - sample.cost : 0;
 
-            return `
+        return `
               <div class="pricing-cat-card" data-cat-card="${cat.key}">
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-                  <strong style="color:#fff;font-size:14px;">${cat.icon} ${escapeHtml(cat.label)}</strong>
+                  <strong style="color:#fff;font-size:14px;display:inline-flex;align-items:center;gap:8px;"><span class="dashboard-cat-icon" style="width:28px;height:28px;">${znIcon(cat.icon, 14)}</span><span>${escapeHtml(cat.label)}</span></strong>
                   <span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                     ● ${isWorking ? 'Hoạt động' : 'Tạm ngưng'}
                   </span>
@@ -3744,7 +3884,7 @@ function renderAdminPricingPageHtml() {
                     <button type="button" class="pricing-mode-btn ${mode === 'fixed' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="fixed">+VNĐ thủ công</button>
                     <button type="button" class="pricing-mode-btn ${mode === 'percent' ? 'is-active' : ''}" data-cat-mode-btn="${cat.key}" data-mode="percent">+% Phần trăm</button>
                   </div>
-                  ${overrideCount > 0 ? `<span class="badge-tag amber">🔒 ${overrideCount} gói chỉnh riêng</span>` : `<span class="badge-tag green">Tự động</span>`}
+                  ${overrideCount > 0 ? `<span class="badge-tag amber" style="display:inline-flex;align-items:center;gap:4px;">${znIcon('lock', 11)} <span>${overrideCount} gói chỉnh riêng</span></span>` : `<span class="badge-tag green">Tự động</span>`}
                 </div>
 
                 <div data-cat-fixed-wrap="${cat.key}" style="display:${mode === 'fixed' ? 'flex' : 'none'};flex-direction:column;gap:8px;">
@@ -3767,82 +3907,78 @@ function renderAdminPricingPageHtml() {
                   </div>
                 </div>
 
-                ${
-                  cat.isFruitUnit
-                    ? `
+                ${cat.isFruitUnit
+            ? `
                   <div style="display:flex;align-items:center;gap:8px;padding-top:4px;border-top:1px solid rgba(186,215,247,0.08);">
                     <label style="font-size:11.5px;color:var(--color-fog-veil);white-space:nowrap;" for="admCatFruitOrderFee">Phí cố định / đơn:</label>
                     <input type="number" id="admCatFruitOrderFee" class="input-box" style="max-width:120px;padding:6px 10px;" value="${orderFeeVal}" step="1000" min="0" />
                     <span style="font-size:11.5px;color:var(--color-fog-veil);">đ</span>
                   </div>
                 `
-                    : ''
-                }
+            : ''
+          }
 
                 <div class="pricing-preview-line" id="admCatPreview_${cat.key}" data-sample-name="${escapeHtml(sample?.name || '')}" data-sample-cost="${sample?.cost || 0}">
-                  ${
-                    sample
-                      ? `VD: <strong>${escapeHtml(sample.name)}</strong> · gốc ${formatVnd(sample.cost)} → bán CTV <strong style="color:#5eead4;">${formatVnd(sampleSell)}</strong> <span style="color:#4ade80;">(+${formatVnd(sampleProfit)})</span>`
-                      : `Hiện nguồn chưa mở gói mẫu cho danh mục này; mức cộng sẽ tự áp dụng ngay khi nguồn mở bán.`
-                  }
+                  ${sample
+            ? `VD: <strong>${escapeHtml(sample.name)}</strong> · gốc ${formatVnd(sample.cost)} → bán CTV <strong style="color:#5eead4;">${formatVnd(sampleSell)}</strong> <span style="color:#4ade80;">(+${formatVnd(sampleProfit)})</span>`
+            : `Hiện Server Zn chưa mở gói mẫu cho danh mục này; mức cộng sẽ tự áp dụng ngay khi mở bán.`
+          }
                 </div>
 
-                ${
-                  showPerPkgBtn
-                    ? `
+                ${showPerPkgBtn
+            ? `
                   <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding-top:2px;">
                     <button type="button" class="btn-frost pricing-cat-subpkg-btn" data-open-cat-pkgs="${cat.key}" style="width:100%;justify-content:space-between;">
-                      <span>📦 Chỉnh từng gói riêng (${catPkgCount} gói)</span>
+                      <span style="display:inline-flex;align-items:center;gap:6px;">${znIcon('package', 14)} <span>Chỉnh từng gói riêng (${catPkgCount} gói)</span></span>
                       <span style="font-size:11px;color:${overrideCount > 0 ? '#fde68a' : 'var(--color-aurora-gradient)'};">${overrideCount > 0 ? `${overrideCount} đã chỉnh riêng →` : 'Mở danh sách →'}</span>
                     </button>
                   </div>
                 `
-                    : ''
-                }
+            : ''
+          }
 
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;padding-top:6px;border-top:1px solid rgba(186,215,247,0.08);flex-wrap:wrap;">
-                  ${
-                    overrideCount > 0
-                      ? `<span style="font-size:11.5px;color:#fbbf24;" title="Khi bấm Cập nhật quy tắc chung, các gói đã chỉnh riêng vẫn giữ nguyên giá riêng">🔒 Giữ nguyên ${overrideCount} gói chỉnh riêng</span>`
-                      : `<span style="font-size:11px;color:var(--color-fog-veil);">Áp dụng chung toàn danh mục</span>`
-                  }
+                  ${overrideCount > 0
+            ? `<span style="font-size:11.5px;color:#fbbf24;display:inline-flex;align-items:center;gap:4px;" title="Khi bấm Cập nhật quy tắc chung, các gói đã chỉnh riêng vẫn giữ nguyên giá riêng">${znIcon('lock', 12)} <span>Giữ nguyên ${overrideCount} gói chỉnh riêng</span></span>`
+            : `<span style="font-size:11px;color:var(--color-fog-veil);">Áp dụng chung toàn danh mục</span>`
+          }
                   <div style="display:flex;gap:6px;align-items:center;">
-                    ${overrideCount > 0 ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-cat-overrides="${cat.key}">↺ Gỡ giá riêng</button>` : ''}
+                    ${overrideCount > 0 ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-cat-overrides="${cat.key}">${znIcon('refresh', 11)} <span>Gỡ giá riêng</span></button>` : ''}
                     <button type="button" class="btn-violet" style="padding:6px 14px;font-size:12px;" data-save-single-cat="${cat.key}" data-override-count="${overrideCount}">
-                      ✓ Cập nhật
+                      ${znIcon('check', 13)} <span>Cập nhật</span>
                     </button>
                   </div>
                 </div>
               </div>
             `;
-          }).join('')}
+      }).join('')}
         </div>
 
         <div style="display:flex;justify-content:flex-end;margin-top:16px;">
-          <button type="button" class="btn-violet" id="btnSaveAllCatsBottom">💾 Cập nhật tất cả 8 danh mục</button>
+          <button type="button" class="btn-violet" id="btnSaveAllCatsBottom">${znIcon('save', 14)} <span>Cập nhật tất cả 8 danh mục</span></button>
         </div>
       `
-          : state.adminPricingTab === 'packages'
-          ? `
+      : state.adminPricingTab === 'packages'
+        ? `
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
           ${[
-            ['all', 'Tất cả'],
-            ['fruit_coin', '🪙 Xu Nông Trại'],
-            ['buff_tim', '🤍 Buff Tim'],
-            ['buff_sao', '☆ Buff Sao'],
-            ['guestbook', '📰 Bài Viết'],
-            ['weather_buff', '☁️ Buff Thời Tiết'],
-            ['farm_gift', '🏪 Quà nông trại'],
-            ['mail_gift', '✉️ Quà thư'],
-          ]
-            .map(
-              ([k, label]) => `
+          ['all', null, 'Tất cả'],
+          ['fruit_coin', 'coins', 'Xu Nông Trại'],
+          ['buff_tim', 'heart', 'Buff Tim'],
+          ['buff_sao', 'star', 'Buff Sao'],
+          ['guestbook', 'message', 'Bài Viết'],
+          ['weather_buff', 'cloud', 'Buff Thời Tiết'],
+          ['farm_gift', 'gift', 'Quà nông trại'],
+          ['mail_gift', 'mail', 'Quà thư'],
+        ]
+          .map(
+            ([k, iconKey, label]) => `
             <button type="button" class="btn-frost ${state.adminPkgCatFilter === k ? 'is-active' : ''}" style="padding:6px 12px;font-size:12px;" data-adm-pkg-filter="${k}">
-              ${label} (${pkgCatCounts[k] || 0})
+              ${iconKey ? `${znIcon(iconKey, 13)} ` : ''}<span>${label} (${pkgCatCounts[k] || 0})</span>
             </button>
           `
-            )
-            .join('')}
+          )
+          .join('')}
         </div>
 
         <div class="table-wrap">
@@ -3851,26 +3987,25 @@ function renderAdminPricingPageHtml() {
               <tr>
                 <th>DANH MỤC</th>
                 <th>TÊN GÓI DỊCH VỤ</th>
-                <th>GIÁ GỐC NGUỒN</th>
+                <th>GIÁ GỐC SERVER ZN</th>
                 <th>CHỈNH CỘNG RIÊNG (+VNĐ / +% / GIÁ BÁN)</th>
-                <th>GIÁ BÁN CTV & LÃI</th>
+                <th>GIÁ BÁN CTV &amp; LÃI</th>
                 <th>CẬP NHẬT</th>
               </tr>
             </thead>
             <tbody>
-              ${
-                filteredPackages.length === 0
-                  ? `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Hiện nguồn API chưa mở gói nào cho danh mục này.</td></tr>`
-                  : filteredPackages.slice(0, pageLimit('pricePackages'))
-                      .map((p) => renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol: true, idPrefix: 'admPkg' }))
-                      .join('')
-              }
+              ${filteredPackages.length === 0
+          ? `<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--color-fog-veil);">Hiện Server Zn chưa mở gói nào cho danh mục này.</td></tr>`
+          : filteredPackages.slice(0, pageLimit('pricePackages'))
+            .map((p) => renderPackagePricingRowHtml(p, { cm, modes, percents, showCategoryCol: true, idPrefix: 'admPkg' }))
+            .join('')
+        }
               ${moreButton('pricePackages', filteredPackages.length, 6)}
             </tbody>
           </table>
         </div>
       `
-          : `
+        : `
         <div style="background:var(--color-liquid-deep);box-shadow:var(--shadow-subtle);padding:14px 16px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <span style="font-size:13px;color:#fff;font-weight:600;">Mức chung cho trái chưa chỉnh riêng:</span>
@@ -3880,22 +4015,21 @@ function renderAdminPricingPageHtml() {
             </div>
             <input type="number" id="admFruitGeneralValInput" class="input-box" style="width:110px;" value="${fruitMode === 'percent' ? fruitPercent : defaultFruitMarkup}" step="${fruitMode === 'percent' ? 1 : 10}" min="0" max="${fruitMode === 'percent' ? 500 : 1000000}" />
             <span id="admFruitGeneralUnit" style="font-size:12px;color:var(--color-moon-mist);">${fruitMode === 'percent' ? '%' : 'đ / trái'}</span>
-            ${
-              Object.keys(fruitOverrides).length > 0
-                ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#fbbf24;cursor:pointer;">
+            ${Object.keys(fruitOverrides).length > 0
+          ? `<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#fbbf24;cursor:pointer;">
                     <input type="checkbox" id="admFruitApplyAllOverrides" />
                     <span>Ghi đè luôn ${Object.keys(fruitOverrides).length} trái đang đặt giá riêng</span>
                   </label>`
-                : ''
-            }
-            <button type="button" class="btn-violet" id="btnSaveFruitGeneral" style="padding:7px 14px;font-size:12px;">✓ Cập nhật mức chung</button>
+          : ''
+        }
+            <button type="button" class="btn-violet" id="btnSaveFruitGeneral" style="padding:7px 14px;font-size:12px;">${znIcon('check', 13)} <span>Cập nhật mức chung</span></button>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <select id="admFruitFilterSelect" class="input-box" style="width:auto;">
               <option value="all" ${state.adminFruitFilter === 'all' ? 'selected' : ''}>Tất cả (${fruits.length})</option>
               <option value="custom" ${state.adminFruitFilter === 'custom' ? 'selected' : ''}>Đang đặt giá riêng (${Object.keys(fruitOverrides).length})</option>
             </select>
-            <input type="text" id="admFruitSearchInput" class="input-box" style="width:230px;" placeholder="🔍 Tìm trái cây: Nhân sâm..." value="${escapeHtml(state.adminFruitSearch)}" />
+            <input type="text" id="admFruitSearchInput" class="input-box" style="width:230px;" placeholder="Tìm trái cây: Nhân sâm..." value="${escapeHtml(state.adminFruitSearch)}" />
           </div>
         </div>
 
@@ -3905,7 +4039,7 @@ function renderAdminPricingPageHtml() {
               <tr>
                 <th>TRÁI CÂY</th>
                 <th>TỒN KHO</th>
-                <th>GIÁ GỐC NGUỒN</th>
+                <th>GIÁ GỐC SERVER ZN</th>
                 <th>GIÁ BÁN CHO CTV (VNĐ)</th>
                 <th>LÃI ADMIN / TRÁI</th>
                 <th>CẬP NHẬT / 19 ĐỘT BIẾN</th>
@@ -3917,7 +4051,7 @@ function renderAdminPricingPageHtml() {
           </table>
         </div>
       `
-      }
+    }
     </div>
   `;
 }
@@ -3943,7 +4077,7 @@ function renderAdminFruitRowsHtml(fruits) {
         <tr>
           <td>
             <div style="display:flex;align-items:center;gap:10px;">
-              ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:30px;height:30px;object-fit:contain;" alt="" />` : '🍎'}
+              ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:30px;height:30px;object-fit:contain;" alt="" />` : `<span class="dashboard-cat-icon" style="width:30px;height:30px;">${znIcon('fruit', 15)}</span>`}
               <div>
                 <strong style="color:#fff;">${escapeHtml(f.name)}</strong>
                 <div style="font-size:10.5px;color:${hasOverride ? '#fbbf24' : '#5eead4'};">
@@ -3973,8 +4107,8 @@ function renderAdminFruitRowsHtml(fruits) {
           </td>
           <td>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
-              <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;" data-save-fruit-row="${f.id}">✓ Cập nhật</button>
-              ${hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-fruit-override="${f.id}">↺ Tự động</button>` : ''}
+              <button type="button" class="btn-violet" style="padding:5px 10px;font-size:11px;" data-save-fruit-row="${f.id}">${znIcon('check', 12)} <span>Cập nhật</span></button>
+              ${hasOverride ? `<button type="button" class="btn-frost" style="padding:5px 8px;font-size:11px;" data-reset-fruit-override="${f.id}">${znIcon('refresh', 11)} <span>Tự động</span></button>` : ''}
               <button type="button" class="btn-frost" style="padding:5px 9px;font-size:11px;" data-open-mut-pricing="${f.id}">
                 19 đột biến
               </button>
@@ -4037,7 +4171,7 @@ function bindAdminFruitRowEvents(scope = document) {
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
         btn.disabled = false;
-        btn.textContent = '✓ Cập nhật';
+        btn.innerHTML = `${znIcon('check', 12)} <span>Cập nhật</span>`;
       }
     });
   });
@@ -4222,7 +4356,7 @@ function bindPackageRows(scope = document, { idPrefix = 'admPkg', onSaved = null
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
         btn.disabled = false;
-        btn.textContent = '✓ Lưu riêng';
+        btn.innerHTML = `${znIcon('check', 12)} <span>Lưu riêng</span>`;
       }
     });
   });
@@ -4264,28 +4398,27 @@ function openCategoryPackagePricingModal(catKey) {
   const customCount = allPkgs.filter((p) => p.hasOverride).length;
 
   box.className = 'modal-box wide';
-  title.textContent = `📦 Chỉnh từng gói riêng — ${catMeta?.label || catKey}`;
+  title.textContent = `Chỉnh từng gói riêng — ${catMeta?.label || catKey}`;
 
   body.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--color-liquid-deep);padding:12px 14px;border-radius:10px;border:1px solid rgba(203,255,252,0.18);">
       <div style="font-size:12.5px;color:var(--color-moon-mist);line-height:1.55;">
         <div>Quy tắc chung hiện tại của danh mục: <strong style="color:#5eead4;">${escapeHtml(catRuleText)}</strong> · Đang chỉnh riêng: <strong style="color:#fbbf24;">${customCount}/${allPkgs.length} gói</strong></div>
-        <div style="font-size:11.5px;color:var(--color-fog-veil);">Gói nào đã bấm <strong>Lưu riêng</strong> sẽ không áp dụng quy tắc chung khi bạn cập nhật danh mục, cho đến khi bạn sửa lại hoặc bấm <strong>↺ Quy tắc chung</strong>.</div>
+        <div style="font-size:11.5px;color:var(--color-fog-veil);">Gói nào đã bấm <strong>Lưu riêng</strong> sẽ không áp dụng quy tắc chung khi bạn cập nhật danh mục, cho đến khi bạn sửa lại hoặc bấm <strong>Quy tắc chung</strong>.</div>
       </div>
-      ${allPkgs.length > 0 ? `<button type="button" class="btn-violet" id="btnSaveAllModalCatPkgs" style="padding:7px 14px;font-size:12px;">💾 Lưu tất cả gói đã sửa</button>` : ''}
+      ${allPkgs.length > 0 ? `<button type="button" class="btn-violet" id="btnSaveAllModalCatPkgs" style="padding:7px 14px;font-size:12px;">${znIcon('save', 13)} <span>Lưu tất cả gói đã sửa</span></button>` : ''}
     </div>
-    ${
-      allPkgs.length === 0
-        ? `<div style="text-align:center;padding:30px;color:var(--color-fog-veil);">Hiện nguồn API chưa mở gói nào cho danh mục này.</div>`
-        : `
+    ${allPkgs.length === 0
+      ? `<div style="text-align:center;padding:30px;color:var(--color-fog-veil);">Hiện Server Zn chưa mở gói nào cho danh mục này.</div>`
+      : `
       <div class="table-wrap" style="max-height:60vh;overflow-y:auto;">
         <table class="data-table">
           <thead>
             <tr>
               <th>TÊN GÓI</th>
-              <th>GIÁ GỐC NGUỒN</th>
+              <th>GIÁ GỐC SERVER ZN</th>
               <th>CHỈNH CỘNG RIÊNG (+VNĐ / +% / GIÁ BÁN)</th>
-              <th>GIÁ BÁN CTV & LÃI</th>
+              <th>GIÁ BÁN CTV &amp; LÃI</th>
               <th>THAO TÁC</th>
             </tr>
           </thead>
@@ -4335,7 +4468,7 @@ function openCategoryPackagePricingModal(catKey) {
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
       btn.disabled = false;
-      btn.textContent = '💾 Lưu tất cả gói đã sửa';
+      btn.innerHTML = `${znIcon('save', 13)} <span>Lưu tất cả gói đã sửa</span>`;
     }
   });
 }
@@ -4343,8 +4476,8 @@ function openCategoryPackagePricingModal(catKey) {
 function bindAdminPricingEvents() {
   document.getElementById('btnRefreshAdminPricing')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnRefreshAdminPricing');
-    if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
-    showToast('Đang tải giá gốc mới nhất từ nguồn API...');
+    if (btn) { btn.disabled = true; btn.textContent = 'Đang tải...'; }
+    showToast('Đang tải giá gốc mới nhất từ Server Zn...');
     await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
     renderCurrentView();
   });
@@ -4423,7 +4556,7 @@ function bindAdminPricingEvents() {
       } catch (err) {
         showToast(`Lỗi: ${err.message}`);
         btn.disabled = false;
-        btn.textContent = '✓ Cập nhật';
+        btn.innerHTML = `${znIcon('check', 12)} <span>Cập nhật</span>`;
       }
     });
   });
@@ -4467,7 +4600,7 @@ function bindAdminPricingEvents() {
       );
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
-      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.textContent = '💾 Cập nhật tất cả 8 danh mục'; }
+      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.innerHTML = `${znIcon('save', 14)} <span>Cập nhật tất cả 8 danh mục</span>`; }
     }
   };
   document.getElementById('btnSaveAllCatsBottom')?.addEventListener('click', (e) => saveAllCategories(e.currentTarget));
@@ -4518,7 +4651,7 @@ function bindAdminPricingEvents() {
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
       btn.disabled = false;
-      btn.textContent = '✓ Cập nhật mức chung';
+      btn.innerHTML = `${znIcon('check', 13)} <span>Cập nhật mức chung</span>`;
     }
   });
 
@@ -4531,7 +4664,7 @@ function bindAdminPricingEvents() {
   const searchIn = document.getElementById('admFruitSearchInput');
   searchIn?.addEventListener('input', (e) => {
     state.listLimits.priceFruits = 20;
-      state.adminFruitSearch = e.target.value;
+    state.adminFruitSearch = e.target.value;
     if (admFruitSearchTimer && typeof clearTimeout === 'function') clearTimeout(admFruitSearchTimer);
     admFruitSearchTimer = setTimeout(() => {
       const tbody = document.getElementById('admFruitTbody');
@@ -4607,7 +4740,7 @@ function bindAdminPricingEvents() {
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
       btn.disabled = false;
-      btn.textContent = '💾 Cập nhật tất cả thay đổi';
+      btn.innerHTML = `${znIcon('save', 14)} <span>Cập nhật tất cả thay đổi</span>`;
     }
   });
 }
@@ -4643,19 +4776,19 @@ function openAdminMutationPricingModal(fruitId) {
         <thead>
           <tr>
             <th>HỆ ĐỘT BIẾN</th>
-            <th>GIÁ GỐC NGUỒN</th>
+            <th>GIÁ GỐC SERVER ZN</th>
             <th>GIÁ BÁN CHO CTV (VNĐ)</th>
             <th>LÃI / TRÁI</th>
           </tr>
         </thead>
         <tbody>
           ${muts
-            .map((m) => {
-              const cost = m._admin?.cost_unit_price ?? m.unit_price;
-              const prof = m.unit_price - cost;
-              const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
-              const hasOvr = !!m._admin?.has_custom_override;
-              return `
+      .map((m) => {
+        const cost = m._admin?.cost_unit_price ?? m.unit_price;
+        const prof = m.unit_price - cost;
+        const pctProf = cost > 0 ? Math.round((prof / cost) * 100) : 0;
+        const hasOvr = !!m._admin?.has_custom_override;
+        return `
             <tr>
               <td>
                 <span style="display:inline-flex;align-items:center;gap:6px;">
@@ -4683,14 +4816,14 @@ function openAdminMutationPricingModal(fruitId) {
               </td>
             </tr>
           `;
-            })
-            .join('')}
+      })
+      .join('')}
         </tbody>
       </table>
     </div>
     <div class="action-row align-end">
       <button type="button" class="btn-frost" id="btnCloseMutModal">Đóng</button>
-      <button type="button" class="btn-violet" id="btnSaveMutPrices">✓ Cập nhật giá đột biến</button>
+      <button type="button" class="btn-violet" id="btnSaveMutPrices">${znIcon('check', 14)} <span>Cập nhật giá đột biến</span></button>
     </div>
   `;
 
@@ -4721,7 +4854,7 @@ function openAdminMutationPricingModal(fruitId) {
       inp.dataset.dirty = '1';
       updateMutRowBadge(inp);
     });
-    showToast(`Đã điền thử +${pct}% cho cả 19 hệ — bấm "✓ Cập nhật giá đột biến" để lưu.`);
+    showToast(`Đã điền thử +${pct}% cho cả 19 hệ — bấm "Cập nhật giá đột biến" để lưu.`);
   });
 
   body.querySelector('#btnApplyMutBulkVnd')?.addEventListener('click', () => {
@@ -4732,7 +4865,7 @@ function openAdminMutationPricingModal(fruitId) {
       inp.dataset.dirty = '1';
       updateMutRowBadge(inp);
     });
-    showToast(`Đã điền thử +${formatVnd(add)} cho cả 19 hệ — bấm "✓ Cập nhật giá đột biến" để lưu.`);
+    showToast(`Đã điền thử +${formatVnd(add)} cho cả 19 hệ — bấm "Cập nhật giá đột biến" để lưu.`);
   });
 
   body.querySelector('#btnResetAllMutAuto')?.addEventListener('click', async () => {
@@ -4770,7 +4903,7 @@ function openAdminMutationPricingModal(fruitId) {
     } catch (err) {
       showToast(err.message);
       btn.disabled = false;
-      btn.textContent = '✓ Cập nhật giá đột biến';
+      btn.innerHTML = `${znIcon('check', 14)} <span>Cập nhật giá đột biến</span>`;
     }
   });
 
@@ -4785,10 +4918,13 @@ function renderAdminCtvPageHtml() {
   const stats = state.adminOverview?.stats || {};
   const storage = state.adminOverview?.storage || {};
   const isMaintenance = Boolean(state.adminOverview?.settings?.maintenanceMode);
+  const versions = (state.adminOverview?.settings?.appVersions || state.appVersions || DEFAULT_APP_VERSIONS).slice(0, 3);
+  const versionSlots = [0, 1, 2].map((idx) => versions[idx] || { version: '', date: '', highlights: [] });
+
   const ephemeralBanner = storage.isRender && !storage.persistent
     ? `
       <div class="tool-warning" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <span>⚠️ Đang chạy trên ổ tạm Render Free (chưa gắn PostgreSQL miễn phí). Tài khoản CTV và số dư sẽ bị mất khi Render tắt/redeploy — hãy gắn <strong>Neon PostgreSQL miễn phí</strong> trong mục <strong>Cấu hình Nguồn API</strong>.</span>
+        <span style="display:inline-flex;align-items:center;gap:7px;">${znIcon('alert', 16)} <span>Đang chạy trên ổ tạm Render Free (chưa gắn PostgreSQL miễn phí). Tài khoản CTV và số dư sẽ bị mất khi Render tắt/redeploy — hãy gắn <strong>Neon PostgreSQL miễn phí</strong> trong mục <strong>Cấu hình Server Zn</strong>.</span></span>
         <button type="button" class="btn-frost" id="btnGotoStorageSetup" style="font-size:12px;">Xem hướng dẫn gắn DB miễn phí →</button>
       </div>
     `
@@ -4798,31 +4934,92 @@ function renderAdminCtvPageHtml() {
     <div class="glass-panel" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;border:1px solid ${isMaintenance ? 'rgba(253,164,175,0.45)' : 'rgba(203,255,252,0.18)'};background:${isMaintenance ? 'rgba(136,19,55,0.22)' : 'var(--color-liquid-kelp)'};">
       <div style="display:flex;flex-direction:column;gap:4px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <strong style="color:#fff;font-size:15px;">🛠️ Chế độ Bảo trì CTV</strong>
+          <strong style="color:#fff;font-size:15px;display:inline-flex;align-items:center;gap:7px;">${znIcon('shield', 16)} <span>Chế độ Bảo trì CTV</span></strong>
           <span class="badge-tag ${isMaintenance ? 'red' : 'green'}">${isMaintenance ? '● ĐANG BẢO TRÌ' : '● Đang hoạt động'}</span>
         </div>
         <div style="font-size:12.5px;color:var(--color-moon-mist);">
-          ${
-            isMaintenance
-              ? 'Toàn bộ tài khoản CTV đang đăng nhập hiện đang thấy màn hình <strong>"Hệ thống Zn đang bảo trì"</strong> và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
-              : 'Khi bật nút <strong>Bảo trì</strong>, CTV đang đăng nhập sẽ thấy <strong>"Hệ thống Zn đang bảo trì"</strong>. Nút <strong>Cập nhật cho CTV</strong> sẽ tự động tải lại trang cho toàn bộ CTV (CTV đang ngoại tuyến sẽ tự tải lại ở lần vào trình duyệt kế tiếp).'
-          }
+          ${isMaintenance
+      ? 'Toàn bộ tài khoản CTV đang đăng nhập hiện đang thấy màn hình <strong>"Hệ thống Zn đang bảo trì"</strong> và tạm khóa đặt đơn. Tài khoản Admin vẫn truy cập bình thường.'
+      : 'Khi bật nút <strong>Bảo trì</strong>, CTV đang đăng nhập sẽ thấy <strong>"Hệ thống Zn đang bảo trì"</strong>. Nút <strong>Cập nhật cho CTV</strong> sẽ tự động tải lại trang cho toàn bộ CTV (CTV đang ngoại tuyến sẽ tự tải lại ở lần vào trình duyệt kế tiếp).'
+    }
         </div>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
         <button type="button" class="btn-violet" id="btnNotifyCtvUpdate" style="padding:9px 16px;font-size:13px;font-weight:700;">
-          🔄 Cập nhật cho CTV
+          ${znIcon('refresh', 14)} <span>Cập nhật cho CTV</span>
         </button>
         <button type="button" class="${isMaintenance ? 'btn-violet' : 'btn-frost'}" id="btnToggleMaintenanceMode" style="padding:9px 18px;font-size:13px;font-weight:700;${isMaintenance ? '' : 'border-color:rgba(251,191,36,0.5);color:#fbbf24;'}">
-          ${isMaintenance ? '✓ Tắt bảo trì (Mở lại cho CTV)' : '🛠️ Bảo trì'}
+          ${isMaintenance ? `${znIcon('check', 14)} <span>Tắt bảo trì (Mở lại cho CTV)</span>` : `${znIcon('shield', 14)} <span>Bảo trì</span>`}
         </button>
       </div>
+    </div>
+  `;
+
+  const versionManagerPanel = `
+    <div class="glass-panel" id="adminVersionManagerPanel">
+      <div class="panel-title-row">
+        <div>
+          <span class="panel-title-text"><span class="panel-title-icon">${znIcon('git', 16)}</span><span>Quản lý Phiên bản &amp; Nhật ký cập nhật ZnStudio</span></span>
+          <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
+            Hiển thị <strong>Version vx.x.chữ</strong> ngay dưới thương hiệu <strong>ZnStudio</strong> cho cả CTV và Admin. Khi nhấn vào phiên bản sẽ mở danh sách <strong>3 phiên bản gần nhất</strong>.
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn-frost" id="btnPreviewVersionModal" style="font-size:12px;">
+            ${znIcon('sparkles', 13)} <span>Xem trước hộp thoại CTV</span>
+          </button>
+          <button type="button" class="btn-frost" id="btnShiftNewVersion" style="font-size:12px;" title="Đẩy phiên bản hiện tại xuống bản #2 để nhập bản mới">
+            ${znIcon('plus', 13)} <span>Phát hành bản mới</span>
+          </button>
+        </div>
+      </div>
+
+      <form id="adminVersionEditorForm" style="display:flex;flex-direction:column;gap:14px;">
+        <div class="admin-version-editor-grid">
+          ${versionSlots
+      .map(
+        (item, idx) => `
+            <div class="admin-version-slot ${idx === 0 ? 'is-current' : ''}">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <strong style="color:#fff;font-size:13px;">${idx === 0 ? 'Phiên bản #1 (Đang hiển thị)' : `Phiên bản gần nhất #${idx + 1}`}</strong>
+                <span class="badge-tag ${idx === 0 ? 'green' : ''}">${idx === 0 ? 'Bắt buộc' : 'Tùy chọn'}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,0.9fr);gap:8px;">
+                <div>
+                  <label style="font-size:11.5px;color:var(--color-moon-mist);display:block;margin-bottom:4px;" for="admVerCode_${idx}">Mã phiên bản (vx.x.chữ)</label>
+                  <input type="text" id="admVerCode_${idx}" class="input-box" placeholder="VD: v2.4.auros" value="${escapeHtml(item.version || '')}" ${idx === 0 ? 'required' : ''} />
+                </div>
+                <div>
+                  <label style="font-size:11.5px;color:var(--color-moon-mist);display:block;margin-bottom:4px;" for="admVerDate_${idx}">Ngày phát hành</label>
+                  <input type="text" id="admVerDate_${idx}" class="input-box" placeholder="DD/MM/YYYY" value="${escapeHtml(item.date || '')}" />
+                </div>
+              </div>
+              <div>
+                <label style="font-size:11.5px;color:var(--color-moon-mist);display:block;margin-bottom:4px;" for="admVerNotes_${idx}">Nội dung có gì mới (mỗi dòng 1 mục)</label>
+                <textarea id="admVerNotes_${idx}" class="input-box admin-version-textarea" placeholder="Nhập mỗi điểm mới trên một dòng...">${escapeHtml((item.highlights || []).join('\n'))}</textarea>
+              </div>
+            </div>
+          `
+      )
+      .join('')}
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <span style="font-size:11.5px;color:var(--color-fog-veil);">
+            Định dạng hợp lệ: <code>vx.x.chữ</code> (ví dụ: <code>v2.4.auros</code>, <code>v2.5.stable</code>, <code>v3.0.pro</code> — x là số, phần sau là chữ).
+          </span>
+          <button type="submit" class="btn-violet" id="btnSaveAppVersions">
+            ${znIcon('save', 14)} <span>Lưu phiên bản &amp; Nhật ký</span>
+          </button>
+        </div>
+      </form>
     </div>
   `;
 
   return `
     ${ephemeralBanner}
     ${maintenanceBanner}
+    ${versionManagerPanel}
     <div class="stats-three-grid">
       <div class="glass-panel">
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng số tài khoản CTV</div>
@@ -4890,8 +5087,8 @@ function renderAdminCtvPageHtml() {
           </thead>
           <tbody>
             ${ctvs.slice(0, pageLimit('accounts'))
-              .map(
-                (u) => `
+      .map(
+        (u) => `
               <tr>
                 <td><strong style="color:#fff;">${escapeHtml(u.name)}</strong><div style="font-size:11px;color:var(--color-fog-veil);">SĐT: ${escapeHtml(u.phone || '—')}</div></td>
                 <td><strong>${escapeHtml(u.username)}</strong><div style="font-size:11px;color:var(--color-fog-veil);">${escapeHtml(u.email)}</div></td>
@@ -4922,8 +5119,8 @@ function renderAdminCtvPageHtml() {
                 </td>
               </tr>
             `
-              )
-              .join('')}
+      )
+      .join('')}
             ${moreButton('accounts', ctvs.length, 7)}
           </tbody>
         </table>
@@ -4958,11 +5155,96 @@ function bindAdminCtvEvents() {
   document.getElementById('btnGotoStorageSetup')?.addEventListener('click', () => {
     switchView('admin_system');
   });
+  document.getElementById('btnPreviewVersionModal')?.addEventListener('click', () => {
+    openVersionChangelogModal();
+  });
+  document.getElementById('btnShiftNewVersion')?.addEventListener('click', () => {
+    const readSlot = (i) => ({
+      version: document.getElementById(`admVerCode_${i}`)?.value || '',
+      date: document.getElementById(`admVerDate_${i}`)?.value || '',
+      notes: document.getElementById(`admVerNotes_${i}`)?.value || '',
+    });
+    const writeSlot = (i, data) => {
+      const c = document.getElementById(`admVerCode_${i}`);
+      const d = document.getElementById(`admVerDate_${i}`);
+      const n = document.getElementById(`admVerNotes_${i}`);
+      if (c) c.value = data.version;
+      if (d) d.value = data.date;
+      if (n) n.value = data.notes;
+    };
+    const slot0 = readSlot(0);
+    const slot1 = readSlot(1);
+    const todayStr = new Intl.DateTimeFormat('vi-VN', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }).format(new Date());
+    writeSlot(2, slot1);
+    writeSlot(1, slot0);
+    writeSlot(0, { version: '', date: todayStr, notes: '' });
+    document.getElementById('admVerCode_0')?.focus();
+    showToast('Đã đẩy phiên bản cũ xuống danh sách. Hãy nhập mã vx.x.chữ và nội dung bản mới rồi bấm Lưu.');
+  });
+  document.getElementById('adminVersionEditorForm')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const btn = document.getElementById('btnSaveAppVersions');
+    if (btn?.disabled) return;
+    const versionRegex = /^v\d+\.\d+\.[a-zA-Z][a-zA-Z0-9_-]{0,23}$/;
+    const appVersions = [];
+    for (let i = 0; i < 3; i++) {
+      const rawVer = String(document.getElementById(`admVerCode_${i}`)?.value || '').trim();
+      const rawDate = String(document.getElementById(`admVerDate_${i}`)?.value || '').trim();
+      const rawNotes = String(document.getElementById(`admVerNotes_${i}`)?.value || '').trim();
+      if (!rawVer && !rawNotes) {
+        if (i === 0) {
+          showToast('Vui lòng nhập phiên bản #1 (phiên bản hiện tại).');
+          return;
+        }
+        continue;
+      }
+      const normVer = /^[vV]/.test(rawVer) ? `v${rawVer.slice(1)}` : `v${rawVer}`;
+      if (!versionRegex.test(normVer)) {
+        showToast(`Mã phiên bản #${i + 1} không đúng định dạng vx.x.chữ (VD: v2.4.auros).`);
+        document.getElementById(`admVerCode_${i}`)?.focus();
+        return;
+      }
+      const highlights = rawNotes
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^[-•*]\s*/, '').trim())
+        .filter(Boolean);
+      if (!highlights.length) {
+        showToast(`Vui lòng nhập ít nhất 1 dòng nội dung có gì mới cho ${normVer}.`);
+        document.getElementById(`admVerNotes_${i}`)?.focus();
+        return;
+      }
+      appVersions.push({ version: normVer, date: rawDate, highlights });
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Đang lưu...';
+    }
+    try {
+      const r = await apiFetch('/api/admin/app-versions', 'PUT', { appVersions });
+      if (r.appVersions) {
+        syncAppVersionsState(r.appVersions);
+        if (state.adminOverview?.settings) state.adminOverview.settings.appVersions = r.appVersions;
+      }
+      showToast(r.message || 'Đã cập nhật phiên bản hệ thống!');
+      renderCurrentView();
+    } catch (err) {
+      showToast(err.message);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `${znIcon('save', 14)} <span>Lưu phiên bản &amp; Nhật ký</span>`;
+      }
+    }
+  });
   document.getElementById('btnNotifyCtvUpdate')?.addEventListener('click', async (ev) => {
     const btn = ev.currentTarget;
     btn.disabled = true;
-    const oldText = btn.textContent;
-    btn.textContent = '⏳ Đang gửi...';
+    const oldHtml = btn.innerHTML;
+    btn.textContent = 'Đang gửi...';
     try {
       const r = await apiFetch('/api/admin/notify-update', 'POST');
       showToast(r.message || 'Đã gửi thông báo cập nhật cho CTV!');
@@ -4970,7 +5252,7 @@ function bindAdminCtvEvents() {
       showToast(err.message);
     } finally {
       btn.disabled = false;
-      btn.textContent = oldText;
+      btn.innerHTML = oldHtml;
     }
   });
   document.getElementById('btnToggleMaintenanceMode')?.addEventListener('click', async (ev) => {
@@ -5062,7 +5344,7 @@ function openTopupCtvModal(ctvId, ctvName) {
   if (!overlay || !box || !title || !body) return;
 
   box.className = 'modal-box';
-  title.textContent = `💲 Nạp / Điều chỉnh số dư ví CTV: ${ctvName}`;
+  title.textContent = `Nạp / Điều chỉnh số dư ví CTV: ${ctvName}`;
   body.innerHTML = `
     <div>
       <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Số tiền điều chỉnh (Nhập số dương để nạp, số âm để trừ):</label>
@@ -5107,7 +5389,7 @@ function openTopupCtvModal(ctvId, ctvName) {
 }
 
 function renderAdminSystemPageHtml() {
-  const srcCfg = state.adminOverview?.settings?.source || {};
+  const srcCfg = state.adminOverview?.settings?.serverZn || state.adminOverview?.settings?.source || {};
   const storage = state.adminOverview?.storage || { mode: 'json', persistent: false, isRender: false, healthy: true };
   const stats = state.adminOverview?.stats || {};
   const isPg = storage.mode === 'postgresql';
@@ -5115,7 +5397,7 @@ function renderAdminSystemPageHtml() {
   return `
     <div class="glass-panel" style="max-width:760px;">
       <div class="panel-title-row">
-        <span class="panel-title-text">💾 Lưu trữ Dữ liệu & Sao lưu (Chống mất tài khoản CTV)</span>
+        <span class="panel-title-text"><span class="panel-title-icon">${znIcon('database', 16)}</span><span>Lưu trữ Dữ liệu &amp; Sao lưu (Chống mất tài khoản CTV)</span></span>
         <span class="badge-tag ${isPg ? 'green' : storage.isRender ? 'red' : 'amber'}">
           ${isPg ? '● PostgreSQL (Bền vững — Không mất khi máy chủ nghỉ)' : storage.isRender ? '● JSON ổ tạm Render (Sẽ mất khi máy chủ nghỉ / triển khai lại)' : '● JSON cục bộ (data/db.json)'}
         </span>
@@ -5138,34 +5420,34 @@ function renderAdminSystemPageHtml() {
 
         ${!isPg ? `
           <div class="storage-guide-box">
-            <strong style="color:#fff;">✨ Phương án lưu trữ MIỄN PHÍ vĩnh viễn cho Render Free (&lt;10 CTV): Neon PostgreSQL</strong>
+            <strong style="color:#fff;display:inline-flex;align-items:center;gap:6px;">${znIcon('sparkles', 15)} <span>Phương án lưu trữ MIỄN PHÍ vĩnh viễn cho Render Free (&lt;10 CTV): Neon PostgreSQL</span></strong>
             <ol>
               <li>Vào <strong>neon.tech</strong> (đăng nhập bằng GitHub/Google, miễn phí 0đ trọn đời, không cần thẻ tín dụng) → Tạo Project mới (chọn Region gần Render như Singapore hoặc US East).</li>
               <li>Bấm <strong>Connect</strong> → Copy chuỗi kết nối PostgreSQL (bắt đầu bằng <code>postgresql://...</code>).</li>
               <li>Vào Render Dashboard → Service ZnStudio → <strong>Environment</strong> → Thêm biến <code>DATABASE_URL</code> = chuỗi vừa copy → Lưu &amp; Deploy lại. Từ đó toàn bộ CTV, ví, đơn hàng và bảng giá sẽ <strong>không bao giờ bị mất</strong> kể cả khi Render ngủ hoặc tắt!</li>
             </ol>
-            <div style="font-size:12px;color:var(--color-fog-veil);">
-              💡 Mẹo giữ web mượt không bị ngủ 15 phút: Tạo monitor miễn phí trên <strong>UptimeRobot</strong> hoặc <strong>cron-job.org</strong> gọi <code>https://&lt;domain-của-bạn&gt;/api/ping</code> mỗi 10 phút.
+            <div style="font-size:12px;color:var(--color-fog-veil);display:flex;align-items:center;gap:6px;">
+              ${znIcon('info', 14)} <span>Mẹo giữ web mượt không bị ngủ 15 phút: Tạo monitor miễn phí trên <strong>UptimeRobot</strong> hoặc <strong>cron-job.org</strong> gọi <code>https://&lt;domain-của-bạn&gt;/api/ping</code> mỗi 10 phút.</span>
             </div>
           </div>
         ` : `
-          <div style="font-size:12.5px;color:#5eead4;background:rgba(38,150,132,0.12);padding:10px 14px;border-radius:10px;">
-            ✓ Hệ thống đang kết nối PostgreSQL bền vững. Toàn bộ tài khoản CTV, số dư ví, đơn hàng và bảng giá được bảo toàn an toàn khi hosting nghỉ hoặc khởi động lại.
+          <div style="font-size:12.5px;color:#5eead4;background:rgba(38,150,132,0.12);padding:10px 14px;border-radius:10px;display:flex;align-items:center;gap:8px;">
+            ${znIcon('check', 15)} <span>Hệ thống đang kết nối PostgreSQL bền vững. Toàn bộ tài khoản CTV, số dư ví, đơn hàng và bảng giá được bảo toàn an toàn khi hosting nghỉ hoặc khởi động lại.</span>
           </div>
         `}
 
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-          <button type="button" class="btn-frost" id="btnExportBackupJson">⬇ Tải bản sao lưu JSON</button>
-          <button type="button" class="btn-frost" id="btnImportBackupJson">⬆ Khôi phục từ tệp JSON</button>
+          <button type="button" class="btn-frost" id="btnExportBackupJson">${znIcon('download', 14)} <span>Tải bản sao lưu JSON</span></button>
+          <button type="button" class="btn-frost" id="btnImportBackupJson">${znIcon('upload', 14)} <span>Khôi phục từ tệp JSON</span></button>
           <input type="file" id="admBackupFileInput" accept="application/json,.json" style="display:none;" />
-          <span style="font-size:11.5px;color:var(--color-fog-veil);">Bản sao lưu không chứa mật khẩu hay mã xác thực nguồn API.</span>
+          <span style="font-size:11.5px;color:var(--color-fog-veil);">Bản sao lưu không chứa mật khẩu hay mã xác thực Server Zn.</span>
         </div>
       </div>
     </div>
 
     <div class="glass-panel" style="max-width:760px;">
       <div class="panel-title-row">
-        <span class="panel-title-text">⚙️ Cấu hình Tài khoản Nguồn API</span>
+        <span class="panel-title-text"><span class="panel-title-icon">${znIcon('server', 16)}</span><span>Cấu hình kết nối Server Zn</span></span>
         <span class="badge-tag ${srcCfg.connected ? 'green' : 'red'}">
           ${srcCfg.connected ? '● Đã kết nối' : '○ Chưa kết nối'}
         </span>
@@ -5173,16 +5455,16 @@ function renderAdminSystemPageHtml() {
       ${srcCfg.lastError ? `<div style="color:#fca5a5;font-size:12px;">${escapeHtml(srcCfg.lastError)}</div>` : ''}
       <div style="display:flex;flex-direction:column;gap:14px;">
         <div>
-          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Email tài khoản nguồn API:</label>
+          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Email kết nối Server Zn:</label>
           <input type="email" id="admSrcEmail" class="input-box" value="${escapeHtml(srcCfg.email || '')}" />
         </div>
         <div>
-          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Mật khẩu nguồn API (Để trống nếu giữ nguyên):</label>
+          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Mật khẩu kết nối Server Zn (Để trống nếu giữ nguyên):</label>
           <input type="password" id="admSrcPassword" class="input-box" autocomplete="new-password" placeholder="••••••••" />
         </div>
         <div class="action-row align-end">
-          <button type="button" class="btn-frost" id="btnAdmReconnectSrc">↻ Đồng bộ & Kết nối lại nguồn</button>
-          <button type="button" class="btn-violet" id="btnAdmSaveSrc">Lưu cấu hình nguồn</button>
+          <button type="button" class="btn-frost" id="btnAdmReconnectSrc">${znIcon('refresh', 13)} <span>Đồng bộ &amp; Kết nối lại Server Zn</span></button>
+          <button type="button" class="btn-violet" id="btnAdmSaveSrc">${znIcon('save', 14)} <span>Lưu cấu hình Server Zn</span></button>
         </div>
       </div>
     </div>
@@ -5277,8 +5559,8 @@ function bindAdminSystemEvents() {
     button.disabled = true;
     button.textContent = 'Đang kết nối...';
     try {
-      showToast('⏳ Đang kết nối lại và đồng bộ dữ liệu...');
-      const r = await apiFetch('/api/admin/source/reconnect', 'POST');
+      showToast('Đang kết nối lại và đồng bộ dữ liệu Server Zn...');
+      const r = await apiFetch('/api/admin/server-zn/reconnect', 'POST');
       showToast(r.message);
       await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
       renderCurrentView();
@@ -5288,7 +5570,7 @@ function bindAdminSystemEvents() {
       renderCurrentView();
     } finally {
       button.disabled = false;
-      button.textContent = '↻ Đồng bộ & Kết nối lại nguồn';
+      button.innerHTML = `${znIcon('refresh', 13)} <span>Đồng bộ &amp; Kết nối lại Server Zn</span>`;
     }
   });
 
@@ -5329,7 +5611,7 @@ function bindGlobalEvents() {
     else if (key === 'orderList') {
       await loadOrders();
       if (view === state.currentView) renderCurrentView();
-    } else if (['pricePackages','priceFruits','accounts'].includes(key)) {
+    } else if (['pricePackages', 'priceFruits', 'accounts'].includes(key)) {
       const tbody = btn.closest('tbody');
       const template = document.createElement('template');
       template.innerHTML = key === 'accounts' ? renderAdminCtvPageHtml() : renderAdminPricingPageHtml();
@@ -5357,7 +5639,7 @@ function bindGlobalEvents() {
       if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
         renderCurrentView();
       }
-    } catch {}
+    } catch { }
   }, 30000);
 
   // Adaptive lightweight progress polling: ONLY polls every 12s while user has an active running order
@@ -5368,7 +5650,7 @@ function bindGlobalEvents() {
     try {
       const changed = await loadOrders(false, { live: true });
       if (changed && !isUserTypingOrModalOpen()) renderCurrentViewPreservingScroll();
-    } catch {}
+    } catch { }
   }, 12000);
 
   // Sync session, wallet balance, and live orders every 60s.
@@ -5388,7 +5670,7 @@ function bindGlobalEvents() {
           if (changed && !isUserTypingOrModalOpen()) renderCurrentViewPreservingScroll();
         }
       }
-    } catch {}
+    } catch { }
   }, 60000);
 
   // Ultra-light maintenance & auto-update check every 10s for CTVs (zero DB load)
@@ -5399,6 +5681,7 @@ function bindGlobalEvents() {
     try {
       const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
       if (!p) return;
+      if (p.appVersions) syncAppVersionsState(p.appVersions);
       if (state.token) {
         if (p.maintenance) {
           setCtvMaintenanceOverlay(true, 'Hệ thống Zn đang bảo trì');
@@ -5412,7 +5695,7 @@ function bindGlobalEvents() {
       if (!p.maintenance && !state.maintenanceLocked) {
         handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: Boolean(state.token && state.user?.role === 'ctv') });
       }
-    } catch {}
+    } catch { }
   };
   setInterval(checkCtvMaintenance, 10000);
 
@@ -5441,7 +5724,7 @@ function bindGlobalEvents() {
         try {
           const ordChanged = await loadOrders(false, { live: hasRunningOrdersInView() });
           if (ordChanged && !isUserTypingOrModalOpen()) renderCurrentViewPreservingScroll();
-        } catch {}
+        } catch { }
       }
       const intervalMs = state.user.role === 'admin' ? 60 * 1000 : 10 * 60 * 1000;
       if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
@@ -5451,7 +5734,7 @@ function bindGlobalEvents() {
         if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
           renderCurrentView();
         }
-      } catch {}
+      } catch { }
     });
   }
   // Sidebar menu navigation
@@ -5464,6 +5747,16 @@ function bindGlobalEvents() {
   document.getElementById('brandHomeLink')?.addEventListener('click', (e) => {
     e.preventDefault();
     switchView('dashboard');
+  });
+  document.getElementById('brandTitleHomeLink')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    switchView('dashboard');
+  });
+  document.getElementById('btnOpenVersionChangelog')?.addEventListener('click', () => {
+    openVersionChangelogModal();
+  });
+  document.getElementById('btnGateVersionChangelog')?.addEventListener('click', () => {
+    openVersionChangelogModal();
   });
 
   // Mobile sidebar toggle
@@ -5502,7 +5795,7 @@ function bindGlobalEvents() {
   document.getElementById('btnTopReloadPage')?.addEventListener('click', (ev) => {
     const btn = ev.currentTarget;
     btn.disabled = true;
-    try { sessionStorage.removeItem('znplay_catalog_cache'); } catch {}
+    try { sessionStorage.removeItem('znplay_catalog_cache'); } catch { }
     window.location.reload();
   });
 
@@ -5560,14 +5853,20 @@ function installClientProtection() {
 async function bootstrap() {
   installClientProtection();
   bindGlobalEvents();
+  syncAppVersionsState(state.appVersions);
+  fetch('/api/ping', { headers: { Accept: 'application/json' } })
+    .then(r => r.json())
+    .then(p => { if (p?.appVersions) syncAppVersionsState(p.appVersions); })
+    .catch(() => { });
   await initAuth();
   if (!state.user && readStoredCtvUpdateVer() !== null) {
     try {
       const p = await fetch('/api/ping', { headers: { Accept: 'application/json' } }).then(r => r.json()).catch(() => null);
+      if (p?.appVersions) syncAppVersionsState(p.appVersions);
       if (p && !p.maintenance && handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: false })) {
         return;
       }
-    } catch {}
+    } catch { }
   }
   showCtvUpdatedNoticeIfPending();
   if (state.user) {

@@ -261,12 +261,12 @@ function setCtvMaintenanceOverlay(active, message = 'Hệ thống Zn đang bảo
   if (!el) {
     el = document.createElement('div');
     el.id = 'znMaintenanceOverlay';
-    el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(5,6,15,0.94);backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
+    el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(1,22,21,0.94);backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;padding:24px;';
     el.innerHTML = `
-      <div style="max-width:440px;width:100%;background:rgba(20,22,42,0.96);border:1px solid rgba(251,191,36,0.45);border-radius:18px;padding:30px 26px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,0.6);display:flex;flex-direction:column;align-items:center;gap:14px;">
+      <div style="max-width:440px;width:100%;background:var(--color-liquid-kelp);border:1px solid rgba(203,255,252,0.22);border-radius:16px;padding:30px 26px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px;">
         <img src="/logo.jpg" alt="ZnStudio" class="brand-logo-img brand-logo-lg" />
         <span class="badge-tag amber" style="font-size:12px;">🛠️ ĐANG BẢO TRÌ</span>
-        <h2 id="znMaintenanceTitle" style="margin:0;color:#fff;font-size:22px;font-weight:700;">${escapeHtml(message)}</h2>
+        <h2 id="znMaintenanceTitle" style="margin:0;color:#fff;font-size:22px;font-weight:500;letter-spacing:-0.02em;">${escapeHtml(message)}</h2>
         <p style="margin:0;color:var(--color-moon-mist);font-size:13.5px;line-height:1.6;">
           Hệ thống đang được quản trị viên bảo trì để cập nhật. Trang sẽ tự động mở lại ngay khi hoàn tất.
         </p>
@@ -343,7 +343,7 @@ function showCtvUpdatedNotice(message = 'Zn đã tự động cập nhật phiê
   const bar = document.createElement('div');
   bar.id = 'znCtvUpdatedNotice';
   bar.setAttribute('role', 'status');
-  bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:linear-gradient(90deg,#059669 0%,#4f46e5 100%);color:#fff;border:1px solid rgba(167,243,208,0.65);border-radius:999px;padding:10px 18px;font-size:13.5px;font-weight:700;box-shadow:0 12px 32px rgba(5,150,105,0.42);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);text-align:center;';
+  bar.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99998;background:var(--color-liquid-kelp);color:var(--color-liquid-mist);border:1px solid rgba(203,255,252,0.45);border-radius:6px;padding:10px 18px;font-size:13.5px;font-weight:500;display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);text-align:center;';
   const text = document.createElement('span');
   text.textContent = `✓ ${message}`;
   const closeBtn = document.createElement('button');
@@ -615,15 +615,15 @@ function updateShellAuthUI() {
       const wl = state.catalogData?.weeklyLimit;
       if (wl) {
         walletPill.className = 'wallet-pill-box';
-        walletText.innerHTML = `Đã dùng: <strong style="color:#fbbf24;">${formatCompactVnd(wl.spent)}</strong> · Hạn mức: <strong style="color:#4ade80;">${formatCompactVnd(wl.limit)}</strong>`;
+        walletText.innerHTML = `Đã dùng: <strong style="color:var(--color-lavender-phosphor);">${formatCompactVnd(wl.spent)}</strong> · Hạn mức: <strong style="color:var(--color-aurora-gradient);">${formatCompactVnd(wl.limit)}</strong>`;
       } else {
         walletPill.className = 'wallet-pill-box';
-        walletText.innerHTML = `Quyền: <strong style="color:#4ade80;">Quản trị viên</strong>`;
+        walletText.innerHTML = `Quyền: <strong style="color:var(--color-aurora-gradient);">Quản trị viên</strong>`;
       }
     } else {
       const bal = Number(state.user.balance || 0);
       walletPill.className = `wallet-pill-box ${bal <= 0 ? 'is-empty' : ''}`;
-      walletText.innerHTML = `Số dư ví CTV: <strong style="color:${bal > 0 ? '#4ade80' : '#fca5a5'};">${formatVnd(bal)}</strong>`;
+      walletText.innerHTML = `Số dư ví CTV: <strong style="color:${bal > 0 ? 'var(--color-lavender-phosphor)' : '#fda4af'};">${formatVnd(bal)}</strong>`;
     }
   }
 }
@@ -1088,8 +1088,8 @@ function renderOrderCategoryPageHtml(catKey) {
     ${
       catKey === 'weather_buff'
         ? `
-      <div class="glass-panel" style="padding:14px 18px;border-left:3px solid #a78bfa;">
-        <div style="font-size:13px;font-weight:700;color:#c4b5fd;margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
+      <div class="glass-panel" style="padding:14px 18px;border-left:3px solid var(--color-aurora-gradient);">
+        <div style="font-size:13px;font-weight:500;color:var(--color-liquid-mist);margin-bottom:6px;">📌 Lưu ý quy tắc Buff Thời Tiết:</div>
         <ul style="margin:0;padding-left:18px;font-size:12.5px;color:var(--color-moon-mist);line-height:1.7;">
           <li><strong>Bước 1:</strong> Bấm <strong>+ Thêm Đơn Hàng</strong> để mua gói số lần thời tiết trước (chưa cần chọn khách khi tạo gói).</li>
           <li><strong>Bước 2:</strong> Sau khi tạo đơn, chọn khách và ít nhất một thời tiết để chạy đơn, hoặc bấm <strong>📋 Sao chép liên kết</strong> gửi liên kết công khai cho khách tự xem & chỉnh.</li>
@@ -1377,7 +1377,7 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
       <td>${packageCellHtml}</td>
       <td style="white-space:nowrap;"><strong>${formatNum(o.totalCnt || 0)}</strong></td>
       <td style="white-space:nowrap;">
-        <div style="font-weight:600;color:#fbbf24;">${formatVnd(o.sellPrice)}</div>
+        <div style="font-weight:500;color:var(--color-lavender-phosphor);font-variant-numeric:tabular-nums;">${formatVnd(o.sellPrice)}</div>
         ${adminNote}
       </td>
       ${
@@ -2119,13 +2119,13 @@ function renderCreateOrderModalBody() {
     ${
       catKey === 'weather_buff'
         ? `
-      <div style="padding:11px 14px;background:rgba(139,92,246,0.14);border-radius:10px;border:1px solid rgba(167,139,250,0.3);color:#ddd6fe;font-size:12.5px;line-height:1.55;">
+      <div style="padding:11px 14px;background:var(--color-liquid-deep);border-radius:10px;border:1px solid rgba(203,255,252,0.2);color:var(--color-liquid-mist);font-size:12.5px;line-height:1.55;">
         ☁️ <strong>Quy tắc Buff Thời Tiết:</strong> Chọn gói số lần và bấm <strong>Xác Nhận</strong> để tạo đơn trước (chưa cần chọn khách ngay lúc này). Sau khi tạo xong, bấm <strong>👤 Gán khách</strong> và <strong>☁️ Chọn thời tiết</strong> trên bảng đơn rồi bật chạy!
-        <div style="margin-top:6px;color:#fbbf24;font-weight:600;">⚠️ Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được. Hãy cân nhắc trước khi lên đơn vì Admin chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</div>
+        <div style="margin-top:6px;color:#fde68a;font-weight:500;">⚠️ Đơn chưa hoàn thành, tạo quá 3 tiếng thì không xóa được. Hãy cân nhắc trước khi lên đơn vì Admin chỉ hỗ trợ hoàn trong trường hợp trục trặc do hệ thống.</div>
       </div>
     `
         : `
-      <div style="background:rgba(255,255,255,0.02);padding:14px;border-radius:12px;box-shadow:var(--shadow-subtle);display:flex;flex-direction:column;gap:12px;">
+      <div style="background:var(--color-liquid-deep);padding:14px;border-radius:12px;box-shadow:var(--shadow-subtle);display:flex;flex-direction:column;gap:12px;">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
           <strong style="color:#fff;font-size:13px;">1. Chọn khách hàng Play Together</strong>
           <div class="action-row">
@@ -2144,7 +2144,7 @@ function renderCreateOrderModalBody() {
         ${
           cust
             ? `
-          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;background:rgba(102,58,243,0.18);padding:10px 14px;border-radius:8px;box-shadow:rgba(156,127,249,0.5) 0 0 0 1px inset;">
+          <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;background:rgba(0,130,124,0.22);padding:10px 14px;border-radius:8px;box-shadow:rgba(203,255,252,0.38) 0 0 0 1px inset;">
             <div>
               <div style="font-weight:600;color:#fff;font-size:14px;">✓ ${escapeHtml(cust.nickname)}</div>
               <div style="font-size:11px;color:var(--color-moon-mist);">SUID: ${escapeHtml(cust.suid || '—')} ${cust.region ? `· ${escapeHtml(cust.region)}` : ''}</div>
@@ -2180,10 +2180,10 @@ function renderCreateOrderModalBody() {
       ${categoryFormHtml}
     </div>
 
-    <div style="background:rgba(5,6,15,0.7);padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;min-width:0;max-width:100%;">
+    <div style="background:var(--color-liquid-deep);padding:14px 16px;border-radius:10px;box-shadow:var(--shadow-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;min-width:0;max-width:100%;">
       <div>
         <div style="font-size:12px;color:var(--color-moon-mist);">Tổng tiền thanh toán:</div>
-        <div style="font-size:22px;font-weight:700;color:#fbbf24;" id="modalTotalPriceText">0đ</div>
+        <div style="font-size:22px;font-weight:500;letter-spacing:-0.025em;color:var(--color-lavender-phosphor);font-variant-numeric:tabular-nums;" id="modalTotalPriceText">0đ</div>
       </div>
       <div class="action-row order-submit-actions">
         <button type="button" class="btn-frost" id="btnModalCancel" style="white-space:nowrap;">Hủy</button>
@@ -2673,7 +2673,7 @@ function openWeatherSlotModal(order) {
       ${
         hasCust
           ? `
-        <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:rgba(102,58,243,0.16);border-radius:10px;border:1px solid rgba(167,139,250,0.35);">
+        <div class="detail-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:rgba(0,130,124,0.2);border-radius:10px;border:1px solid rgba(203,255,252,0.3);">
           <div>
             <div style="font-size:11px;color:var(--color-moon-mist);">Khách hiện tại:</div>
             <div style="font-weight:600;color:#fff;">${escapeHtml(order.customer?.nickname || '—')} <span style="font-weight:400;font-size:11px;color:var(--color-fog-veil);">(SUID: ${escapeHtml(order.customer?.suid || '—')})</span></div>
@@ -3202,23 +3202,23 @@ function renderDashboardOverviewHtml() {
   return `
     <div class="stats-three-grid">
       <div class="glass-panel">
-        <div style="font-size:12px;color:var(--color-moon-mist);">Trữ lượng Kho Xu Nông Trại</div>
-        <div style="font-size:24px;font-weight:700;color:#4ade80;margin-top:6px;">${formatNum(coinQty)} Xu</div>
-        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Kho trái cây: ${formatNum(totalFruits)} trái sẵn sàng</div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Trữ lượng Kho Xu Nông Trại</div>
+        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;line-height:1.1;color:var(--color-lavender-phosphor);margin-top:8px;font-variant-numeric:tabular-nums;">${formatNum(coinQty)} Xu</div>
+        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:6px;">Kho trái cây: ${formatNum(totalFruits)} trái sẵn sàng</div>
       </div>
 
       <div class="glass-panel">
-        <div style="font-size:12px;color:var(--color-moon-mist);">Đơn hàng đang chạy</div>
-        <div style="font-size:24px;font-weight:700;color:#fff;margin-top:6px;">${activeOrders} đơn đang bật</div>
-        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">Tổng số đơn: ${state.orderPage?.totalCount ?? state.orders.length} đơn</div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Đơn hàng đang chạy</div>
+        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;line-height:1.1;color:var(--color-platinum);margin-top:8px;font-variant-numeric:tabular-nums;">${activeOrders} đơn đang bật</div>
+        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:6px;">Tổng số đơn: ${state.orderPage?.totalCount ?? state.orders.length} đơn</div>
       </div>
 
       <div class="glass-panel">
-        <div style="font-size:12px;color:var(--color-moon-mist);">${state.user.role === 'admin' ? 'Trạng thái Quản trị Admin' : 'Số dư Ví CTV của bạn'}</div>
-        <div style="font-size:24px;font-weight:700;color:#fbbf24;margin-top:6px;">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">${state.user.role === 'admin' ? 'Trạng thái Quản trị Admin' : 'Số dư Ví CTV của bạn'}</div>
+        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;line-height:1.1;color:var(--color-lavender-phosphor);margin-top:8px;font-variant-numeric:tabular-nums;">
           ${state.user.role === 'admin' ? 'Đã đồng bộ API' : formatVnd(state.user.balance)}
         </div>
-        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:4px;">
+        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:6px;">
           ${state.user.role === 'admin' ? 'Bấm mục Quản trị bên trái để chỉnh giá CTV' : 'Đảm bảo có số dư để tạo đơn hàng'}
         </div>
       </div>
@@ -3275,16 +3275,16 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
       summaryHtml = !wl ? '<p class="tool-warning">Chưa có dữ liệu hạn mức tuần từ nguồn.</p>' : `
         <div class="stats-three-grid">
           <div class="stat-subcard">
-            <div style="font-size:12px;color:var(--color-moon-mist);">Hạn mức tuần nguồn</div>
-            <div style="font-size:22px;font-weight:700;color:#fff;">${formatVnd(wl.limit)}</div>
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Hạn mức tuần nguồn</div>
+            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-platinum);font-variant-numeric:tabular-nums;">${formatVnd(wl.limit)}</div>
           </div>
           <div class="stat-subcard">
-            <div style="font-size:12px;color:var(--color-moon-mist);">Đã sử dụng trong tuần</div>
-            <div style="font-size:22px;font-weight:700;color:#fbbf24;">${formatVnd(wl.spent)}</div>
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Đã sử dụng trong tuần</div>
+            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-lavender-phosphor);font-variant-numeric:tabular-nums;">${formatVnd(wl.spent)}</div>
           </div>
           <div class="stat-subcard">
-            <div style="font-size:12px;color:var(--color-moon-mist);">Hạn mức còn lại</div>
-            <div style="font-size:22px;font-weight:700;color:#4ade80;">${formatVnd(wl.remaining)}</div>
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Hạn mức còn lại</div>
+            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-aurora-gradient);font-variant-numeric:tabular-nums;">${formatVnd(wl.remaining)}</div>
           </div>
         </div>
       `;
@@ -3293,16 +3293,16 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
       summaryHtml = `
         <div class="stats-three-grid">
           <div class="stat-subcard">
-            <div style="font-size:12px;color:var(--color-moon-mist);">Số dư ví hiện tại</div>
-            <div style="font-size:22px;font-weight:700;color:#4ade80;">${formatVnd(s.currentBalance)}</div>
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Số dư ví hiện tại</div>
+            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-lavender-phosphor);font-variant-numeric:tabular-nums;">${formatVnd(s.currentBalance)}</div>
           </div>
           <div class="stat-subcard">
-            <div style="font-size:12px;color:var(--color-moon-mist);">Tổng đơn đã đặt</div>
-            <div style="font-size:22px;font-weight:700;color:#fff;">${s.orderCount} đơn</div>
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng đơn đã đặt</div>
+            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-platinum);font-variant-numeric:tabular-nums;">${s.orderCount} đơn</div>
           </div>
           <div class="stat-subcard">
-            <div style="font-size:12px;color:var(--color-moon-mist);">Tổng tiền đã thanh toán</div>
-            <div style="font-size:22px;font-weight:700;color:#fbbf24;">${formatVnd(s.totalSpent)}</div>
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng tiền đã thanh toán</div>
+            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-aurora-gradient);font-variant-numeric:tabular-nums;">${formatVnd(s.totalSpent)}</div>
           </div>
         </div>
       `;
@@ -3793,7 +3793,7 @@ function renderAdminPricingPageHtml() {
                   <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding-top:2px;">
                     <button type="button" class="btn-frost pricing-cat-subpkg-btn" data-open-cat-pkgs="${cat.key}" style="width:100%;justify-content:space-between;">
                       <span>📦 Chỉnh từng gói riêng (${catPkgCount} gói)</span>
-                      <span style="font-size:11px;color:${overrideCount > 0 ? '#fbbf24' : '#c4b5fd'};">${overrideCount > 0 ? `${overrideCount} đã chỉnh riêng →` : 'Mở danh sách →'}</span>
+                      <span style="font-size:11px;color:${overrideCount > 0 ? '#fde68a' : 'var(--color-aurora-gradient)'};">${overrideCount > 0 ? `${overrideCount} đã chỉnh riêng →` : 'Mở danh sách →'}</span>
                     </button>
                   </div>
                 `
@@ -3871,7 +3871,7 @@ function renderAdminPricingPageHtml() {
         </div>
       `
           : `
-        <div style="background:rgba(102,58,243,0.12);padding:14px 16px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div style="background:var(--color-liquid-deep);box-shadow:var(--shadow-subtle);padding:14px 16px;border-radius:10px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <span style="font-size:13px;color:#fff;font-weight:600;">Mức chung cho trái chưa chỉnh riêng:</span>
             <div class="pricing-mode-switch">
@@ -4267,7 +4267,7 @@ function openCategoryPackagePricingModal(catKey) {
   title.textContent = `📦 Chỉnh từng gói riêng — ${catMeta?.label || catKey}`;
 
   body.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:rgba(102,58,243,0.12);padding:12px 14px;border-radius:10px;border:1px solid rgba(167,139,250,0.28);">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--color-liquid-deep);padding:12px 14px;border-radius:10px;border:1px solid rgba(203,255,252,0.18);">
       <div style="font-size:12.5px;color:var(--color-moon-mist);line-height:1.55;">
         <div>Quy tắc chung hiện tại của danh mục: <strong style="color:#5eead4;">${escapeHtml(catRuleText)}</strong> · Đang chỉnh riêng: <strong style="color:#fbbf24;">${customCount}/${allPkgs.length} gói</strong></div>
         <div style="font-size:11.5px;color:var(--color-fog-veil);">Gói nào đã bấm <strong>Lưu riêng</strong> sẽ không áp dụng quy tắc chung khi bạn cập nhật danh mục, cho đến khi bạn sửa lại hoặc bấm <strong>↺ Quy tắc chung</strong>.</div>
@@ -4627,7 +4627,7 @@ function openAdminMutationPricingModal(fruitId) {
   const muts = f.mutation_prices || [];
 
   body.innerHTML = `
-    <div style="background:rgba(102,58,243,0.12);padding:12px 14px;border-radius:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+    <div style="background:var(--color-liquid-deep);box-shadow:var(--shadow-subtle);padding:12px 14px;border-radius:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span style="font-size:12px;color:#fff;font-weight:600;">Áp nhanh cả 19 hệ:</span>
         <input type="number" id="mutBulkPctInput" class="input-box" style="width:90px;padding:6px 8px;" placeholder="%" value="20" min="0" max="500" />
@@ -4795,7 +4795,7 @@ function renderAdminCtvPageHtml() {
     : '';
 
   const maintenanceBanner = `
-    <div class="glass-panel" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;border:1px solid ${isMaintenance ? 'rgba(248,113,113,0.55)' : 'rgba(167,139,250,0.3)'};background:${isMaintenance ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.03)'};">
+    <div class="glass-panel" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;border:1px solid ${isMaintenance ? 'rgba(253,164,175,0.45)' : 'rgba(203,255,252,0.18)'};background:${isMaintenance ? 'rgba(136,19,55,0.22)' : 'var(--color-liquid-kelp)'};">
       <div style="display:flex;flex-direction:column;gap:4px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <strong style="color:#fff;font-size:15px;">🛠️ Chế độ Bảo trì CTV</strong>
@@ -4825,16 +4825,16 @@ function renderAdminCtvPageHtml() {
     ${maintenanceBanner}
     <div class="stats-three-grid">
       <div class="glass-panel">
-        <div style="font-size:12px;color:var(--color-moon-mist);">Tổng số tài khoản CTV</div>
-        <div style="font-size:24px;font-weight:700;color:#fff;margin-top:4px;">${ctvs.length} CTV</div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng số tài khoản CTV</div>
+        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;color:var(--color-platinum);margin-top:6px;font-variant-numeric:tabular-nums;">${ctvs.length} CTV</div>
       </div>
       <div class="glass-panel">
-        <div style="font-size:12px;color:var(--color-moon-mist);">Tổng doanh thu CTV đặt đơn</div>
-        <div style="font-size:24px;font-weight:700;color:#fbbf24;margin-top:4px;">${formatVnd(stats.totalRevenue || 0)}</div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng doanh thu CTV đặt đơn</div>
+        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;color:var(--color-lavender-phosphor);margin-top:6px;font-variant-numeric:tabular-nums;">${formatVnd(stats.totalRevenue || 0)}</div>
       </div>
       <div class="glass-panel">
-        <div style="font-size:12px;color:var(--color-moon-mist);">Tổng lợi nhuận chênh lệch Admin</div>
-        <div style="font-size:24px;font-weight:700;color:#4ade80;margin-top:4px;">+${formatVnd(stats.totalProfit || 0)}</div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng lợi nhuận chênh lệch Admin</div>
+        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;color:var(--color-aurora-gradient);margin-top:6px;font-variant-numeric:tabular-nums;">+${formatVnd(stats.totalProfit || 0)}</div>
       </div>
     </div>
 
@@ -5124,15 +5124,15 @@ function renderAdminSystemPageHtml() {
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
           <div class="stat-subcard" style="padding:12px 14px;">
             <div style="font-size:11px;color:var(--color-fog-veil);">Tài khoản CTV</div>
-            <strong style="font-size:18px;color:#fff;">${stats.totalCtvCount || 0} CTV</strong>
+            <strong style="font-size:18px;font-weight:500;color:var(--color-platinum);">${stats.totalCtvCount || 0} CTV</strong>
           </div>
           <div class="stat-subcard" style="padding:12px 14px;">
             <div style="font-size:11px;color:var(--color-fog-veil);">Tổng số dư ví CTV</div>
-            <strong style="font-size:18px;color:#4ade80;">${formatVnd(stats.totalCtvBalance || 0)}</strong>
+            <strong style="font-size:18px;font-weight:500;color:var(--color-lavender-phosphor);">${formatVnd(stats.totalCtvBalance || 0)}</strong>
           </div>
           <div class="stat-subcard" style="padding:12px 14px;">
             <div style="font-size:11px;color:var(--color-fog-veil);">Đơn hàng / Giao dịch</div>
-            <strong style="font-size:18px;color:#fbbf24;">${stats.totalLocalOrders || 0} / ${stats.totalTransactions || 0}</strong>
+            <strong style="font-size:18px;font-weight:500;color:var(--color-aurora-gradient);">${stats.totalLocalOrders || 0} / ${stats.totalTransactions || 0}</strong>
           </div>
         </div>
 

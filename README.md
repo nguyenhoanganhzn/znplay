@@ -33,6 +33,7 @@ hiện có bằng chức năng trong giao diện admin.
 | `ADMIN_PASSWORD` | Mật khẩu admin khi khởi tạo, bắt buộc với dữ liệu mới |
 | `HOANNGUYEN_EMAIL` | Email đăng nhập nguồn chính |
 | `HOANNGUYEN_PASSWORD` | Mật khẩu đăng nhập nguồn chính |
+| `QZEEN_API_KEY` | Khóa API tài khoản thanh toán cho Nguồn dự phòng. Đặt trong Environment của Render và trong `.env` khi chạy tại máy |
 | `DATA_DIR` | Thư mục lưu dữ liệu, mặc định `data` cạnh `server.js` |
 | `DATABASE_URL` | Chuỗi kết nối PostgreSQL riêng tư. Khi có giá trị, ứng dụng đọc và ghi vào PostgreSQL |
 | `PORT` | Cổng HTTP, mặc định `3000`; Render tự cung cấp |
@@ -91,6 +92,12 @@ Nạp ví CTV không tự chuyển tiền hay nạp vào tài khoản HoanNguyen
 Sao lưu dữ liệu riêng trước khi đổi thư mục lưu trữ hoặc triển khai lại.
 
 ## Quyền và đối soát CTV
+
+Trong **Công cụ → Nguồn dự phòng**, Admin và CTV xem trạng thái năm dịch vụ, chọn thông số và lấy báo giá trước khi xác nhận. Máy chủ kiểm tra lại trạng thái và giá ở thời điểm đặt. CTV thanh toán giá bán từ ví ZnPlay. Tài khoản Qzeen thanh toán chi phí nguồn bằng ví cho cả đơn Admin và đơn CTV.
+
+Trong **Tùy chỉnh Giá Sản phẩm → Chỉnh giá từng danh mục**, mỗi mục **Dự phòng** có mức cộng VNĐ theo đơn hoặc phần trăm trên báo giá nguồn. Nếu chưa đặt riêng, hệ thống dùng mức cộng mặc định hiện hành. Giá đã ghi nhận trên đơn cũ được giữ nguyên.
+
+Trong **Đơn nguồn dự phòng**, dùng **Cập nhật trạng thái** để đọc kết quả mới nhất, hoặc **Chạy / tiếp tục** khi nguồn yêu cầu. Khi một đơn chưa xác định kết quả, Admin mở **Chờ đối soát**, kiểm tra giao dịch trên Qzeen rồi ghi nhận mã đơn hoặc hoàn khoản giữ. Khóa nguồn nằm ngoài tệp sao lưu. Trường `backupSource` của `/api/health` ghi nhận kết quả và thời điểm liên lạc gần nhất.
 
 - CTV chỉ xem và thao tác đơn của mình; quyền được kiểm tra theo cả danh mục và mã đơn.
 - Mỗi yêu cầu tạo đơn có mã chống trùng. Tiền được giữ và lưu trước khi gửi nguồn.

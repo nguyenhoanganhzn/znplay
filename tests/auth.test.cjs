@@ -13,6 +13,7 @@ const root = path.resolve(__dirname, '..');
 const serverSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const clientSource = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
 const toolsSource = fs.readFileSync(path.join(root, 'public/tools.js'), 'utf8');
+const backupClientSource = fs.readFileSync(path.join(root, 'public/backup.js'), 'utf8');
 
 // Run the actual routes with an in-memory database and mocked upstream service.
 // Tests never change data/db.json or contact the order provider.
@@ -39,6 +40,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     writeFileSync() { if (writeFailure) throw new Error('Disk full'); }, renameSync() { }, unlinkSync() { },
   };
   const context = vm.createContext({
+    ...await import('../backup-source.js'),
     express: () => {
       const app = express();
       app.listen = () => { }; // Avoid the production listener and startup login.
@@ -73,6 +75,91 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
     mockSearch: handler => { context.searchInGameByWebSocket = handler; },
   };
 }
+
+test('backup orders use live quotes, per-service markup, wallet-only dispatch and scoped history', async t => {
+  let posts = 0, active = true, currentCost = 4000;
+  const source = async (url, opts) => {
+    assert.equal(new URL(url).origin, 'https://ptg.qzeen.dev');
+    assert.equal(opts.headers.Authorization, 'Bearer mock-key');
+    const args = opts.body && JSON.parse(opts.body);
+    if (url.endsWith('/services')) return Response.json({ services: { guide: { enabled: active, minMinutes: 10, maxHours: 24, maxBots: 30 }, seeds: { enabled: false } } });
+    if (url.endsWith('/quote')) {
+      assert.deepEqual(args, { service: 'guide', minutes: 60, bots: 2 });
+      return Response.json({ quote: { amount: currentCost } });
+    }
+    assert.ok(url.endsWith('/orders'));
+    assert.deepEqual(args, { service: 'guide', minutes: 60, bots: 2, charName: 'Test Player', payWith: 'wallet' });
+    const id = ++posts;
+    return Response.json({ paid: true, balance: 99001, job: { id, status: 'queued', amount: currentCost } });
+  };
+  const s = await startTestServer(t, source, { env: { QZEEN_API_KEY: 'mock-key' } });
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+  const input = { category: 'backup_guide', minutes: 60, bots: 2, charName: 'Test Player' };
+  assert.equal((await s.request('/api/backup/services')).status, 401);
+  const catalog = await s.request('/api/backup/services', 'GET', ctv);
+  assert.equal(catalog.body.services.length, 5);
+  assert.equal(catalog.body.services.find(row => row.key === 'seeds').enabled, false);
+  const settings = { categoryMarkupModes: { backup_guide: 'percent' }, categoryMarkupPercents: { backup_guide: 25 } };
+  assert.equal((await s.request('/api/admin/settings', 'PUT', ctv, settings)).status, 403);
+  assert.equal((await s.request('/api/admin/settings', 'PUT', admin, settings)).status, 200);
+  const quote = await s.request('/api/backup/quote', 'POST', ctv, input);
+  assert.equal(quote.body.sellPrice, 5000);
+  assert.equal(quote.body.costPrice, undefined);
+  const payload = { ...input, payWith: 'qr', idempotency_key: crypto.randomUUID(), expected_price: 5000 };
+  currentCost = 5000;
+  assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).body.code, 'PRICE_CHANGED');
+  currentCost = 4000;
+  const results = await Promise.all([1, 2].map(() => s.request('/api/orders/place', 'POST', ctv, payload)));
+  assert.ok(results.some(r => r.body.success));
+  assert.equal(posts, 1);
+  assert.equal(s.db.users.find(u => u.id === 'seller').balance, 45000);
+  assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).body.success, true);
+  const adminOrder = await s.request('/api/orders/place', 'POST', admin, { ...payload, idempotency_key: crypto.randomUUID() });
+  assert.equal(adminOrder.status, 200);
+  const list = await s.request('/api/backup/orders', 'GET', ctv);
+  assert.equal(list.body.orders.length, 1);
+  assert.doesNotMatch(JSON.stringify(list.body), /mock-key|costPrice|99001|markupAmount|placedBy/);
+  assert.equal((await s.request('/api/backup/orders/' + adminOrder.body.order.id + '/resume', 'POST', ctv, {})).status, 404);
+  active = false;
+  assert.equal((await s.request('/api/orders/place', 'POST', ctv, { ...payload, idempotency_key: crypto.randomUUID() })).status, 400);
+  assert.equal(posts, 2);
+});
+
+test('backup source rejection releases once, ambiguous creation stays reserved for admin reconciliation', async t => {
+  let mode = 'reject', creates = 0;
+  const s = await startTestServer(t, async url => {
+    if (url.endsWith('/services')) return Response.json({ services: { emptymap: { enabled: true, free: 0 } } });
+    if (url.endsWith('/quote')) return Response.json({ quote: { amount: 2000 } });
+    if (url.includes('/order?id=')) return Response.json({ job: { id: 42, service: 'emptymap', amount: 2000, paidAt: Date.now(), status: 'running' } });
+    creates++;
+    if (mode === 'reject') return Response.json({ error: 'insufficient funds' }, { status: 400 });
+    throw new Error('network timeout');
+  }, { env: { QZEEN_API_KEY: 'mock-key' } });
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const seller = s.db.users.find(u => u.id === 'seller');
+  const payload = { category: 'backup_emptymap', charName: 'One', expected_price: 7000, idempotency_key: crypto.randomUUID() };
+  seller.balance = 6999;
+  assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).body.code, 'INSUFFICIENT_BALANCE');
+  assert.equal(creates, 0);
+  seller.balance = 50000;
+  for (let i = 0; i < 2; i++) assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).status, 400);
+  assert.equal(seller.balance, 50000);
+  assert.equal(creates, 1);
+  mode = 'timeout';
+  const newPayload = { ...payload, idempotency_key: crypto.randomUUID() };
+  assert.equal((await s.request('/api/orders/place', 'POST', ctv, newPayload)).body.code, 'ORDER_REVIEW_REQUIRED');
+  assert.equal((await s.request('/api/orders/place', 'POST', ctv, newPayload)).body.code, 'ORDER_REVIEW_REQUIRED');
+  assert.equal(seller.balance, 43000);
+  assert.equal(creates, 2);
+  const intent = s.db.orderIntents[0];
+  const resolve = { confirmed: true, resolution: 'created', remoteOrderId: 42, actualCost: 2000, note: 'Verified source order' };
+  assert.equal((await s.request('/api/admin/intents/' + intent.id + '/reconcile', 'POST', admin, resolve)).status, 200);
+  assert.equal(seller.balance, 43000);
+  assert.equal((await s.request('/api/backup/orders', 'GET', ctv)).body.orders[0].statusText, 'Đang chạy');
+  assert.equal((await s.request('/api/admin/intents/' + intent.id + '/reconcile', 'POST', admin, resolve)).status, 409);
+});
 
 test('new deployment requires a private admin password and never creates demo CTV accounts', async t => {
   await assert.rejects(startTestServer(t, undefined, { fresh: true }), /ADMIN_PASSWORD/);
@@ -210,7 +297,7 @@ function createClient(fetchImpl = async () => { throw new Error('Unexpected requ
     document: { getElementById: element, querySelectorAll: () => [] },
     fetch: fetchImpl, console: { ...console, error() { } }, setTimeout,
   });
-  vm.runInContext(toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', context);
+  vm.runInContext(backupClientSource.replace(/^export /gm, '') + '\n' + toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', context);
   return { context, state: context.testState, element, storage };
 }
 
@@ -1610,7 +1697,7 @@ test('admin maintenance toggle blocks logged-in and newly logging-in CTVs with m
       setTimeout() { },
       setInterval() { },
     });
-    vm.runInContext(toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', ctx);
+    vm.runInContext(backupClientSource.replace(/^export /gm, '') + '\n' + toolsSource.replace(/^export /m, '') + '\n' + clientSource.replace(/^import .*;\r?\n/gm, '').replace(/bootstrap\(\);\s*$/, '') + '\nglobalThis.testState = state;', ctx);
     return { ctx, getReloads: () => reloads, getNotice: () => byId.get('znCtvUpdatedNotice') };
   };
 

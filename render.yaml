@@ -21,3 +21,5 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: QZEEN_API_KEY
+        sync: false

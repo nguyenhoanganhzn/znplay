@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { createToolViews } from './tools.js';
+import { backupPricingCategories, mountBackup } from './backup.js';
 
 const DEFAULT_APP_VERSIONS = [
   {
@@ -270,6 +271,7 @@ const VIEW_TITLES = {
   weekly_settlements: 'Đối soát tuần & Lịch sử số dư',
   order_history: 'Lịch sử đơn hàng',
   identity_tools: 'Trích xuất ID Game / Tên nhân vật',
+  backup: 'Nguồn dự phòng',
   admin_monitor: 'Quản trị: Giám sát hoạt động & đối soát CTV',
   admin_pricing: 'Quản trị: Tùy chỉnh Giá từng Sản phẩm & Danh mục',
   admin_ctv: 'Quản trị: Quản lý Tài khoản CTV đặt đơn',
@@ -1081,6 +1083,8 @@ function renderCurrentView() {
   } else if (view === 'order_history') {
     container.innerHTML = zeroBannerHtml + renderOrderHistoryHtml();
     bindOrderHistoryEvents();
+  } else if (view === 'backup') {
+    mountBackup(container, { apiFetch, state, escapeHtml, formatVnd, formatDateVi, updateShellAuthUI });
   } else if (view === 'identity_tools') {
     if (container.querySelector('#identityForm')) return;
     container.innerHTML = renderIdentityToolsHtml();
@@ -1402,6 +1406,12 @@ function formatOnlineStatusVi(status) {
 
 function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
   const isAdmin = state.user?.role === 'admin';
+  if (o.category?.startsWith('backup_')) {
+    return `<tr><td><strong>${escapeHtml(o.customer?.nickname || '')}</strong><div class="tool-note">#${escapeHtml(o.remoteOrderId)}</div></td>
+      <td>${escapeHtml(o.categoryName)}<div class="tool-note">${escapeHtml(o.summary)}</div></td><td>1 đơn</td>
+      <td>${formatVnd(o.sellPrice)}</td><td>—</td><td><span class="badge-tag">${escapeHtml(o.statusText || 'Chờ cập nhật')}</span></td><td>—</td>
+      <td>${formatDateVi(o.createdAt)}</td><td><button type="button" class="btn-frost" data-open-backup>Mở nguồn dự phòng</button></td></tr>`;
+  }
   const pct =
     o.totalCnt > 0
       ? Math.min(100, Math.round((Number(o.completedCnt || 0) / Number(o.totalCnt)) * 100))
@@ -3561,6 +3571,7 @@ function renderOrderHistoryTbodyHtml() {
 
 let histFilterTimer = null;
 function bindOrderHistoryEvents() {
+  document.querySelectorAll('[data-open-backup]').forEach(btn => btn.addEventListener('click', () => switchView('backup')));
   const input = document.getElementById('histSearchInput');
   input?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
@@ -3590,6 +3601,7 @@ const PRICING_CATEGORIES = [
   { key: 'mail_gift', icon: 'mail', label: '06. Gói Quà thư', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
   { key: 'farm_gift', icon: 'gift', label: '07. Gói Quà nông trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
   { key: 'weather_buff', icon: 'cloud', label: '08. Gói Buff Thời Tiết', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  ...backupPricingCategories,
 ];
 
 function computePreviewSell(cost, mode, fixedVal, pctVal) {
@@ -3847,7 +3859,7 @@ function renderAdminPricingPageHtml() {
       <!-- Sub-navigation tabs -->
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
         <button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
-          ${znIcon('sliders', 14)} <span>1. Chỉnh giá từng Danh mục (VNĐ / %) — 8 danh mục</span>
+          ${znIcon('sliders', 14)} <span>Chỉnh giá từng danh mục · ${PRICING_CATEGORIES.length} danh mục</span>
         </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'packages' ? 'is-active' : ''}" data-adm-ptab="packages">
           ${znIcon('package', 14)} <span>2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)</span>
@@ -3862,7 +3874,7 @@ function renderAdminPricingPageHtml() {
         <div class="pricing-cat-grid">
           ${PRICING_CATEGORIES.map((cat) => {
         const mode = modes[cat.key] === 'percent' ? 'percent' : 'fixed';
-        const fixedVal = cat.isFruitUnit ? defaultFruitMarkup : Number(cm[cat.key] ?? 5000);
+        const fixedVal = cat.isFruitUnit ? defaultFruitMarkup : Number(cm[cat.key] ?? adm?.settings?.defaultMarkup ?? 5000);
         const pctVal = Number(percents[cat.key] ?? 0);
         const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
         const isWorking = !!sysStatus[cat.key];
@@ -3877,9 +3889,9 @@ function renderAdminPricingPageHtml() {
               <div class="pricing-cat-card" data-cat-card="${cat.key}">
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
                   <strong style="color:#fff;font-size:14px;display:inline-flex;align-items:center;gap:8px;"><span class="dashboard-cat-icon" style="width:28px;height:28px;">${znIcon(cat.icon, 14)}</span><span>${escapeHtml(cat.label)}</span></strong>
-                  <span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
+                  ${cat.key.startsWith('backup_') ? '' : `<span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                     ● ${isWorking ? 'Hoạt động' : 'Tạm ngưng'}
-                  </span>
+                  </span>`}
                 </div>
 
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
@@ -3924,7 +3936,7 @@ function renderAdminPricingPageHtml() {
                 <div class="pricing-preview-line" id="admCatPreview_${cat.key}" data-sample-name="${escapeHtml(sample?.name || '')}" data-sample-cost="${sample?.cost || 0}">
                   ${sample
             ? `VD: <strong>${escapeHtml(sample.name)}</strong> · gốc ${formatVnd(sample.cost)} → bán CTV <strong style="color:#5eead4;">${formatVnd(sampleSell)}</strong> <span style="color:#4ade80;">(+${formatVnd(sampleProfit)})</span>`
-            : `Hiện Server Zn chưa mở gói mẫu cho danh mục này; mức cộng sẽ tự áp dụng ngay khi mở bán.`
+            : cat.key.startsWith('backup_') ? 'Mức cộng được tính một lần trên báo giá của cả đơn.' : `Hiện Server Zn chưa mở gói mẫu cho danh mục này; mức cộng sẽ tự áp dụng ngay khi mở bán.`
           }
                 </div>
 
@@ -3958,7 +3970,7 @@ function renderAdminPricingPageHtml() {
         </div>
 
         <div style="display:flex;justify-content:flex-end;margin-top:16px;">
-          <button type="button" class="btn-violet" id="btnSaveAllCatsBottom">${znIcon('save', 14)} <span>Cập nhật tất cả 8 danh mục</span></button>
+          <button type="button" class="btn-violet" id="btnSaveAllCatsBottom">${znIcon('save', 14)} <span>Cập nhật tất cả danh mục</span></button>
         </div>
       `
       : state.adminPricingTab === 'packages'
@@ -4599,11 +4611,11 @@ function bindAdminPricingEvents() {
       if (resetCategoryOverrides.length > 0) body.resetCategoryOverrides = resetCategoryOverrides;
       await savePricingSettingsAndReload(
         body,
-        'Đã cập nhật giá cho toàn bộ 8 danh mục!'
+        'Đã cập nhật giá cho toàn bộ danh mục!'
       );
     } catch (err) {
       showToast(`Lỗi: ${err.message}`);
-      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.innerHTML = `${znIcon('save', 14)} <span>Cập nhật tất cả 8 danh mục</span>`; }
+      if (triggerBtn) { triggerBtn.disabled = false; triggerBtn.innerHTML = `${znIcon('save', 14)} <span>Cập nhật tất cả danh mục</span>`; }
     }
   };
   document.getElementById('btnSaveAllCatsBottom')?.addEventListener('click', (e) => saveAllCategories(e.currentTarget));

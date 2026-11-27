@@ -1,5 +1,6 @@
 import express from 'express';
 import { openPostgres } from './postgres-store.js';
+import { backupServices, createBackupSource, isBackupCategory } from './backup-source.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -1488,12 +1489,17 @@ app.get('/api/ping', (req, res) => {
   });
 });
 
+const backupSource = createBackupSource({ apiKey: process.env.QZEEN_API_KEY,
+  request: (...args) => fetch(...args), validMoney,
+  sellingPrice: (category, cost) => getPackageSellingPrice(category, 0, cost, cost).sellEffective });
+
 app.get('/api/health', (req, res) => {
   res.status(storageHealthy ? 200 : 503).json({
     success: storageHealthy,
     storage: postgres ? 'postgresql' : 'json',
     persistent: Boolean(postgres || process.env.DATA_DIR),
     upstream: { connected: upstreamStatus.connected, checkedAt: upstreamStatus.lastCheckedAt },
+    backupSource: backupSource.health,
   });
 });
 
@@ -2614,9 +2620,48 @@ app.get('/api/customer/saved/:id', requireAuth, requireAdmin, async (req, res) =
 // ============================================================================
 // PLACE ORDER ENDPOINT (STRICT WALLET CHECK + SYSTEM ACTIVE CHECK)
 // ============================================================================
+app.get('/api/backup/services', requireAuth, limitInteractive, asyncRoute(async (req, res) => {
+  res.json({ success: true, services: await backupSource.catalog() });
+}));
+app.post('/api/backup/quote', requireAuth, limitInteractive, asyncRoute(async (req, res) => {
+  const quote = await backupSource.prepare(req.body);
+  res.json({ success: true, sellPrice: quote.sellPrice, summary: quote.summary,
+    costPrice: req.user.role === 'admin' ? quote.costPrice : undefined });
+}));
+app.get('/api/backup/orders', requireAuth, (req, res) => {
+  const allowed = o => isBackupCategory(o.category) && (req.user.role === 'admin' || o.placedBy?.id === req.user.id);
+  const orders = db.localOrders.filter(allowed);
+  const limit = Math.min(500, listLimit(req.query.limit));
+  const reviews = db.orderIntents.filter(i => isBackupCategory(i.category) && (req.user.role === 'admin' || i.userId === req.user.id) &&
+    (['processing', 'uncertain'].includes(i.status) || i.requiresReview)).map(i => ({
+      id: i.id, status: i.status, summary: i.summary, customer: i.customer?.nickname, createdAt: i.createdAt,
+      heldAmount: i.heldAmount, requiresReview: i.requiresReview, remoteOrderId: i.remoteOrderId,
+      userName: req.user.role === 'admin' ? i.userName : undefined }));
+  res.json({ success: true, reviews, total: orders.length, orders: orders.slice(0, limit).map(o => ({
+    ...publicOrder(o, req.user.role === 'admin'), statusText: backupSource.statusText(o.backupStatus || o.status),
+    canResume: ['ready', 'paused'].includes(o.backupStatus) })) });
+});
+app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
+  const o = db.localOrders.find(row => row.id === req.params.id && isBackupCategory(row.category) &&
+    (req.user.role === 'admin' || row.placedBy?.id === req.user.id));
+  if (!o) return res.status(404).json({ success: false, message: 'Không tìm thấy đơn dự phòng.' });
+  if (!['refresh', 'resume'].includes(req.params.action)) return res.status(400).json({ success: false, message: 'Thao tác không hợp lệ.' });
+  let latest = await backupSource.refresh(o);
+  if (req.params.action === 'resume' && ['ready', 'paused'].includes(latest.backupStatus)) {
+    if (!getAuthUser(req) || isMaintenanceActive() && req.user.role !== 'admin') throw new Error('Phiên đã thay đổi.');
+    await backupSource.resume(Number(o.remoteOrderId));
+    latest = await backupSource.refresh(o);
+  }
+  Object.assign(o, latest);
+  req.auditDetails = { orderId: o.id, status: o.status };
+  res.json({ success: true, statusText: latest.statusText });
+}));
+
 app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
   let intent = null;
   let sourceDispatched = false;
+  const isBackup = isBackupCategory(req.body?.category);
+  const sourceName = isBackup ? 'Nguồn dự phòng' : 'Server Zn';
   try {
     let user = req.user;
     const isAdmin = user.role === 'admin';
@@ -2655,23 +2700,23 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       confirm_duplicate_customer,
     } = req.body || {};
 
-    if (!Object.hasOwn(CATEGORY_METADATA, category)) {
+    if (!isBackup && !Object.hasOwn(CATEGORY_METADATA, category)) {
       return res.status(400).json({ success: false, message: 'Danh mục đặt đơn không hợp lệ.' });
     }
     const isWeatherBuff = category === 'weather_buff';
-    if (!isWeatherBuff && (!Number.isSafeInteger(Number(customer_id)) || Number(customer_id) <= 0)) {
+    if (!isBackup && !isWeatherBuff && (!Number.isSafeInteger(Number(customer_id)) || Number(customer_id) <= 0)) {
       return res.status(400).json({
         success: false,
         message: 'Vui lòng tìm và chọn nhân vật khách hàng trước khi tạo đơn.',
       });
     }
 
-    const selection = isWeatherBuff ? null : chosenCustomers.get(`${user.id}:${customer_id}`);
-    if (!isWeatherBuff && !isAdmin && (!selection || selection.until <= Date.now() ||
+    const selection = isWeatherBuff || isBackup ? null : chosenCustomers.get(`${user.id}:${customer_id}`);
+    if (!isBackup && !isWeatherBuff && !isAdmin && (!selection || selection.until <= Date.now() ||
         Number(selection.customer.gameProfileId || 0) !== Number(game_profile_id || 0))) {
       return res.status(403).json({ success: false, message: 'Vui lòng tìm và chọn lại nhân vật bằng tài khoản của bạn trước khi đặt đơn.' });
     }
-    const rawCatalog = await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 5500 });
+    const rawCatalog = isBackup ? {} : await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 5500 });
 
     // Check if the category is currently active on HoanNguyen
     const isSendTask = enabled(rawCatalog.hnSettings?.is_send_task);
@@ -2694,7 +2739,11 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     let orderSummary = '';
     let selectedWeatherPkg = null;
 
-    if (category === 'fruit_coin') {
+    let backup;
+    if (isBackup) {
+      backup = await backupSource.prepare(req.body, true);
+      ({ costPrice, sellPrice, summary: orderSummary } = backup);
+    } else if (category === 'fruit_coin') {
       apiPath = '/api/fruit-coin-orders';
       const pkg = rawCatalog.fruitCoinPackages.find((p) => Number(p.id) === Number(coin_price_package_id));
       if (!pkg || !enabled(pkg.is_active)) {
@@ -2893,8 +2942,8 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     if (req.body.expected_price !== sellPrice) {
       return res.status(409).json({ success: false, code: 'PRICE_CHANGED', message: 'Giá đã thay đổi. Vui lòng làm mới bảng giá và xác nhận lại trước khi đặt đơn.' });
     }
-    user = db.users.find(u => u.id === req.user.id);
-    if (!user || user.isLocked || !storageHealthy) throw new Error('Tài khoản hoặc lưu trữ đã bị khóa. Đơn chưa được gửi.');
+    user = getAuthUser(req);
+    if (!user || !storageHealthy || (!isAdmin && isMaintenanceActive())) throw new Error('Phiên, tài khoản hoặc lưu trữ chưa sẵn sàng. Đơn chưa được gửi.');
     const racedIntent = db.orderIntents.find(i => i.userId === user.id && i.requestKey === requestKey);
     if (racedIntent) {
       if (racedIntent.payloadHash !== payloadHash) return res.status(409).json({ success: false, message: 'Mã yêu cầu đã được dùng với nội dung khác.' });
@@ -2902,6 +2951,10 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Yêu cầu đã được tiếp nhận, không gửi lại trong khi đang chờ Server Zn xử lý.' });
     }
     // Reserve funds synchronously and persist BEFORE any billable source request.
+    if (db.orderIntents.some(i => i.userId === user.id && (i.status === 'uncertain' || i.requiresReview ||
+        (isBackup && i.status === 'processing' && i.category === category)))) {
+      return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Có yêu cầu đang xử lý hoặc chờ đối soát. Vui lòng kiểm tra trước khi đặt tiếp.' });
+    }
     if (!isAdmin && (!validMoney(user.balance) || user.balance < sellPrice)) {
       return res.status(400).json({
         success: false,
@@ -2915,8 +2968,9 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     }
 
     intent = { id: crypto.randomUUID(), requestKey, payloadHash, userId: user.id, userName: user.name,
-      category, customerId: isWeatherBuff ? null : Number(customer_id), expectedCost: costPrice, sellPrice,
-      customer: isWeatherBuff ? { customerId: null, nickname: 'Chưa gán khách', suid: '' } : (selection?.customer || { customerId: Number(customer_id) }), summary: orderSummary,
+      category, customerId: isWeatherBuff || isBackup ? null : Number(customer_id), expectedCost: costPrice, sellPrice,
+      customer: isBackup ? { nickname: backup.args.charName } : isWeatherBuff ? { customerId: null, nickname: 'Chưa gán khách', suid: '' } : (selection?.customer || { customerId: Number(customer_id) }), summary: orderSummary,
+      ...(isBackup && { categoryName: 'Dự phòng · ' + backupServices[backup.args.service], parameters: backup.args }),
       heldAmount: isAdmin ? 0 : sellPrice, status: 'processing', createdAt: new Date().toISOString() };
     if (!isAdmin) {
       user.balance -= sellPrice;
@@ -2927,7 +2981,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     req.auditDetails = { intentId: intent.id, category, customerId: intent.customerId, sellPrice, heldAmount: intent.heldAmount };
     await saveDb(db);
     sourceDispatched = true;
-    const hnResult = await hnApiCall(apiPath, 'POST', hnPayload);
+    const hnResult = isBackup ? await backupSource.create(backup.args) : await hnApiCall(apiPath, 'POST', hnPayload);
 
     if (hnResult?.needs_confirmation && hnResult?.code === 'duplicate_customer') {
       releaseIntent(intent, 'Server Zn yêu cầu xác nhận đơn trùng; đã trả khoản giữ tiền.');
@@ -2951,7 +3005,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     const createdRemoteOrder = hnResult.data || {};
     const remoteOrderId = createdRemoteOrder.id || null;
     if (!Number.isSafeInteger(Number(remoteOrderId)) || Number(remoteOrderId) <= 0) throw new Error('Server Zn chưa trả mã đơn hợp lệ.');
-    if (db.localOrders.some(order => order.category === category && String(order.remoteOrderId) === String(remoteOrderId))) {
+    if (db.localOrders.some(order => (isBackup ? isBackupCategory(order.category) : order.category === category) && String(order.remoteOrderId) === String(remoteOrderId))) {
       throw new Error('Server Zn trả mã đơn đã được liên kết. Cần quản trị viên đối soát trước khi ghi thêm giao dịch.');
     }
     const actualCost = createdRemoteOrder.total_price === undefined ? costPrice : Number(createdRemoteOrder.total_price);
@@ -2984,10 +3038,10 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       intentId: intent.id,
       remoteOrderId,
       category,
-      categoryName: CATEGORY_METADATA[category]?.menuLabel || category,
+      categoryName: intent.categoryName || CATEGORY_METADATA[category]?.menuLabel || category,
       apiOrderPath: apiPath,
       summary: isWeatherBuff ? formatWeatherOrderSummary(weatherMeta, orderSummary) : orderSummary,
-      customer: isWeatherBuff
+      customer: isBackup ? intent.customer : isWeatherBuff
         ? { customerId: null, gameProfileId: null, nickname: 'Chưa gán khách', suid: '' }
         : {
             customerId: customer_id,
@@ -3008,7 +3062,8 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         role: user.role,
       },
       status: createdRemoteOrder.status || 'pending',
-      isActive: createdRemoteOrder.is_active ?? (isWeatherBuff ? false : true),
+      isActive: createdRemoteOrder.is_active ?? createdRemoteOrder.isActive ?? !isWeatherBuff,
+      ...(isBackup && { backupStatus: createdRemoteOrder.backupStatus }),
       totalCnt: createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? (selectedWeatherPkg?.quantity || 0),
       sendingCnt: createdRemoteOrder.sending_cnt ?? 0,
       completedCnt: createdRemoteOrder.completed_cnt ?? 0,
@@ -3039,18 +3094,19 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     req.needsSave = true;
     res.json(intent.response);
   } catch (err) {
-    const definitiveRejection = err.status >= 400 && err.status < 500 || (err.status === 200 && err.data?.success === false);
+    const definitiveRejection = isBackup ? err.rejected === true :
+      err.status >= 400 && err.status < 500 || (err.status === 200 && err.data?.success === false);
     if (intent && sourceDispatched && !definitiveRejection) {
       intent.status = 'uncertain';
-      intent.message = 'Chưa xác định Server Zn đã tạo đơn hay chưa; khoản tiền vẫn được giữ để quản trị viên đối soát. Không đặt lại đơn này.';
+      intent.message = `Chưa xác định ${sourceName} đã tạo đơn hay chưa. Khoản tiền vẫn được giữ để quản trị viên đối soát. Không đặt lại đơn này.`;
       try { await saveDb(db); } catch {}
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: intent.message });
     }
     if (intent && storageHealthy) {
-      releaseIntent(intent, 'Server Zn từ chối đơn; đã trả khoản giữ tiền.');
+      releaseIntent(intent, sourceName + ' từ chối đơn. Đã trả khoản giữ tiền.');
       intent.status = 'rejected';
       intent.responseStatus = 400;
-      intent.response = { success: false, message: 'Server Zn đã từ chối đơn. Khoản giữ tiền đã được trả lại.' };
+      intent.response = { success: false, message: sourceName + ' đã từ chối đơn. Khoản giữ tiền đã được trả lại.' };
       req.needsSave = true;
       return res.status(400).json(intent.response);
     }
@@ -3340,7 +3396,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const cutoff = vietnamWeekStart();
     // Once the source confirms its full list, remove last week's orders that it has cleared.
     if (!remote.partial && !remote.scoped) {
-      const retained = db.localOrders.filter(o => !(Date.parse(o.createdAt) < cutoff && o.remoteOrderId
+      const retained = db.localOrders.filter(o => !(!isBackupCategory(o.category) && Date.parse(o.createdAt) < cutoff && o.remoteOrderId
         && !o.weatherDeletePending && !o.requiresReview && !o.cancelRequested && !o.refundPending
         && !remoteMap.has(`${o.category}:${o.remoteOrderId}`)));
       if (retained.length !== db.localOrders.length) {
@@ -3372,6 +3428,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           markupAmount: isAdmin ? lo.markupAmount : undefined,
           placedBy: isAdmin ? lo.placedBy : undefined,
           status: lo.status,
+          statusText: isBackupCategory(lo.category) ? backupSource.statusText(lo.backupStatus || lo.status) : undefined,
           isActive: lo.isActive,
           totalCnt: lo.totalCnt || 0,
           sendingCnt: lo.sendingCnt || 0,
@@ -3736,15 +3793,15 @@ app.get('/api/orders/:category/:remoteId/customer-snapshot', requireAuth, async 
   }
 });
 
-const weatherMutationLocks = new Set();
+const orderMutationLocks = new Set();
 function orderMutation(handler) {
   return asyncRoute(async (req, res) => {
     if (req.params.category && req.params.category !== 'weather_buff') return handler(req, res);
-    const key = String(req.params.remoteId).replace(/^0+(?=\d)/, '');
-    if (weatherMutationLocks.has(key)) return res.status(409).json({ success: false, message: 'Đơn đang được xử lý. Vui lòng làm mới.' });
-    weatherMutationLocks.add(key);
+    const key = req.params.id ? 'backup:' + req.params.id : String(req.params.remoteId).replace(/^0+(?=\d)/, '');
+    if (orderMutationLocks.has(key)) return res.status(409).json({ success: false, message: 'Đơn đang được xử lý. Vui lòng làm mới.' });
+    orderMutationLocks.add(key);
     try { await handler(req, res); }
-    finally { weatherMutationLocks.delete(key); }
+    finally { orderMutationLocks.delete(key); }
   });
 }
 
@@ -4464,18 +4521,26 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
     intent.responseStatus = 400;
     intent.response = { success: false, message: 'Quản trị viên đã đối soát: Server Zn chưa tạo đơn, khoản giữ tiền đã được trả lại.' };
   } else if (resolution === 'created') {
+    let backupState;
+    if (isBackupCategory(intent.category)) {
+      if (!Number.isSafeInteger(remoteOrderId) || remoteOrderId <= 0 || !validMoney(actualCost)) {
+        return res.status(400).json({ success: false, message: 'Mã đơn hoặc chi phí không hợp lệ.' });
+      }
+      backupState = await backupSource.refresh({ remoteOrderId, category: intent.category }, { actualCost, charName: intent.customer?.nickname });
+      if (intent.status !== 'uncertain' || !db.orderIntents.includes(intent)) return res.status(409).json({ success: false, message: 'Yêu cầu đã thay đổi.' });
+    }
     if (!Number.isSafeInteger(remoteOrderId) || remoteOrderId <= 0 || !validMoney(actualCost) ||
-        db.localOrders.some(o => o.category === intent.category && Number(o.remoteOrderId) === remoteOrderId)) {
+        db.localOrders.some(o => (isBackupCategory(intent.category) ? isBackupCategory(o.category) : o.category === intent.category) && Number(o.remoteOrderId) === remoteOrderId)) {
       return res.status(400).json({ success: false, message: 'Mã đơn hoặc chi phí Server Zn không hợp lệ hoặc đơn đã được liên kết.' });
     }
     const owner = db.users.find(u => u.id === intent.userId);
     if (!owner) return res.status(409).json({ success: false, message: 'Tài khoản đặt đơn không còn tồn tại.' });
     const order = { id: `ZNP-${crypto.randomUUID()}`, intentId: intent.id, remoteOrderId,
-      category: intent.category, categoryName: CATEGORY_METADATA[intent.category].menuLabel,
+      category: intent.category, categoryName: intent.categoryName || CATEGORY_METADATA[intent.category]?.menuLabel || intent.category,
       summary: intent.summary, customer: intent.customer, costPrice: actualCost,
       sellPrice: intent.sellPrice, markupAmount: intent.sellPrice - actualCost,
       placedBy: { id: owner.id, name: owner.name, username: owner.username, role: owner.role },
-      status: 'pending', isActive: true, createdAt: intent.createdAt, note: note.trim() };
+      status: 'pending', isActive: true, ...backupState, createdAt: intent.createdAt, note: note.trim() };
     db.localOrders.unshift(order);
     const debit = db.transactions.find(t => t.id === intent.id);
     if (debit) { debit.type = 'order_debit'; debit.note = `Đối soát đơn #${remoteOrderId} trên Server Zn`; }
@@ -4727,6 +4792,7 @@ app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
 });
 
 app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }), asyncRoute(async (req, res) => {
+  if (db.orderIntents.some(i => i.status === 'processing')) return res.status(409).json({ success: false, message: 'Có đơn đang gửi nguồn. Chờ đơn xử lý xong trước khi khôi phục.' });
   const raw = req.body?.backup || req.body;
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.users) || !raw.users.some(u => u && u.role === 'admin' && u.id && u.username && u.password)) {
     return res.status(400).json({ success: false, message: 'Tệp sao lưu không hợp lệ hoặc thiếu tài khoản quản trị viên.' });
@@ -4780,6 +4846,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
   }
 
   Object.assign(db, normalized);
+  for (const i of db.orderIntents) if (i.status === 'processing') i.status = 'uncertain';
   settingsVersion += 1;
   catalogResponseCache.clear();
   orderCache = {};
@@ -4813,7 +4880,7 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
     const upstreamEmail = sourceEmail !== undefined ? sourceEmail : hoanNguyenEmail;
     const upstreamPassword = sourcePassword !== undefined ? sourcePassword : hoanNguyenPassword;
 
-    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff)$/;
+    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff|backup_(weather|guide|emptymap|treasure|seeds))$/;
     for (const value of [defaultMarkup, defaultFruitUnitMarkup]) {
       if (value !== undefined && !validMoney(value)) throw new Error('Mức cộng giá phải là số nguyên không âm và hữu hạn.');
     }
@@ -5179,6 +5246,7 @@ app.delete('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
 app.use('/api', (req, res) => res.status(404).json({ success: false, message: 'API không tồn tại.' }));
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
+  if (err.backupMessage) return res.status(err.status).json({ success: false, message: err.message });
   res.status(err.status === 503 ? 503 : 400).json({ success: false, message: err.status === 503 ? err.message : 'Yêu cầu không hợp lệ. Vui lòng kiểm tra lại dữ liệu.' });
 });
 app.get('*', (req, res) => {
@@ -5196,6 +5264,7 @@ const httpServer = app.listen(PORT, HOST, async () => {
   scheduleWeekCleanup();
   ensureProtectedAssets();
   console.log(`ZnStudio Server running at http://localhost:${PORT} (storage: ${postgres ? 'postgresql' : 'json'})`);
+  if (process.env.QZEEN_API_KEY) backupSource.catalog().catch(() => console.warn('Chưa đồng bộ được nguồn dự phòng.'));
   try {
     await hnApiCall('/api/settings?keys=is_send_task');
     console.log('HoanNguyen API verified via HTTPS.');

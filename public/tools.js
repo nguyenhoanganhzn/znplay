@@ -12,6 +12,11 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     farm_gift: 'Quà nông trại',
     mail_gift: 'Quà thư',
     weather_buff: 'Buff Thời Tiết',
+    backup_weather: 'Dự phòng · Buff thời tiết',
+    backup_guide: 'Dự phòng · Dắt thẻ',
+    backup_treasure: 'Dự phòng · Đảo kho báu',
+    backup_emptymap: 'Dự phòng · Map trống',
+    backup_seeds: 'Dự phòng · Hạt dưa hấu',
   };
 
   function auditActionIcon(action) {
@@ -19,6 +24,9 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (a === 'POST /auth/login') return znIcon('key', 14);
     if (a === 'POST /auth/logout') return znIcon('logout', 14);
     if (a === 'POST /orders/place') return znIcon('plus', 14);
+    if (a === 'POST /backup/quote') return znIcon('layers', 14);
+    if (/^POST \/backup\/orders\/[^/]+\/(refresh|resume)$/.test(a)) return znIcon('refresh', 14);
+    if (/^POST \/admin\/intents\/[^/]+\/(reconcile|acknowledge)$/.test(a)) return znIcon('shield', 14);
     if (/^PUT \/orders\/[^/]+\/\d+\/toggle-active$/.test(a)) return znIcon('activity', 14);
     if (/^DELETE \/orders\/[^/]+\/\d+$/.test(a)) return znIcon('trash', 14);
     if (/^PUT \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return znIcon('user', 14);
@@ -44,6 +52,11 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (a === 'POST /auth/login') return 'Đăng nhập hệ thống';
     if (a === 'POST /auth/logout') return 'Đăng xuất';
     if (a === 'POST /orders/place') return 'Đặt đơn hàng mới';
+    if (a === 'POST /backup/quote') return 'Xem báo giá nguồn dự phòng';
+    if (/^POST \/backup\/orders\/[^/]+\/refresh$/.test(a)) return 'Cập nhật trạng thái đơn dự phòng';
+    if (/^POST \/backup\/orders\/[^/]+\/resume$/.test(a)) return 'Chạy / tiếp tục đơn dự phòng';
+    if (/^POST \/admin\/intents\/[^/]+\/reconcile$/.test(a)) return 'Quản trị đối soát đơn chưa rõ kết quả';
+    if (/^POST \/admin\/intents\/[^/]+\/acknowledge$/.test(a)) return 'Quản trị xác nhận chi phí đơn';
     if (/^PUT \/orders\/[^/]+\/\d+\/toggle-active$/.test(a)) return 'Bật / Tắt đơn hàng';
     if (/^DELETE \/orders\/[^/]+\/\d+$/.test(a)) return 'Hủy đơn hàng';
     if (/^PUT \/orders\/weather_buff\/\d+\/slots\/\d+$/.test(a)) return 'Gán / Đổi khách Buff Thời Tiết';

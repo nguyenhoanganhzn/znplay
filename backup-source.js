@@ -58,12 +58,14 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
     if (Date.now() < retryAt) throw Object.assign(fail('Nguồn đang giới hạn lượt gọi. Vui lòng thử lại sau.', 429), { rejected: true });
     let response, data;
     try {
+      const headers = { Authorization: 'Bearer ' + apiKey, Accept: 'application/json' };
+      if (body) headers['Content-Type'] = 'application/json';
       response = await request('https://ptg.qzeen.dev/api/v1/' + path, {
         method: body ? 'POST' : 'GET', redirect: 'error', signal: AbortSignal.timeout(12000),
-        headers: { Authorization: 'Bearer ' + apiKey, Accept: 'application/json', 'Content-Type': 'application/json' },
+        headers,
         ...(body && { body: JSON.stringify(body) }),
       });
-      if (response.status === 429) retryAt = Date.now() + 1000 * Math.max(1, Number(response.headers?.get('Retry-After')) || 15);
+      if (response.status === 429) retryAt = Date.now() + 1000 * Math.min(120, Math.max(1, Number(response.headers?.get('Retry-After')) || 15));
       data = await response.json();
     } catch {
       health.connected = false;

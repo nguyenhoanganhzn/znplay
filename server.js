@@ -219,7 +219,7 @@ function serveCachedStatic(req, res, cacheKey) {
   return true;
 }
 
-const BLOCKED_RAW_PATHS = new Set(['app.js', 'tools.js', 'styles.css', 'index.html']);
+const BLOCKED_RAW_PATHS = new Set(['app.js', 'tools.js', 'backup.js', 'styles.css', 'index.html']);
 const BLOCKED_EXTENSIONS = /\.(?:js|mjs|cjs|css|json|map|env|sql|log|bak|md|yml|yaml|ts|tsx|jsx|php|sh|ps1)$/i;
 app.use((req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
@@ -2620,25 +2620,33 @@ app.get('/api/customer/saved/:id', requireAuth, requireAdmin, async (req, res) =
 // ============================================================================
 // PLACE ORDER ENDPOINT (STRICT WALLET CHECK + SYSTEM ACTIVE CHECK)
 // ============================================================================
+let lastBackupCatalogForceAt = 0;
 app.get('/api/backup/services', requireAuth, limitInteractive, asyncRoute(async (req, res) => {
-  res.json({ success: true, services: await backupSource.catalog() });
+  const now = Date.now();
+  const isAdmin = req.user.role === 'admin';
+  const fresh = req.query.refresh === '1' && (isAdmin || now - lastBackupCatalogForceAt >= 2000);
+  if (fresh) lastBackupCatalogForceAt = now;
+  res.json({ success: true, services: await backupSource.catalog(fresh) });
 }));
 app.post('/api/backup/quote', requireAuth, limitInteractive, asyncRoute(async (req, res) => {
   const quote = await backupSource.prepare(req.body);
-  res.json({ success: true, sellPrice: quote.sellPrice, summary: quote.summary,
-    costPrice: req.user.role === 'admin' ? quote.costPrice : undefined });
+  res.json({ success: true, sellPrice: quote.sellPrice, summary: quote.summary });
 }));
 app.get('/api/backup/orders', requireAuth, (req, res) => {
-  const allowed = o => isBackupCategory(o.category) && (req.user.role === 'admin' || o.placedBy?.id === req.user.id);
+  const isAdmin = req.user.role === 'admin';
+  const allowed = o => isBackupCategory(o.category) && (isAdmin || o.placedBy?.id === req.user.id);
   const orders = db.localOrders.filter(allowed);
   const limit = Math.min(500, listLimit(req.query.limit));
-  const reviews = db.orderIntents.filter(i => isBackupCategory(i.category) && (req.user.role === 'admin' || i.userId === req.user.id) &&
+  const reviews = db.orderIntents.filter(i => isBackupCategory(i.category) && (isAdmin || i.userId === req.user.id) &&
     (['processing', 'uncertain'].includes(i.status) || i.requiresReview)).map(i => ({
       id: i.id, status: i.status, summary: i.summary, customer: i.customer?.nickname, createdAt: i.createdAt,
       heldAmount: i.heldAmount, requiresReview: i.requiresReview, remoteOrderId: i.remoteOrderId,
-      userName: req.user.role === 'admin' ? i.userName : undefined }));
+      userName: isAdmin ? i.userName : undefined }));
   res.json({ success: true, reviews, total: orders.length, orders: orders.slice(0, limit).map(o => ({
-    ...publicOrder(o, req.user.role === 'admin'), statusText: backupSource.statusText(o.backupStatus || o.status),
+    ...publicOrder(o, false),
+    placedBy: isAdmin ? o.placedBy : undefined,
+    backupStatus: o.backupStatus || o.status,
+    statusText: backupSource.statusText(o.backupStatus || o.status),
     canResume: ['ready', 'paused'].includes(o.backupStatus) })) });
 });
 app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
@@ -2647,14 +2655,29 @@ app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInt
   if (!o) return res.status(404).json({ success: false, message: 'Không tìm thấy đơn dự phòng.' });
   if (!['refresh', 'resume'].includes(req.params.action)) return res.status(400).json({ success: false, message: 'Thao tác không hợp lệ.' });
   let latest = await backupSource.refresh(o);
+  let resumed = false;
+  let postRefreshFailed = false;
   if (req.params.action === 'resume' && ['ready', 'paused'].includes(latest.backupStatus)) {
     if (!getAuthUser(req) || isMaintenanceActive() && req.user.role !== 'admin') throw new Error('Phiên đã thay đổi.');
     await backupSource.resume(Number(o.remoteOrderId));
-    latest = await backupSource.refresh(o);
+    resumed = true;
+    try {
+      latest = await backupSource.refresh(o);
+    } catch {
+      postRefreshFailed = true;
+    }
   }
   Object.assign(o, latest);
-  req.auditDetails = { orderId: o.id, status: o.status };
-  res.json({ success: true, statusText: latest.statusText });
+  req.auditDetails = { orderId: o.id, remoteOrderId: o.remoteOrderId, status: o.status, resumed };
+  res.json({
+    success: true,
+    statusText: latest.statusText,
+    message: postRefreshFailed
+      ? 'Đã gửi lệnh chạy / tiếp tục. Bấm cập nhật trạng thái sau vài giây để xem tiến độ mới.'
+      : resumed
+      ? `Đã chạy / tiếp tục đơn #${o.remoteOrderId} (${latest.statusText}).`
+      : `Trạng thái hiện tại: ${latest.statusText}.`,
+  });
 }));
 
 app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
@@ -3534,7 +3557,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     }
 
     const totalCount = results.length;
-    const activeCount = results.filter(o => !['completed','cancelled'].includes(o.status) && o.isActive).length;
+    const activeCount = results.filter(o => !['completed', 'cancelled', 'failed'].includes(o.status) && o.isActive).length;
     if (categoryFilter && categoryFilter !== 'all') {
       if (categoryFilter === 'fruit_all') {
         results = results.filter((o) => o.category === 'fruit_coin' || o.category === 'fruit_by_fruit');
@@ -3553,7 +3576,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         stats.total_units += Number(o.totalCnt || 0);
         stats.completed_units += Number(o.completedCnt || 0);
         if (o.status === 'completed') stats.completed_orders++;
-        else if (o.status !== 'cancelled') {
+        else if (!['cancelled', 'failed'].includes(o.status)) {
           stats[o.isActive ? 'active_orders' : 'inactive_orders']++;
           stats[o.isActive ? 'active_units' : 'inactive_units'] += Math.max(0, o.totalCnt - o.completedCnt);
         }
@@ -3562,8 +3585,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       results = results.filter(o => {
         if (req.query.active === '1' && !o.isActive || req.query.active === '0' && o.isActive) return false;
         if (req.query.progress === 'completed' && o.status !== 'completed') return false;
-        if (req.query.progress === 'running' && ['completed','cancelled'].includes(o.status)) return false;
-        return !q || [o.customer?.nickname, o.customer?.suid, o.remoteOrderId, o.id, o.weather?.trackUrl].some(v => String(v ?? '').toLowerCase().includes(q));
+        if (req.query.progress === 'running' && ['completed', 'cancelled', 'failed'].includes(o.status)) return false;
+        return !q || [o.customer?.nickname, o.customer?.suid, o.remoteOrderId, o.id, o.summary, o.categoryName, o.weather?.trackUrl].some(v => String(v ?? '').toLowerCase().includes(q));
       });
       page = { totalCount, activeCount, categoryStats: stats, filteredCount: results.length };
       results = results.slice(0, listLimit(req.query.limit));

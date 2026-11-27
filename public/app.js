@@ -921,7 +921,7 @@ function hasRunningOrdersInView() {
     return false;
   }
   return (state.orders || []).some(
-    (o) => o && o.isActive && !['completed', 'cancelled', 'canceled'].includes(String(o.status || '').toLowerCase()) && !o.requiresReview
+    (o) => o && o.isActive && !String(o.category || '').startsWith('backup_') && !['completed', 'cancelled', 'canceled', 'failed'].includes(String(o.status || '').toLowerCase()) && !o.requiresReview
   );
 }
 
@@ -1084,7 +1084,7 @@ function renderCurrentView() {
     container.innerHTML = zeroBannerHtml + renderOrderHistoryHtml();
     bindOrderHistoryEvents();
   } else if (view === 'backup') {
-    mountBackup(container, { apiFetch, state, escapeHtml, formatVnd, formatDateVi, updateShellAuthUI });
+    mountBackup(container, { apiFetch, state, escapeHtml, formatVnd, formatDateVi, updateShellAuthUI, showToast });
   } else if (view === 'identity_tools') {
     if (container.querySelector('#identityForm')) return;
     container.innerHTML = renderIdentityToolsHtml();
@@ -1582,7 +1582,7 @@ function bindOrderCategoryPageEvents(catKey) {
     showToast('Đang đồng bộ dữ liệu mới nhất...');
     const scope = catKey === 'fruit_coin' ? 'fruit_all' : catKey;
     await Promise.all([loadCatalog(true, scope, 6500), loadOrders(true)]);
-    renderCurrentView();
+    if (state.currentView === catKey && !isUserTypingOrModalOpen()) renderCurrentView();
   });
 
   document.getElementById('btnOpenAddOrderModal')?.addEventListener('click', () => {
@@ -1598,6 +1598,7 @@ function bindOrderCategoryPageEvents(catKey) {
   const updateTbodyOnly = async () => {
     state.listLimits.orderList = 20;
     await loadOrders();
+    if (state.currentView !== catKey) return;
     const tbody = document.getElementById('catOrdersTbody');
     if (!tbody) return;
     tbody.innerHTML = renderCatOrdersTbodyHtml(catKey);
@@ -1608,7 +1609,7 @@ function bindOrderCategoryPageEvents(catKey) {
   searchIn?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
     if (catFilterTimer && typeof clearTimeout === 'function') clearTimeout(catFilterTimer);
-    catFilterTimer = setTimeout(updateTbodyOnly, 80);
+    catFilterTimer = setTimeout(updateTbodyOnly, 220);
   });
 
   document.getElementById('catOrderActiveSelect')?.addEventListener('change', (e) => {
@@ -1644,6 +1645,10 @@ async function copyTextToClipboard(text) {
 }
 
 function bindOrderRowActionButtons() {
+  document.querySelectorAll('[data-open-backup]').forEach((btn) => {
+    btn.addEventListener('click', () => switchView('backup'));
+  });
+
   document.querySelectorAll('[data-view-order-customer]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const remId = btn.dataset.viewOrderCustomer;
@@ -3559,7 +3564,9 @@ function renderOrderHistoryTbodyHtml() {
     return (
       String(o.customer?.nickname || '').toLowerCase().includes(q) ||
       String(o.customer?.suid || '').toLowerCase().includes(q) ||
-      String(o.remoteOrderId || o.id).toLowerCase().includes(q)
+      String(o.remoteOrderId || o.id).toLowerCase().includes(q) ||
+      String(o.summary || '').toLowerCase().includes(q) ||
+      String(o.categoryName || '').toLowerCase().includes(q)
     );
   });
   if (list.length === 0) {
@@ -3571,7 +3578,6 @@ function renderOrderHistoryTbodyHtml() {
 
 let histFilterTimer = null;
 function bindOrderHistoryEvents() {
-  document.querySelectorAll('[data-open-backup]').forEach(btn => btn.addEventListener('click', () => switchView('backup')));
   const input = document.getElementById('histSearchInput');
   input?.addEventListener('input', (e) => {
     state.orderSearch = e.target.value;
@@ -3579,11 +3585,12 @@ function bindOrderHistoryEvents() {
     histFilterTimer = setTimeout(async () => {
       state.listLimits.orderList = 20;
       await loadOrders();
+      if (state.currentView !== 'order_history') return;
       const tbody = document.getElementById('histOrdersTbody');
       if (!tbody) return;
       tbody.innerHTML = renderOrderHistoryTbodyHtml();
       bindOrderRowActionButtons();
-    }, 80);
+    }, 220);
   });
   bindOrderRowActionButtons();
 }
@@ -4494,7 +4501,7 @@ function bindAdminPricingEvents() {
     if (btn) { btn.disabled = true; btn.textContent = 'Đang tải...'; }
     showToast('Đang tải giá gốc mới nhất từ Server Zn...');
     await Promise.all([loadCatalog(true, '', 6500), loadAdminOverview()]);
-    renderCurrentView();
+    if (state.currentView === 'admin_pricing' && !isUserTypingOrModalOpen()) renderCurrentView();
   });
 
   document.querySelectorAll('[data-adm-ptab]').forEach((btn) => {

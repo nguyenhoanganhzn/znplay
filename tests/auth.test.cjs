@@ -106,6 +106,9 @@ test('backup orders use live quotes, per-service markup, wallet-only dispatch an
   const quote = await s.request('/api/backup/quote', 'POST', ctv, input);
   assert.equal(quote.body.sellPrice, 5000);
   assert.equal(quote.body.costPrice, undefined);
+  const adminQuote = await s.request('/api/backup/quote', 'POST', admin, input);
+  assert.equal(adminQuote.body.sellPrice, 5000);
+  assert.equal(adminQuote.body.costPrice, undefined);
   const payload = { ...input, payWith: 'qr', idempotency_key: crypto.randomUUID(), expected_price: 5000 };
   currentCost = 5000;
   assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).body.code, 'PRICE_CHANGED');
@@ -120,10 +123,58 @@ test('backup orders use live quotes, per-service markup, wallet-only dispatch an
   const list = await s.request('/api/backup/orders', 'GET', ctv);
   assert.equal(list.body.orders.length, 1);
   assert.doesNotMatch(JSON.stringify(list.body), /mock-key|costPrice|99001|markupAmount|placedBy/);
+  const adminList = await s.request('/api/backup/orders', 'GET', admin);
+  assert.equal(adminList.body.orders.length, 2);
+  assert.doesNotMatch(JSON.stringify(adminList.body), /mock-key|costPrice|99001|markupAmount/);
+  assert.equal(adminList.body.orders[0].sellPrice, 5000);
+  assert.ok(adminList.body.orders[0].placedBy?.name);
+  assert.doesNotMatch(backupClientSource, /costPrice|Giá nguồn|giá gốc/i);
+  const overview = await s.request('/api/admin/overview', 'GET', admin);
+  assert.equal(overview.body.stats.totalCost, 8000);
+  assert.equal(overview.body.stats.totalRevenue, 10000);
+  assert.equal(overview.body.stats.totalProfit, 2000);
   assert.equal((await s.request('/api/backup/orders/' + adminOrder.body.order.id + '/resume', 'POST', ctv, {})).status, 404);
   active = false;
+  const refreshedCatalog = await s.request('/api/backup/services?refresh=1', 'GET', admin);
+  assert.equal(refreshedCatalog.body.services.find(row => row.key === 'guide').enabled, false);
   assert.equal((await s.request('/api/orders/place', 'POST', ctv, { ...payload, idempotency_key: crypto.randomUUID() })).status, 400);
   assert.equal(posts, 2);
+});
+
+test('backup resume survives transient post-resume refresh failure and failed backup orders stay out of running filter', async t => {
+  let orderCalls = 0, resumed = false;
+  const s = await startTestServer(t, async (url) => {
+    if (url.endsWith('/services')) return Response.json({ services: { emptymap: { enabled: true, free: 1 } } });
+    if (url.endsWith('/quote')) return Response.json({ quote: { amount: 2000 } });
+    if (url.endsWith('/orders')) return Response.json({ paid: true, job: { id: 77, service: 'emptymap', status: 'ready', amount: 2000 } });
+    if (url.endsWith('/order/resume')) { resumed = true; return Response.json({ ok: true }); }
+    if (url.includes('/order?id=77')) {
+      orderCalls++;
+      if (orderCalls === 1) return Response.json({ job: { id: 77, service: 'emptymap', status: 'ready', amount: 2000 } });
+      throw new Error('transient timeout');
+    }
+    return Response.json({ data: { data: [] } });
+  }, { env: { QZEEN_API_KEY: 'mock-key' } });
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const placed = await s.request('/api/orders/place', 'POST', admin, {
+    category: 'backup_emptymap', charName: 'Hero', expected_price: 7000, idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(placed.status, 200);
+  const res = await s.request('/api/backup/orders/' + placed.body.order.id + '/resume', 'POST', admin, {});
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(resumed, true);
+  assert.match(res.body.message, /Đã gửi lệnh chạy/);
+  const lo = s.db.localOrders.find(o => o.id === placed.body.order.id);
+  lo.status = 'failed';
+  lo.backupStatus = 'failed';
+  lo.isActive = false;
+  const running = await s.request('/api/orders?category=all&limit=20&progress=running', 'GET', admin);
+  assert.equal(running.body.orders.some(o => o.id === lo.id), false);
+  const searched = await s.request('/api/orders?category=all&limit=20&q=' + encodeURIComponent('map trống'), 'GET', admin);
+  assert.equal(searched.body.orders.some(o => o.id === lo.id), true);
+  const rawBackupJs = await fetch(s.base + '/backup.js');
+  assert.equal(rawBackupJs.status, 404);
 });
 
 test('backup source rejection releases once, ambiguous creation stays reserved for admin reconciliation', async t => {

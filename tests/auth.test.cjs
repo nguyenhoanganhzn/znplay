@@ -2633,3 +2633,152 @@ test('enriched identity lookup extracts full player profile fields and caches on
   assert.equal(server.db.localOrders.length, 0);
   assert.equal(server.db.transactions.length, 0);
 });
+
+test('backup on-demand progress sync and white-label tracking link load only when refreshed and never leak secrets or prices', async t => {
+  let now = Date.parse('2026-11-27T15:30:00Z');
+  class Clock extends Date { static now() { return now; } }
+  let orderHits = 0;
+  let doneCount = 9;
+  const s = await startTestServer(t, async (url) => {
+    const u = new URL(url);
+    if (u.origin === 'https://ptg.qzeen.dev') {
+      if (u.pathname.endsWith('/services')) {
+        return Response.json({ services: { weather: { enabled: true, maxPerOrder: 200, catalog: [{ productId: 90800006, name: 'Bão tuyết' }] } } });
+      }
+      if (u.pathname.endsWith('/quote')) return Response.json({ quote: { amount: 25650 } });
+      if (u.pathname.endsWith('/orders')) {
+        return Response.json({ paid: true, job: { id: 3519, service: 'weather', status: 'running', amount: 25650, params: { total: 100 } } });
+      }
+      if (u.pathname.endsWith('/order') && u.searchParams.get('id') === '3519') {
+        orderHits += 1;
+        return Response.json({
+          job: {
+            id: 3519, service: 'weather', status: 'running', amount: 25650, weatherLeft: 100 - doneCount,
+            params: { total: 100, done: { '0': doneCount }, items: [{ productId: 90800006, count: 100 }] },
+            progress: {
+              steps: [{ productId: 90800006, name: 'Bão tuyết', target: 100, done: doneCount }],
+              map: { khu: 278, inZone: true, population: 3, customersHere: 1, weather: { name: 'Bão tuyết', remainingSec: 160 } },
+              pauseNote: 'Chi tiết tại https://ptg.qzeen.dev/xem.html#secret',
+            },
+          },
+        });
+      }
+    }
+    return Response.json({ data: { current_page: 1, last_page: 1, data: [] } });
+  }, {
+    clock: Clock,
+    env: { QZEEN_API_KEY: 'mock-key-secret-xyz' },
+    seed(db) {
+      db.users[1].backupBalance = 50000;
+      // Seed a legacy pre-existing backup order without backupTrackToken to verify lazy backfill
+      db.localOrders.push({
+        id: 'legacy-bk-1', remoteOrderId: 3519, category: 'backup_weather', categoryName: 'Dự phòng · Thuê buff thời tiết',
+        summary: 'Thuê buff thời tiết · Bão tuyết × 100', customer: { nickname: 'LinhhSaDDBOY' },
+        costPrice: 25650, markupAmount: 5000, sellPrice: 30650,
+        placedBy: { id: 'seller', name: 'Seller', username: 'seller', role: 'ctv' },
+        status: 'running', backupStatus: 'running', isActive: true, totalCnt: 100, completedCnt: 0,
+        createdAt: new Date(now).toISOString(),
+      });
+    },
+  });
+
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+
+  // 1. Listing backup orders backfills backupTrackUrl with 0 upstream calls
+  const list1 = await s.request('/api/backup/orders', 'GET', ctv);
+  assert.equal(list1.status, 200);
+  assert.equal(orderHits, 0);
+  const trackUrl = list1.body.orders[0].backupTrackUrl;
+  assert.match(trackUrl, /^\/track\/backup\/[A-Za-z0-9_-]{16,64}$/);
+  const trackToken = trackUrl.split('/').pop();
+
+  // 2. Public tracking endpoint without ?refresh=1 reads cached DB state ONLY (0 upstream calls)
+  const pubCached = await s.request('/api/public/backup-track/' + trackToken);
+  assert.equal(pubCached.status, 200);
+  assert.equal(pubCached.body.cached, true);
+  assert.equal(orderHits, 0);
+  assert.equal(pubCached.body.order.totalCnt, 100);
+  assert.equal(pubCached.body.order.completedCnt, 0);
+  assert.equal(pubCached.body.order.sellPrice, undefined);
+  assert.equal(pubCached.body.order.costPrice, undefined);
+  assert.equal(pubCached.body.order.placedBy, undefined);
+  assert.doesNotMatch(JSON.stringify(pubCached.body), /30650|25650|mock-key|qzeen|hoannguyen|seller/i);
+
+  // 3. Invalid or unknown tracking tokens return 404
+  assert.equal((await s.request('/api/public/backup-track/invalid')).status, 404);
+  assert.equal((await s.request('/api/public/backup-track/aaaaaaaaaaaaaaaaaaaaaa')).status, 404);
+
+  // 4. Clicking "Tải lại dữ liệu" (CTV refresh) fetches live progress (9/100) and obeys 4s CTV cache
+  const ref1 = await s.request('/api/backup/orders/legacy-bk-1/refresh', 'POST', ctv, {});
+  assert.equal(ref1.status, 200);
+  assert.equal(ref1.body.cached, false);
+  assert.equal(ref1.body.completedCnt, 9);
+  assert.equal(ref1.body.totalCnt, 100);
+  assert.equal(ref1.body.backupProgress.khu, 278);
+  assert.equal(orderHits, 1);
+
+  now += 2000;
+  doneCount = 15;
+  const ref2Ctv = await s.request('/api/backup/orders/legacy-bk-1/refresh', 'POST', ctv, {});
+  assert.equal(ref2Ctv.status, 200);
+  assert.equal(ref2Ctv.body.cached, true);
+  assert.equal(orderHits, 1);
+
+  // Admin has 2s cooldown, so Admin refresh at +2s fetches fresh 15/100!
+  const ref2Admin = await s.request('/api/backup/orders/legacy-bk-1/refresh', 'POST', admin, {});
+  assert.equal(ref2Admin.status, 200);
+  assert.equal(ref2Admin.body.cached, false);
+  assert.equal(ref2Admin.body.completedCnt, 15);
+  assert.equal(orderHits, 2);
+
+  // 5. Public tracking ?refresh=1 respects 8s shared cache, then fetches after 8s
+  doneCount = 24;
+  now += 3000;
+  const pubStillCached = await s.request('/api/public/backup-track/' + trackToken + '?refresh=1');
+  assert.equal(pubStillCached.status, 200);
+  assert.equal(pubStillCached.body.cached, true);
+  assert.equal(pubStillCached.body.order.completedCnt, 15);
+  assert.equal(orderHits, 2);
+
+  now += 6000;
+  const pubFresh = await s.request('/api/public/backup-track/' + trackToken + '?refresh=1');
+  assert.equal(pubFresh.status, 200);
+  assert.equal(pubFresh.body.cached, false);
+  assert.equal(pubFresh.body.order.completedCnt, 24);
+  assert.equal(pubFresh.body.order.progress.steps[0].done, 24);
+  assert.doesNotMatch(JSON.stringify(pubFresh.body), /30650|25650|mock-key|qzeen|hoannguyen|https?:\/\//i);
+  assert.equal(orderHits, 3);
+
+  // 6. White-label HTML shell & minified track bundle serve cleanly while raw /track-backup.js is blocked
+  const pageRes = await fetch(`${s.base}${trackUrl}`);
+  assert.equal(pageRes.status, 200);
+  const pageHtml = await pageRes.text();
+  assert.match(pageHtml, /\/assets\/zn\.track\.js/);
+  assert.match(pageHtml, /\/assets\/zn\.bundle\.css/);
+  assert.doesNotMatch(pageHtml, /qzeen|hoannguyen/i);
+
+  const trackJs = await fetch(`${s.base}/assets/zn.track.js`);
+  assert.equal(trackJs.status, 200);
+  assert.doesNotMatch(await trackJs.text(), /qzeen|hoannguyen/i);
+  assert.equal((await fetch(`${s.base}/track-backup.js`)).status, 404);
+
+  // 7. Order History renders backup progress bar and tracking link with aligned cells
+  const client = createClient();
+  client.state.user = { id: 'seller', role: 'ctv', name: 'Seller', balance: 50000, backupBalance: 50000 };
+  client.state.orders = [{
+    id: 'legacy-bk-1', remoteOrderId: 3519, category: 'backup_weather', categoryName: 'Dự phòng · Thuê buff thời tiết',
+    summary: 'Thuê buff thời tiết · Bão tuyết × 100', customer: { nickname: 'LinhhSaDDBOY' },
+    sellPrice: 30650, status: 'running', backupStatus: 'running', statusText: 'Đang chạy',
+    totalCnt: 100, completedCnt: 24, backupProgress: { unit: 'lần' }, backupTrackUrl: trackUrl,
+    createdAt: new Date(now).toISOString(),
+  }];
+  const histHtml = client.context.renderOrderHistoryHtml();
+  assert.match(histHtml, /24%/);
+  assert.match(histHtml, /24\/100 lần/);
+  assert.match(histHtml, /Mở link theo dõi/);
+  const histTh = [...histHtml.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi)];
+  const histTbody = histHtml.match(/<tbody id="histOrdersTbody">([\s\S]*?)<\/tbody>/)[1];
+  const histTds = [...histTbody.matchAll(/<td(?:\s[^>]*)?>/gi)];
+  assert.equal(histTds.length, histTh.length);
+});

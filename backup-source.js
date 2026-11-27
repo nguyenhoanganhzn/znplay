@@ -128,11 +128,125 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
     return { args: { ...args, ...(withCustomer && { charName }) }, summary, costPrice, sellPrice: sellingPrice(input.category, costPrice) };
   }
 
+  function cleanBackupText(raw, maxLen = 140) {
+    if (typeof raw !== 'string') return '';
+    return raw
+      .replace(/https?:\/\/\S+/gi, '')
+      .replace(/qzeen[a-z0-9.-]*/gi, 'Nguồn dự phòng')
+      .replace(/hoannguyen[a-z0-9.-]*/gi, 'Server Zn')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxLen);
+  }
+  const nonNegInt = value => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+  };
+  function extractProgress(job) {
+    const service = String(job?.service || '');
+    const params = job?.params && typeof job.params === 'object' ? job.params : {};
+    const prog = job?.progress && typeof job.progress === 'object' ? job.progress : {};
+    const map = prog.map && typeof prog.map === 'object' ? prog.map : {};
+    const isDone = job?.status === 'done';
+    let totalCnt = 0;
+    let completedCnt = 0;
+    let unit = 'lần';
+    const steps = [];
+
+    if (service === 'weather') {
+      const rawSteps = Array.isArray(prog.steps) && prog.steps.length
+        ? prog.steps
+        : (Array.isArray(params.items)
+          ? params.items.map((item, idx) => ({
+              name: item?.name || `Thời tiết #${idx + 1}`,
+              target: item?.count,
+              done: params.done && typeof params.done === 'object' ? params.done[String(idx)] : 0,
+            }))
+          : []);
+      for (const s of rawSteps.slice(0, 20)) {
+        const target = nonNegInt(s?.target) ?? 0;
+        const done = Math.min(target || Number.MAX_SAFE_INTEGER, nonNegInt(s?.done) ?? 0);
+        const name = cleanBackupText(String(s?.name || 'Thời tiết'), 60) || 'Thời tiết';
+        steps.push({ name, target, done: isDone && target > 0 ? target : done });
+      }
+      totalCnt = steps.reduce((sum, s) => sum + s.target, 0) || (nonNegInt(params.total) ?? 0);
+      completedCnt = isDone && totalCnt > 0
+        ? totalCnt
+        : steps.length
+        ? steps.reduce((sum, s) => sum + s.done, 0)
+        : (nonNegInt(job?.weatherLeft) !== null && totalCnt > 0 ? Math.max(0, totalCnt - nonNegInt(job.weatherLeft)) : 0);
+      if (totalCnt > 0) completedCnt = Math.min(totalCnt, completedCnt);
+      unit = 'lần';
+    } else if (service === 'seeds') {
+      totalCnt = nonNegInt(params.quantity) ?? nonNegInt(params.total) ?? 0;
+      completedCnt = isDone && totalCnt > 0 ? totalCnt : (nonNegInt(params.sent) ?? 0);
+      if (totalCnt > 0) completedCnt = Math.min(totalCnt, completedCnt);
+      unit = 'hạt';
+    } else if (service === 'guide' || service === 'treasure') {
+      totalCnt = nonNegInt(params.minutes) ?? 0;
+      const rawLeftMs = nonNegInt(params.leftMs);
+      const endsAt = Number(job?.endsAt);
+      const leftMs = rawLeftMs !== null
+        ? rawLeftMs
+        : (Number.isFinite(endsAt) && endsAt > 0 ? Math.max(0, endsAt - Date.now()) : null);
+      if (isDone && totalCnt > 0) completedCnt = totalCnt;
+      else if (leftMs !== null && totalCnt > 0) completedCnt = Math.max(0, Math.min(totalCnt, totalCnt - Math.ceil(leftMs / 60000)));
+      unit = 'phút';
+    } else if (service === 'emptymap') {
+      totalCnt = 1;
+      completedCnt = isDone ? 1 : 0;
+      unit = 'map';
+    }
+
+    const rawLeftMs = nonNegInt(params.leftMs);
+    const endsAt = Number(job?.endsAt);
+    const leftMs = rawLeftMs !== null
+      ? rawLeftMs
+      : (Number.isFinite(endsAt) && endsAt > 0 ? Math.max(0, endsAt - Date.now()) : null);
+    const leftMin = leftMs !== null ? Math.ceil(leftMs / 60000) : null;
+    const khu = nonNegInt(map.khu) ?? nonNegInt(prog.khu);
+    const population = nonNegInt(map.population);
+    const customersHere = nonNegInt(map.customersHere);
+    const inZone = typeof map.inZone === 'boolean' ? map.inZone : (typeof prog.inRoom === 'boolean' ? prog.inRoom : null);
+    const activeWeatherName = cleanBackupText(map.weather?.name || '', 60);
+    const activeWeather = activeWeatherName
+      ? { name: activeWeatherName, remainingSec: nonNegInt(map.weather?.remainingSec) }
+      : null;
+    const queuePos = nonNegInt(job?.queuePos);
+    const pauseNote = cleanBackupText(prog.pauseNote || prog.note || '', 160) || null;
+    const syncedAt = new Date().toISOString();
+
+    return {
+      totalCnt,
+      completedCnt,
+      backupProgress: {
+        unit,
+        steps,
+        leftMin,
+        khu,
+        population,
+        customersHere,
+        inZone,
+        activeWeather,
+        queuePos,
+        pauseNote,
+        syncedAt,
+      },
+    };
+  }
+
   function status(job) {
     if (!Object.hasOwn(statuses, job?.status)) throw fail('Nguồn chưa trả trạng thái đơn hợp lệ.', 503);
-    return { backupStatus: job.status, statusText: statuses[job.status],
+    const prog = extractProgress(job);
+    return {
+      backupStatus: job.status,
+      statusText: statuses[job.status],
       status: job.status === 'done' ? 'completed' : job.status,
-      isActive: !['paused', 'ready', 'done', 'failed', 'cancelled'].includes(job.status) };
+      isActive: !['paused', 'ready', 'done', 'failed', 'cancelled'].includes(job.status),
+      totalCnt: prog.totalCnt,
+      completedCnt: prog.completedCnt,
+      backupProgress: prog.backupProgress,
+    };
   }
   async function create(args) {
     const result = await call('orders', { ...args, payWith: 'wallet' });

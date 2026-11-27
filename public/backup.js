@@ -7,7 +7,7 @@ export const backupPricingCategories = Object.entries(backupServiceNames).map(([
   stepFixed: 1000, presetsFixed: [1000, 2000, 5000],
 }));
 
-export function mountBackup(container, { apiFetch, state, escapeHtml: esc, formatVnd: money, formatDateVi, updateShellAuthUI, showToast }) {
+export function mountBackup(container, { apiFetch, state, escapeHtml: esc, formatVnd: money, formatDateVi, updateShellAuthUI, showToast, copyTextToClipboard }) {
   if (container.querySelector('#backupView')) return;
   const admin = state.user.role === 'admin';
   container.innerHTML = `<section id="backupView" class="glass-panel">
@@ -94,6 +94,42 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     return 'amber';
   }
 
+  function fmtInt(n) {
+    return Math.round(Number(n || 0)).toLocaleString('vi-VN');
+  }
+  function renderOrderProgressHtml(o) {
+    const p = o.backupProgress || null;
+    const total = Math.max(0, Number(o.totalCnt || 0));
+    const done = Math.max(0, Number(o.completedCnt || 0));
+    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    const unit = p?.unit || (o.category === 'backup_weather' ? 'lần' : o.category === 'backup_seeds' ? 'hạt' : ['backup_guide', 'backup_treasure'].includes(o.category) ? 'phút' : 'map');
+    const steps = Array.isArray(p?.steps) ? p.steps : [];
+    const mapBits = [];
+    if (p?.activeWeather?.name) {
+      mapBits.push(`Đang thả: ${p.activeWeather.name}${p.activeWeather.remainingSec ? ` (~${fmtInt(p.activeWeather.remainingSec)}s)` : ''}`);
+    }
+    if (p?.khu !== null && p?.khu !== undefined) mapBits.push(`Khu #${fmtInt(p.khu)}`);
+    if (p?.population !== null && p?.population !== undefined) mapBits.push(`${fmtInt(p.population)} người`);
+    if (p?.customersHere > 0) mapBits.push('Có mặt khách');
+    else if (p?.inZone === false) mapBits.push('Chưa thấy khách trong khu');
+    if (p?.leftMin !== null && p?.leftMin !== undefined && ['running', 'paused', 'ready'].includes(o.backupStatus)) {
+      mapBits.push(`Còn ~${fmtInt(p.leftMin)} phút`);
+    }
+    if (p?.queuePos > 0) mapBits.push(`Hàng đợi #${fmtInt(p.queuePos)}`);
+
+    return `<div class="backup-progress-block">
+      ${total > 0 ? `<div class="backup-progress-head">
+        <span>Đã chạy: <strong>${fmtInt(done)} / ${fmtInt(total)} ${esc(unit)}</strong></span>
+        <span class="progress-pct ${pct >= 100 ? 'is-done' : ''}">${pct}%</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill ${pct >= 100 ? 'is-done' : ''}" style="width:${pct}%"></div></div>` : ''}
+      ${steps.length ? `<div class="backup-step-chips">${steps.map(s => `<span class="badge-tag ${s.done >= s.target && s.target > 0 ? 'green' : 'violet'}">${esc(s.name)}: ${fmtInt(s.done)}/${fmtInt(s.target)}</span>`).join('')}</div>` : ''}
+      ${mapBits.length ? `<div class="backup-map-meta">${mapBits.map(b => `<span class="badge-tag">${esc(b)}</span>`).join('')}</div>` : ''}
+      ${p?.pauseNote ? `<div class="tool-note" style="color:#fde68a;">${esc(p.pauseNote)}</div>` : ''}
+      <div class="tool-note">${p?.syncedAt ? `Cập nhật tiến độ lúc: ${esc(formatDateVi(p.syncedAt))}` : 'Bấm "Tải lại dữ liệu" để cập nhật số lượng đã chạy mới nhất.'}</div>
+    </div>`;
+  }
+
   async function loadOrders() {
     const version = ++ordersVersion;
     if (ordersRefreshBtn) {
@@ -108,8 +144,10 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
         <span class="badge-tag ${statusTone(o)}">${esc(o.statusText)}</span></div>
         <div class="backup-order-meta"><span>${esc(o.customer?.nickname || '')}</span> · <span class="backup-order-price">Giá CTV ${money(o.sellPrice)}</span> · <span>${esc(formatDateVi(o.createdAt))}</span></div>
         ${admin && o.placedBy?.name ? `<small class="tool-note">Người đặt: ${esc(o.placedBy.name)}</small>` : ''}
-        <div class="tool-actions">${button('Cập nhật trạng thái', `data-order="${esc(o.id)}" data-action="refresh"`)}
-        ${o.canResume ? button('Chạy / tiếp tục', `data-order="${esc(o.id)}" data-action="resume"`, 'btn-violet') : ''}</div>
+        ${renderOrderProgressHtml(o)}
+        <div class="tool-actions">${button('Tải lại dữ liệu', `data-order="${esc(o.id)}" data-action="refresh"`)}
+        ${o.canResume ? button('Chạy / tiếp tục', `data-order="${esc(o.id)}" data-action="resume"`, 'btn-violet') : ''}
+        ${o.backupTrackUrl ? `<a href="${esc(o.backupTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost backup-track-link" data-open-track>Mở link theo dõi</a>${button('Sao chép link', `data-copy-track="${esc(o.backupTrackUrl)}"`)}` : ''}</div>
         <div class="tool-note backup-order-msg" data-order-msg aria-live="polite"></div></article>`).join('')}</div>
         ${orders.length < total && orderLimit < 500 ? `<div class="tool-actions" style="margin-top:12px;">${button('Xem thêm đơn', 'data-more')}</div>` : ''}` : '<p class="tool-note">Chưa có đơn nguồn dự phòng.</p>';
       if (reviews.length) orderList.insertAdjacentHTML('afterbegin', reviews.map(i => `<details class="tool-warning" style="margin-bottom:12px;"><summary>
@@ -131,6 +169,22 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     }
   }
   orderList.addEventListener('click', async event => {
+    const openTrack = event.target.closest('[data-open-track]');
+    if (openTrack) {
+      const prevText = openTrack.textContent;
+      openTrack.textContent = 'Mở link, vui lòng chờ…';
+      setTimeout(() => { if (openTrack.isConnected) openTrack.textContent = prevText; }, 1200);
+      return;
+    }
+    const copyBtn = event.target.closest('[data-copy-track]');
+    if (copyBtn) {
+      const fullUrl = new URL(copyBtn.dataset.copyTrack, window.location.origin).href;
+      let copied = false;
+      if (typeof copyTextToClipboard === 'function') copied = await copyTextToClipboard(fullUrl);
+      else if (navigator.clipboard?.writeText) { try { await navigator.clipboard.writeText(fullUrl); copied = true; } catch { } }
+      notify(copied ? 'Đã sao chép link theo dõi tiến độ!' : fullUrl);
+      return;
+    }
     const btn = event.target.closest('button');
     if (!btn || btn.disabled || btn.type === 'submit') return;
     if (btn.hasAttribute('data-more')) { orderLimit += 20; return loadOrders(); }
@@ -139,7 +193,7 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     if (msgEl) msgEl.textContent = '';
     const originalText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = btn.dataset.action === 'resume' ? 'Đang chạy…' : 'Đang cập nhật…';
+    btn.textContent = btn.dataset.action === 'resume' ? 'Đang chạy…' : 'Đang tải, vui lòng chờ…';
     try {
       const res = await apiFetch('/api/backup/orders/' + encodeURIComponent(btn.dataset.order) + '/' + btn.dataset.action, 'POST', {});
       notify(res.message || ('Trạng thái: ' + (res.statusText || 'Đã cập nhật')));

@@ -1085,7 +1085,7 @@ function renderCurrentView() {
     container.innerHTML = zeroBannerHtml + renderOrderHistoryHtml();
     bindOrderHistoryEvents();
   } else if (view === 'backup') {
-    mountBackup(container, { apiFetch, state, escapeHtml, formatVnd, formatDateVi, updateShellAuthUI, showToast });
+    mountBackup(container, { apiFetch, state, escapeHtml, formatVnd, formatDateVi, updateShellAuthUI, showToast, copyTextToClipboard });
   } else if (view === 'identity_tools') {
     if (container.querySelector('#identityForm')) return;
     container.innerHTML = renderIdentityToolsHtml();
@@ -1408,10 +1408,22 @@ function formatOnlineStatusVi(status) {
 function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
   const isAdmin = state.user?.role === 'admin';
   if (o.category?.startsWith('backup_')) {
+    const bTotal = Math.max(0, Number(o.totalCnt || 0));
+    const bDone = Math.max(0, Number(o.completedCnt || 0));
+    const bPct = bTotal > 0 ? Math.min(100, Math.round((bDone / bTotal) * 100)) : 0;
+    const bUnit = o.backupProgress?.unit || 'đơn';
+    const bSt = String(o.backupStatus || o.status || '').toLowerCase();
+    const bTone = bSt === 'done' || bSt === 'completed' ? 'green' : bSt === 'failed' || bSt === 'cancelled' ? 'red' : ['running', 'preparing', 'queued', 'friending'].includes(bSt) ? 'violet' : 'amber';
+    const bProgressHtml = bTotal > 0
+      ? `<div class="progress-cell" title="Đã chạy ${formatNum(bDone)} / ${formatNum(bTotal)} ${escapeHtml(bUnit)}">
+          <span class="progress-pct ${bPct >= 100 ? 'is-done' : ''}">${bPct}%</span>
+          <div class="progress-track"><div class="progress-fill ${bPct >= 100 ? 'is-done' : ''}" style="width:${bPct}%"></div></div>
+        </div><div class="tool-note">${formatNum(bDone)}/${formatNum(bTotal)} ${escapeHtml(bUnit)}</div>`
+      : '—';
     return `<tr><td><strong>${escapeHtml(o.customer?.nickname || '')}</strong><div class="tool-note">#${escapeHtml(o.remoteOrderId)}</div></td>
-      <td>${escapeHtml(o.categoryName)}<div class="tool-note">${escapeHtml(o.summary)}</div></td><td>1 đơn</td>
-      <td>${formatVnd(o.sellPrice)}</td><td>—</td><td><span class="badge-tag">${escapeHtml(o.statusText || 'Chờ cập nhật')}</span></td><td>—</td>
-      <td>${formatDateVi(o.createdAt)}</td><td><button type="button" class="btn-frost" data-open-backup>Mở nguồn dự phòng</button></td></tr>`;
+      <td>${escapeHtml(o.categoryName)}<div class="tool-note">${escapeHtml(o.summary)}</div></td><td>${bTotal > 0 ? `${formatNum(bTotal)} ${escapeHtml(bUnit)}` : '1 đơn'}</td>
+      <td>${formatVnd(o.sellPrice)}</td><td>${bProgressHtml}</td><td><span class="badge-tag ${bTone}">${escapeHtml(o.statusText || 'Chờ cập nhật')}</span></td><td>—</td>
+      <td>${formatDateVi(o.createdAt)}</td><td><div class="order-row-actions">${o.backupTrackUrl ? `<a href="${escapeHtml(o.backupTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost backup-track-link">Mở link theo dõi</a>` : ''}<button type="button" class="btn-frost" data-open-backup>Mở nguồn dự phòng</button></div></td></tr>`;
   }
   const pct =
     o.totalCnt > 0

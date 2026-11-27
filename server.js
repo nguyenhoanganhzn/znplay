@@ -187,6 +187,20 @@ function ensureProtectedAssets() {
     staticCache.set('index.html', packStaticBuffer(Buffer.from(htmlMin, 'utf8'), 'text/html; charset=utf-8'));
     staticCache.set('assets/zn.bundle.js', packStaticBuffer(Buffer.from(jsOut), 'application/javascript; charset=utf-8'));
     staticCache.set('assets/zn.bundle.css', packStaticBuffer(Buffer.from(cssMin, 'utf8'), 'text/css; charset=utf-8'));
+    const trackJsPath = path.join(PUBLIC_DIR, 'track-backup.js');
+    if (fs.existsSync(trackJsPath)) {
+      const trackOut = esbuild.buildSync({
+        entryPoints: [trackJsPath],
+        bundle: true,
+        minify: true,
+        format: 'iife',
+        target: ['es2020'],
+        legalComments: 'none',
+        sourcemap: false,
+        write: false,
+      }).outputFiles?.[0]?.contents;
+      if (trackOut) staticCache.set('assets/zn.track.js', packStaticBuffer(Buffer.from(trackOut), 'application/javascript; charset=utf-8'));
+    }
   } catch (err) {
     console.error('Asset bundle build failed:', err.message);
   }
@@ -219,7 +233,7 @@ function serveCachedStatic(req, res, cacheKey) {
   return true;
 }
 
-const BLOCKED_RAW_PATHS = new Set(['app.js', 'tools.js', 'backup.js', 'styles.css', 'index.html']);
+const BLOCKED_RAW_PATHS = new Set(['app.js', 'tools.js', 'backup.js', 'track-backup.js', 'styles.css', 'index.html']);
 const BLOCKED_EXTENSIONS = /\.(?:js|mjs|cjs|css|json|map|env|sql|log|bak|md|yml|yaml|ts|tsx|jsx|php|sh|ps1)$/i;
 app.use((req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
@@ -231,7 +245,7 @@ app.use((req, res, next) => {
   if (req.path === '/') {
     if (serveCachedStatic(req, res, 'index.html')) return;
   }
-  if (cleanPath === 'assets/zn.bundle.js' || cleanPath === 'assets/zn.bundle.css') {
+  if (cleanPath === 'assets/zn.bundle.js' || cleanPath === 'assets/zn.bundle.css' || cleanPath === 'assets/zn.track.js') {
     if (serveCachedStatic(req, res, cleanPath)) return;
   }
   if ((HAS_ESBUILD && BLOCKED_RAW_PATHS.has(cleanPath)) || BLOCKED_EXTENSIONS.test(cleanPath)) {
@@ -837,6 +851,11 @@ function publicOrder(order, isAdmin) {
     'isActive', 'totalCnt', 'sendingCnt', 'completedCnt', 'failedCnt', 'createdAt', 'cancelRequested', 'refundedAmount', 'refundPending', 'requiresReview']) safe[key] = order[key];
   if (order.category === 'weather_buff' && order.weather) {
     safe.weather = order.weather;
+  }
+  if (isBackupCategory(order.category)) {
+    if (order.backupStatus) safe.backupStatus = order.backupStatus;
+    if (order.backupProgress) safe.backupProgress = order.backupProgress;
+    if (order.backupTrackToken) safe.backupTrackToken = order.backupTrackToken;
   }
   return { ...safe, note: order.requiresReview ? 'Đang được admin đối soát.' : null };
 }
@@ -2650,6 +2669,88 @@ app.post('/api/backup/quote', requireAuth, limitInteractive, asyncRoute(async (r
   const quote = await backupSource.prepare(req.body);
   res.json({ success: true, sellPrice: quote.sellPrice, summary: quote.summary });
 }));
+function ensureBackupTrackToken(order) {
+  if (!order || !isBackupCategory(order.category)) return null;
+  if (typeof order.backupTrackToken === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(order.backupTrackToken)) {
+    return order.backupTrackToken;
+  }
+  order.backupTrackToken = crypto.randomBytes(18).toString('base64url');
+  return order.backupTrackToken;
+}
+
+function buildPublicBackupTrackView(order) {
+  return {
+    remoteOrderId: order.remoteOrderId,
+    categoryName: order.categoryName || ('Dự phòng · ' + (backupServices[order.category?.slice(7)] || '')),
+    summary: order.summary || '',
+    customerNickname: order.customer?.nickname || '',
+    status: order.status || 'pending',
+    backupStatus: order.backupStatus || order.status || 'pending',
+    statusText: backupSource.statusText(order.backupStatus || order.status),
+    totalCnt: Number(order.totalCnt || 0),
+    completedCnt: Number(order.completedCnt || 0),
+    progress: order.backupProgress || null,
+    createdAt: order.createdAt || null,
+  };
+}
+
+const publicTrackLimits = new Map();
+const backupOrderRefreshCache = new Map();
+const backupOrderRefreshInflight = new Map();
+
+async function refreshBackupOrderProgress(order, minCacheMs = 0) {
+  const now = Date.now();
+  const lastSyncedAt = backupOrderRefreshCache.get(order.id) || 0;
+  if (minCacheMs > 0 && lastSyncedAt > 0 && now - lastSyncedAt < minCacheMs) {
+    return { cached: true, latest: null };
+  }
+  let job = backupOrderRefreshInflight.get(order.id);
+  if (!job) {
+    job = (async () => {
+      const latest = await backupSource.refresh(order);
+      Object.assign(order, latest);
+      if (backupOrderRefreshCache.size > 500) backupOrderRefreshCache.clear();
+      backupOrderRefreshCache.set(order.id, Date.now());
+      return { cached: false, latest };
+    })().finally(() => {
+      backupOrderRefreshInflight.delete(order.id);
+    });
+    backupOrderRefreshInflight.set(order.id, job);
+  }
+  return job;
+}
+
+app.get('/track/backup/:token', (req, res) => {
+  const tok = String(req.params.token || '');
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(tok)) return res.status(404).type('text/plain; charset=utf-8').send('Liên kết theo dõi không hợp lệ.');
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('text/html; charset=utf-8').send(`<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" /><title>ZnStudio — Theo dõi tiến độ đơn</title><link rel="icon" type="image/jpeg" href="/logo.jpg" /><link rel="stylesheet" href="/assets/zn.bundle.css" /></head><body class="track-page-body"><main id="znTrackRoot" class="track-page-shell"><div class="track-card glass-panel"><div class="loading-inline"><span class="loading-dot"></span><span>Đang tải tiến độ đơn…</span></div></div></main><script src="/assets/zn.track.js" defer></script></body></html>`);
+});
+
+app.get('/api/public/backup-track/:token', asyncRoute(async (req, res) => {
+  const tok = String(req.params.token || '');
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(tok)) {
+    return res.status(404).json({ success: false, message: 'Liên kết theo dõi không hợp lệ.' });
+  }
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  const rl = checkBoundedBucket(publicTrackLimits, ip, 25, 60000, 1500);
+  if (!rl.allowed) {
+    res.setHeader('Retry-After', String(rl.retrySec));
+    return res.status(429).json({ success: false, message: 'Bạn thao tác quá nhanh. Vui lòng đợi vài giây rồi thử lại.' });
+  }
+  const order = db.localOrders.find(o => isBackupCategory(o.category) && o.backupTrackToken === tok);
+  if (!order) {
+    return res.status(404).json({ success: false, message: 'Không tìm thấy đơn theo dõi hoặc đơn đã hết hạn lưu trữ.' });
+  }
+  let cached = true;
+  if (req.query.refresh === '1') {
+    const result = await refreshBackupOrderProgress(order, 8000);
+    cached = result.cached;
+    if (!cached) req.needsSave = true;
+  }
+  res.json({ success: true, cached, order: buildPublicBackupTrackView(order) });
+}));
+
 app.get('/api/backup/orders', requireAuth, (req, res) => {
   const isAdmin = req.user.role === 'admin';
   const allowed = o => isBackupCategory(o.category) && (isAdmin || o.placedBy?.id === req.user.id);
@@ -2660,23 +2761,47 @@ app.get('/api/backup/orders', requireAuth, (req, res) => {
       id: i.id, status: i.status, summary: i.summary, customer: i.customer?.nickname, createdAt: i.createdAt,
       heldAmount: i.heldAmount, requiresReview: i.requiresReview, remoteOrderId: i.remoteOrderId,
       userName: isAdmin ? i.userName : undefined }));
-  res.json({ success: true, reviews, total: orders.length, orders: orders.slice(0, limit).map(o => ({
-    ...publicOrder(o, false),
-    placedBy: isAdmin ? o.placedBy : undefined,
-    backupStatus: o.backupStatus || o.status,
-    statusText: backupSource.statusText(o.backupStatus || o.status),
-    canResume: ['ready', 'paused'].includes(o.backupStatus) })) });
+  const visible = orders.slice(0, limit).map(o => {
+    const hadToken = Boolean(o.backupTrackToken);
+    const token = ensureBackupTrackToken(o);
+    if (!hadToken && token) req.needsSave = true;
+    return {
+      ...publicOrder(o, false),
+      placedBy: isAdmin ? o.placedBy : undefined,
+      backupStatus: o.backupStatus || o.status,
+      backupTrackUrl: token ? '/track/backup/' + token : null,
+      statusText: backupSource.statusText(o.backupStatus || o.status),
+      canResume: ['ready', 'paused'].includes(o.backupStatus),
+    };
+  });
+  res.json({ success: true, reviews, total: orders.length, orders: visible });
 });
 app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
   const o = db.localOrders.find(row => row.id === req.params.id && isBackupCategory(row.category) &&
     (req.user.role === 'admin' || row.placedBy?.id === req.user.id));
   if (!o) return res.status(404).json({ success: false, message: 'Không tìm thấy đơn dự phòng.' });
   if (!['refresh', 'resume'].includes(req.params.action)) return res.status(400).json({ success: false, message: 'Thao tác không hợp lệ.' });
+  const isAdmin = req.user.role === 'admin';
+  if (req.params.action === 'refresh') {
+    const result = await refreshBackupOrderProgress(o, isAdmin ? 2000 : 4000);
+    req.auditDetails = { orderId: o.id, remoteOrderId: o.remoteOrderId, status: o.status, cached: result.cached };
+    return res.json({
+      success: true,
+      cached: result.cached,
+      statusText: backupSource.statusText(o.backupStatus || o.status),
+      totalCnt: Number(o.totalCnt || 0),
+      completedCnt: Number(o.completedCnt || 0),
+      backupProgress: o.backupProgress || null,
+      message: result.cached
+        ? `Dữ liệu vừa được cập nhật (${o.completedCnt || 0}/${o.totalCnt || 0}).`
+        : `Đã tải tiến độ mới nhất: ${backupSource.statusText(o.backupStatus || o.status)}${o.totalCnt > 0 ? ` (${o.completedCnt || 0}/${o.totalCnt})` : ''}.`,
+    });
+  }
   let latest = await backupSource.refresh(o);
   let resumed = false;
   let postRefreshFailed = false;
-  if (req.params.action === 'resume' && ['ready', 'paused'].includes(latest.backupStatus)) {
-    if (!getAuthUser(req) || isMaintenanceActive() && req.user.role !== 'admin') throw new Error('Phiên đã thay đổi.');
+  if (['ready', 'paused'].includes(latest.backupStatus)) {
+    if (!getAuthUser(req) || isMaintenanceActive() && !isAdmin) throw new Error('Phiên đã thay đổi.');
     await backupSource.resume(Number(o.remoteOrderId));
     resumed = true;
     try {
@@ -2686,12 +2811,16 @@ app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInt
     }
   }
   Object.assign(o, latest);
+  backupOrderRefreshCache.set(o.id, Date.now());
   req.auditDetails = { orderId: o.id, remoteOrderId: o.remoteOrderId, status: o.status, resumed };
   res.json({
     success: true,
     statusText: latest.statusText,
+    totalCnt: Number(o.totalCnt || 0),
+    completedCnt: Number(o.completedCnt || 0),
+    backupProgress: o.backupProgress || null,
     message: postRefreshFailed
-      ? 'Đã gửi lệnh chạy / tiếp tục. Bấm cập nhật trạng thái sau vài giây để xem tiến độ mới.'
+      ? 'Đã gửi lệnh chạy / tiếp tục. Bấm tải lại dữ liệu sau vài giây để xem tiến độ mới.'
       : resumed
       ? `Đã chạy / tiếp tục đơn #${o.remoteOrderId} (${latest.statusText}).`
       : `Trạng thái hiện tại: ${latest.statusText}.`,
@@ -3094,6 +3223,12 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         )
       : undefined;
 
+    const initialBackupTotal = isBackup
+      ? (backup.args.service === 'weather' ? (backup.args.items || []).reduce((s, i) => s + Number(i.count || 0), 0)
+        : backup.args.service === 'seeds' ? Number(backup.args.quantity || 0)
+        : ['guide', 'treasure'].includes(backup.args.service) ? Number(backup.args.minutes || 0)
+        : 1)
+      : 0;
     const localOrder = {
       id: `ZNP-${crypto.randomUUID()}`,
       intentId: intent.id,
@@ -3124,10 +3259,14 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       },
       status: createdRemoteOrder.status || 'pending',
       isActive: createdRemoteOrder.is_active ?? createdRemoteOrder.isActive ?? !isWeatherBuff,
-      ...(isBackup && { backupStatus: createdRemoteOrder.backupStatus }),
-      totalCnt: createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? (selectedWeatherPkg?.quantity || 0),
+      ...(isBackup && {
+        backupStatus: createdRemoteOrder.backupStatus,
+        backupProgress: createdRemoteOrder.backupProgress || null,
+        backupTrackToken: crypto.randomBytes(18).toString('base64url'),
+      }),
+      totalCnt: (createdRemoteOrder.totalCnt || initialBackupTotal) ?? createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? (selectedWeatherPkg?.quantity || 0),
       sendingCnt: createdRemoteOrder.sending_cnt ?? 0,
-      completedCnt: createdRemoteOrder.completed_cnt ?? 0,
+      completedCnt: createdRemoteOrder.completedCnt ?? createdRemoteOrder.completed_cnt ?? 0,
       failedCnt: createdRemoteOrder.failed_cnt ?? 0,
       note: createdRemoteOrder.price_adjustment_note || null,
       weather: weatherMeta,
@@ -3478,6 +3617,9 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         const weatherCreatedMs = lo.category === 'weather_buff' ? weatherOrderCreatedMs(lo, weatherRemote) : NaN;
         const canCtvDeleteWeather = !isAdmin && lo.category === 'weather_buff' && lo.status === 'pending' && !lo.weatherDeletePending && !lo.requiresReview && !lo.refundPending && !lo.refundedAmount &&
           emptyWeatherOrder(weatherRemote) && Number.isFinite(weatherCreatedMs) && Date.now() < weatherCreatedMs + WEATHER_DELETE_MAX_AGE_MS;
+        const hadBackupToken = Boolean(lo.backupTrackToken);
+        const backupToken = isBackupCategory(lo.category) ? ensureBackupTrackToken(lo) : null;
+        if (!hadBackupToken && backupToken) req.needsSave = true;
         return {
           id: lo.id,
           remoteOrderId: lo.remoteOrderId,
@@ -3490,6 +3632,9 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           markupAmount: isAdmin ? lo.markupAmount : undefined,
           placedBy: isAdmin ? lo.placedBy : undefined,
           status: lo.status,
+          backupStatus: isBackupCategory(lo.category) ? (lo.backupStatus || lo.status) : undefined,
+          backupProgress: isBackupCategory(lo.category) ? (lo.backupProgress || null) : undefined,
+          backupTrackUrl: backupToken ? '/track/backup/' + backupToken : undefined,
           statusText: isBackupCategory(lo.category) ? backupSource.statusText(lo.backupStatus || lo.status) : undefined,
           isActive: lo.isActive,
           totalCnt: lo.totalCnt || 0,
@@ -4677,7 +4822,9 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
       summary: intent.summary, customer: intent.customer, costPrice: actualCost,
       sellPrice: intent.sellPrice, markupAmount: intent.sellPrice - actualCost,
       placedBy: { id: owner.id, name: owner.name, username: owner.username, role: owner.role },
-      status: 'pending', isActive: true, ...backupState, createdAt: intent.createdAt, note: note.trim() };
+      status: 'pending', isActive: true, ...backupState,
+      ...(intentIsBackup && { backupTrackToken: crypto.randomBytes(18).toString('base64url') }),
+      createdAt: intent.createdAt, note: note.trim() };
     db.localOrders.unshift(order);
     const debit = db.transactions.find(t => t.id === intent.id);
     if (debit) {

@@ -36,3 +36,69 @@ test('backup quotes preserve weather sequence, service limits and only allow doc
     ['seeds', { quantity: 51 }], ['treasure', { minutes: 9 }], ['emptymap', { charName: 'A, B' }],
   ]) await assert.rejects(source.prepare({ category: 'backup_' + service, charName: 'A', ...params }, true));
 });
+
+test('backup source extracts live progress across services and strips supplier names/URLs', async () => {
+  const { createBackupSource } = await import('../backup-source.js');
+  const jobs = {
+    3519: {
+      id: 3519, service: 'weather', status: 'running', amount: 25650, weatherLeft: 91,
+      params: { total: 100, done: { '0': 9 }, items: [{ productId: 90800006, count: 100 }] },
+      progress: {
+        steps: [{ productId: 90800006, name: 'Bão tuyết', target: 100, done: 9 }],
+        map: { khu: 278, inZone: true, population: 3, customersHere: 1, weather: { name: 'Bão tuyết', remainingSec: 160 } },
+        pauseNote: 'Xem tại https://ptg.qzeen.dev/xem.html#abc bởi qzeen.dev',
+      },
+    },
+    3520: {
+      id: 3520, service: 'seeds', status: 'running', amount: 5000,
+      params: { quantity: 50, sent: 18 },
+    },
+    3521: {
+      id: 3521, service: 'guide', status: 'running', amount: 12000,
+      params: { minutes: 60, leftMs: 25 * 60000 },
+    },
+    3522: {
+      id: 3522, service: 'emptymap', status: 'done', amount: 3000,
+      params: {},
+    },
+  };
+  const source = createBackupSource({
+    apiKey: 'mock-key',
+    validMoney: n => Number.isSafeInteger(n) && n >= 0,
+    sellingPrice: (_, cost) => cost + 1000,
+    request: async (url) => {
+      const id = new URL(url).searchParams.get('id');
+      return Response.json({ job: jobs[id] });
+    },
+  });
+
+  const w = await source.refresh({ remoteOrderId: 3519, category: 'backup_weather' });
+  assert.equal(w.totalCnt, 100);
+  assert.equal(w.completedCnt, 9);
+  assert.equal(w.backupProgress.unit, 'lần');
+  assert.deepEqual(w.backupProgress.steps, [{ name: 'Bão tuyết', target: 100, done: 9 }]);
+  assert.equal(w.backupProgress.khu, 278);
+  assert.equal(w.backupProgress.population, 3);
+  assert.equal(w.backupProgress.customersHere, 1);
+  assert.equal(w.backupProgress.inZone, true);
+  assert.deepEqual(w.backupProgress.activeWeather, { name: 'Bão tuyết', remainingSec: 160 });
+  assert.doesNotMatch(w.backupProgress.pauseNote || '', /qzeen|https?:\/\//i);
+  assert.ok(w.backupProgress.syncedAt);
+
+  const s = await source.refresh({ remoteOrderId: 3520, category: 'backup_seeds' });
+  assert.equal(s.totalCnt, 50);
+  assert.equal(s.completedCnt, 18);
+  assert.equal(s.backupProgress.unit, 'hạt');
+
+  const g = await source.refresh({ remoteOrderId: 3521, category: 'backup_guide' });
+  assert.equal(g.totalCnt, 60);
+  assert.equal(g.completedCnt, 35);
+  assert.equal(g.backupProgress.leftMin, 25);
+  assert.equal(g.backupProgress.unit, 'phút');
+
+  const e = await source.refresh({ remoteOrderId: 3522, category: 'backup_emptymap' });
+  assert.equal(e.totalCnt, 1);
+  assert.equal(e.completedCnt, 1);
+  assert.equal(e.status, 'completed');
+  assert.equal(e.backupProgress.unit, 'map');
+});

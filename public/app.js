@@ -792,8 +792,9 @@ function updateShellAuthUI() {
       }
     } else {
       const bal = Number(state.user.balance || 0);
-      walletPill.className = `wallet-pill-box ${bal <= 0 ? 'is-empty' : ''}`;
-      walletText.innerHTML = `Số dư ví CTV: <strong style="color:${bal > 0 ? 'var(--color-lavender-phosphor)' : '#fda4af'};">${formatVnd(bal)}</strong>`;
+      const backupBal = Number(state.user.backupBalance || 0);
+      walletPill.className = `wallet-pill-box ${bal <= 0 && backupBal <= 0 ? 'is-empty' : ''}`;
+      walletText.innerHTML = `<span class="wallet-pill-seg">Ví CTV: <strong style="color:${bal > 0 ? 'var(--color-lavender-phosphor)' : '#fda4af'};">${formatVnd(bal)}</strong></span><span class="wallet-pill-sep">·</span><span class="wallet-pill-seg">Ví Nguồn DP: <strong style="color:${backupBal > 0 ? 'var(--color-aurora-gradient)' : '#fda4af'};">${formatVnd(backupBal)}</strong></span>`;
     }
   }
 }
@@ -2753,6 +2754,7 @@ async function submitModalOrder(confirmDuplicate = false) {
       showToast(r.message || 'Tạo đơn hàng thành công!');
       if (r.userBalance !== undefined && state.user) {
         state.user.balance = r.userBalance;
+        if (r.userBackupBalance !== undefined) state.user.backupBalance = r.userBackupBalance;
         updateShellAuthUI();
       }
       const wbUrl = isWeather ? r.order?.weather?.trackUrl : '';
@@ -3371,12 +3373,14 @@ function renderDashboardOverviewHtml() {
       </div>
 
       <div class="glass-panel">
-        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">${state.user.role === 'admin' ? 'Trạng thái Quản trị Admin' : 'Số dư Ví CTV của bạn'}</div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">${state.user.role === 'admin' ? 'Trạng thái Quản trị Admin' : 'Số dư 2 ví CTV của bạn'}</div>
         <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;line-height:1.1;color:var(--color-lavender-phosphor);margin-top:8px;font-variant-numeric:tabular-nums;">
           ${state.user.role === 'admin' ? 'Đã đồng bộ API' : formatVnd(state.user.balance)}
         </div>
         <div style="font-size:12px;color:var(--color-fog-veil);margin-top:6px;">
-          ${state.user.role === 'admin' ? 'Bấm mục Quản trị bên trái để chỉnh giá CTV' : 'Đảm bảo có số dư để tạo đơn hàng'}
+          ${state.user.role === 'admin'
+            ? 'Bấm mục Quản trị bên trái để chỉnh giá CTV'
+            : `Ví Nguồn DP: <strong style="color:var(--color-aurora-gradient);">${formatVnd(state.user.backupBalance || 0)}</strong> · Dùng riêng cho đơn Nguồn dự phòng`}
         </div>
       </div>
     </div>
@@ -3449,20 +3453,26 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
         </div>
       `;
     } else {
-      const s = r.summary || { orderCount: 0, totalSpent: 0, currentBalance: state.user.balance };
+      const s = r.summary || { orderCount: 0, totalSpent: 0, mainSpent: 0, backupSpent: 0, currentBalance: state.user.balance, backupBalance: state.user.backupBalance || 0 };
       summaryHtml = `
-        <div class="stats-three-grid">
-          <div class="stat-subcard">
-            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Số dư ví hiện tại</div>
-            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-lavender-phosphor);font-variant-numeric:tabular-nums;">${formatVnd(s.currentBalance)}</div>
+        <div class="stats-three-grid monitor-wallet-grid is-four">
+          <div class="stat-subcard monitor-wallet-card">
+            <div class="tool-note monitor-wallet-label">Số dư Ví CTV (bình thường)</div>
+            <strong class="wallet-value">${formatVnd(s.currentBalance)}</strong>
+            <span class="tool-note monitor-wallet-sub">Đã dùng Server Zn: ${formatVnd(s.mainSpent ?? s.totalSpent ?? 0)}</span>
           </div>
-          <div class="stat-subcard">
-            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng đơn đã đặt</div>
-            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-platinum);font-variant-numeric:tabular-nums;">${s.orderCount} đơn</div>
+          <div class="stat-subcard monitor-wallet-card is-backup-card">
+            <div class="tool-note monitor-wallet-label">Số dư Ví Nguồn DP</div>
+            <strong class="wallet-value">${formatVnd(s.backupBalance ?? state.user.backupBalance ?? 0)}</strong>
+            <span class="tool-note monitor-wallet-sub">Đã dùng Nguồn DP: ${formatVnd(s.backupSpent || 0)}</span>
           </div>
-          <div class="stat-subcard">
-            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Tổng tiền đã thanh toán</div>
-            <div style="font-size:24px;font-weight:500;letter-spacing:-0.025em;color:var(--color-aurora-gradient);font-variant-numeric:tabular-nums;">${formatVnd(s.totalSpent)}</div>
+          <div class="stat-subcard monitor-wallet-card">
+            <div class="tool-note monitor-wallet-label">Tổng đơn đã đặt</div>
+            <strong class="wallet-value" style="color:var(--color-platinum);">${s.orderCount} đơn</strong>
+          </div>
+          <div class="stat-subcard monitor-wallet-card">
+            <div class="tool-note monitor-wallet-label">Tổng tiền đã thanh toán</div>
+            <strong class="wallet-value" style="color:var(--color-aurora-gradient);">${formatVnd(s.totalSpent)}</strong>
           </div>
         </div>
       `;
@@ -3506,7 +3516,10 @@ async function renderWeeklySettlementsView(container, zeroBannerHtml) {
                         ${t.amount >= 0 ? `+${formatVnd(t.amount)}` : formatVnd(t.amount)}
                       </td>
                       <td>${formatVnd(t.balanceAfter)}</td>
-                      <td>${escapeHtml(t.note)}</td>
+                      <td>
+                        ${t.wallet === 'backup' || t.source === 'backup' ? '<span class="badge-tag green" style="margin-right:6px;font-size:10px;">Ví Nguồn DP</span>' : ''}
+                        ${escapeHtml(t.note)}
+                      </td>
                       <td>${formatDateVi(t.createdAt)}</td>
                     </tr>
                   `
@@ -5079,8 +5092,12 @@ function renderAdminCtvPageHtml() {
           <input type="text" id="newCtvPhone" class="input-box" placeholder="09xxxxxxxx" />
         </div>
         <div>
-          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:4px;">Số dư ví nạp sẵn (VNĐ)</label>
+          <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:4px;">Số dư Ví CTV nạp sẵn (VNĐ)</label>
           <input type="number" id="newCtvBalance" class="input-box" value="0" step="50000" min="0" />
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--color-aurora-gradient);display:block;margin-bottom:4px;">Số dư Ví Nguồn DP nạp sẵn (VNĐ)</label>
+          <input type="number" id="newCtvBackupBalance" class="input-box" value="0" step="50000" min="0" />
         </div>
         <div>
           <button type="button" class="btn-violet" id="btnCreateCtvSubmit" style="width:100%;">
@@ -5092,7 +5109,7 @@ function renderAdminCtvPageHtml() {
 
     <div class="glass-panel">
       <div class="panel-title-row">
-        <span class="panel-title-text">Danh sách Cộng tác viên (CTV phải có số dư ví > 0đ mới được đặt đơn)</span>
+        <span class="panel-title-text">Danh sách Cộng tác viên (2 ví tách biệt: Ví CTV đặt đơn Server Zn · Ví Nguồn DP đặt đơn Nguồn dự phòng)</span>
       </div>
       <div class="table-wrap">
         <table class="data-table">
@@ -5100,9 +5117,9 @@ function renderAdminCtvPageHtml() {
             <tr>
               <th>TÊN CTV</th>
               <th>TÊN ĐĂNG NHẬP / EMAIL</th>
-              <th>SỐ DƯ VÍ HIỆN TẠI</th>
-              <th>SỐ ĐƠN ĐÃ ĐẶT</th>
-              <th>DOANH SỐ / LÃI THU VỀ</th>
+              <th>VÍ CTV (BÌNH THƯỜNG)</th>
+              <th>VÍ NGUỒN DP</th>
+              <th>SỐ ĐƠN / DOANH SỐ</th>
               <th>TRẠNG THÁI</th>
               <th>THAO TÁC</th>
             </tr>
@@ -5110,25 +5127,47 @@ function renderAdminCtvPageHtml() {
           <tbody>
             ${ctvs.slice(0, pageLimit('accounts'))
       .map(
-        (u) => `
+        (u) => {
+          const mainBal = Number(u.balance || 0);
+          const dpBal = Number(u.backupBalance || 0);
+          const statusCls = u.isLocked ? 'red' : (mainBal > 0 || dpBal > 0) ? 'green' : 'amber';
+          const statusLabel = u.isLocked
+            ? 'Đã khóa'
+            : mainBal > 0 && dpBal > 0
+            ? 'Đủ điều kiện cả 2 nguồn'
+            : mainBal > 0
+            ? 'Đặt được Server Zn'
+            : dpBal > 0
+            ? 'Đặt được Nguồn DP'
+            : 'Cả 2 ví 0đ (Tạm chặn)';
+          return `
               <tr>
                 <td><strong style="color:#fff;">${escapeHtml(u.name)}</strong><div style="font-size:11px;color:var(--color-fog-veil);">SĐT: ${escapeHtml(u.phone || '—')}</div></td>
                 <td><strong>${escapeHtml(u.username)}</strong><div style="font-size:11px;color:var(--color-fog-veil);">${escapeHtml(u.email)}</div></td>
-                <td><strong style="font-size:15px;color:${u.balance > 0 ? '#4ade80' : '#fca5a5'};">${formatVnd(u.balance)}</strong></td>
-                <td>${u.totalOrders || 0} đơn</td>
                 <td>
-                  <div>Đã mua: ${formatVnd(u.totalSpent || 0)}</div>
+                  <strong style="font-size:15px;color:${mainBal > 0 ? '#4ade80' : '#fca5a5'};font-variant-numeric:tabular-nums;">${formatVnd(mainBal)}</strong>
+                  <div style="font-size:11px;color:var(--color-fog-veil);">Đã dùng: ${formatVnd(u.mainSpent ?? u.totalSpent ?? 0)}</div>
+                </td>
+                <td>
+                  <strong style="font-size:15px;color:${dpBal > 0 ? 'var(--color-aurora-gradient)' : '#fca5a5'};font-variant-numeric:tabular-nums;">${formatVnd(dpBal)}</strong>
+                  <div style="font-size:11px;color:var(--color-fog-veil);">Đã dùng: ${formatVnd(u.backupSpent || 0)}</div>
+                </td>
+                <td>
+                  <div><strong>${u.totalOrders || 0} đơn</strong> · Tổng: ${formatVnd(u.totalSpent || 0)}</div>
                   <div style="font-size:11px;color:#4ade80;">Lãi Admin: +${formatVnd(u.totalProfit || 0)}</div>
                 </td>
                 <td>
-                  <span class="badge-tag ${u.isLocked ? 'red' : u.balance > 0 ? 'green' : 'amber'}">
-                    ${u.isLocked ? 'Đã khóa' : u.balance > 0 ? 'Đủ điều kiện đặt đơn' : 'Ví 0đ (Tạm chặn)'}
+                  <span class="badge-tag ${statusCls}">
+                    ${statusLabel}
                   </span>
                 </td>
                 <td>
                   <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                    <button type="button" class="btn-violet" style="padding:4px 10px;font-size:11px;" data-topup-ctv="${u.id}" data-ctv-name="${escapeHtml(u.name)}">
-                      + Nạp / Trừ ví
+                    <button type="button" class="btn-violet" style="padding:4px 10px;font-size:11px;" data-topup-ctv="${u.id}" data-wallet="main" data-ctv-name="${escapeHtml(u.name)}">
+                      + Nạp / Trừ Ví CTV
+                    </button>
+                    <button type="button" class="btn-frost btn-backup-wallet" style="padding:4px 10px;font-size:11px;" data-topup-ctv="${u.id}" data-wallet="backup" data-ctv-name="${escapeHtml(u.name)}">
+                      + Nạp / Trừ Ví Nguồn DP
                     </button>
                     <button type="button" class="btn-frost" style="padding:4px 10px;font-size:11px;" data-lock-ctv="${u.id}" data-locked="${u.isLocked ? '1' : '0'}">
                       ${u.isLocked ? 'Mở khóa' : 'Khóa'}
@@ -5140,7 +5179,8 @@ function renderAdminCtvPageHtml() {
                   </div>
                 </td>
               </tr>
-            `
+            `;
+        }
       )
       .join('')}
             ${moreButton('accounts', ctvs.length, 7)}
@@ -5302,9 +5342,10 @@ function bindAdminCtvEvents() {
     const password = document.getElementById('newCtvPassword')?.value || '';
     const phone = document.getElementById('newCtvPhone')?.value || '';
     const balance = Number(document.getElementById('newCtvBalance')?.value || 0);
+    const backupBalance = Number(document.getElementById('newCtvBackupBalance')?.value || 0);
 
     try {
-      const r = await apiFetch('/api/admin/ctv', 'POST', { name, username, password, phone, balance });
+      const r = await apiFetch('/api/admin/ctv', 'POST', { name, username, password, phone, balance, backupBalance });
       showToast(r.message);
       await loadAdminOverview();
       renderCurrentView();
@@ -5322,7 +5363,7 @@ function bindAccountRows(scope = document) {
   }));
   scope.querySelectorAll('[data-topup-ctv]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      openTopupCtvModal(btn.dataset.topupCtv, btn.dataset.ctvName);
+      openTopupCtvModal(btn.dataset.topupCtv, btn.dataset.ctvName, btn.dataset.wallet === 'backup' ? 'backup' : 'main');
     });
   });
 
@@ -5357,56 +5398,101 @@ function bindAccountRows(scope = document) {
   });
 }
 
-function openTopupCtvModal(ctvId, ctvName) {
-  const adjustmentKey = createRequestKey();
+function openTopupCtvModal(ctvId, ctvName, initialWallet = 'main') {
+  let activeWallet = initialWallet === 'backup' ? 'backup' : 'main';
+  let adjustmentKey = createRequestKey();
   const overlay = document.getElementById('appModalOverlay');
   const box = document.getElementById('appModalBox');
   const title = document.getElementById('appModalTitle');
   const body = document.getElementById('appModalBody');
   if (!overlay || !box || !title || !body) return;
 
+  const ctvRecord = (state.adminOverview?.ctvs || []).find((u) => u.id === ctvId);
+  const mainBal = Number(ctvRecord?.balance || 0);
+  const dpBal = Number(ctvRecord?.backupBalance || 0);
+
   box.className = 'modal-box';
-  title.textContent = `Nạp / Điều chỉnh số dư ví CTV: ${ctvName}`;
-  body.innerHTML = `
-    <div>
-      <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Số tiền điều chỉnh (Nhập số dương để nạp, số âm để trừ):</label>
-      <input type="number" id="modalTopupAmt" class="input-box" value="100000" step="10000" />
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <button type="button" class="btn-frost" data-q-amt="50000">+50.000đ</button>
-      <button type="button" class="btn-frost" data-q-amt="100000">+100.000đ</button>
-      <button type="button" class="btn-frost" data-q-amt="500000">+500.000đ</button>
-      <button type="button" class="btn-frost" data-q-amt="-50000">Trừ 50.000đ</button>
-    </div>
-    <div>
-      <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Ghi chú:</label>
-      <input type="text" id="modalTopupNote" class="input-box" value="Admin nạp tiền ví CTV" />
-    </div>
-    <div class="action-row align-end">
-      <button type="button" class="btn-violet" id="btnConfirmTopupSubmit">Xác nhận cập nhật →</button>
-    </div>
-  `;
 
-  body.querySelectorAll('[data-q-amt]').forEach((b) => {
-    b.addEventListener('click', () => {
-      body.querySelector('#modalTopupAmt').value = b.dataset.qAmt;
+  const renderTopupBody = () => {
+    const isDp = activeWallet === 'backup';
+    title.textContent = isDp
+      ? `Nạp / Điều chỉnh Ví Nguồn DP: ${ctvName}`
+      : `Nạp / Điều chỉnh Ví CTV (bình thường): ${ctvName}`;
+
+    body.innerHTML = `
+      <div class="pricing-mode-switch" style="width:100%;">
+        <button type="button" class="pricing-mode-btn ${!isDp ? 'is-active' : ''}" data-topup-wallet="main" style="flex:1;">
+          Ví CTV (bình thường): ${formatVnd(mainBal)}
+        </button>
+        <button type="button" class="pricing-mode-btn ${isDp ? 'is-active' : ''}" data-topup-wallet="backup" style="flex:1;">
+          Ví Nguồn DP: ${formatVnd(dpBal)}
+        </button>
+      </div>
+      <div class="backup-quote-box ${isDp ? 'is-quote' : ''}" style="font-size:12.5px;">
+        ${isDp
+          ? `Đang thao tác trên <strong>Ví Nguồn DP</strong> (hiện có <strong>${formatVnd(dpBal)}</strong>). Chỉ dùng riêng cho đơn Nguồn dự phòng, hoàn toàn tách biệt với Ví CTV bình thường.`
+          : `Đang thao tác trên <strong>Ví CTV bình thường</strong> (hiện có <strong>${formatVnd(mainBal)}</strong>). Dùng cho các đơn Server Zn, tách biệt với Ví Nguồn DP.`}
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Số tiền điều chỉnh (Nhập số dương để nạp, số âm để trừ):</label>
+        <input type="number" id="modalTopupAmt" class="input-box" value="100000" step="10000" />
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button type="button" class="btn-frost" data-q-amt="50000">+50.000đ</button>
+        <button type="button" class="btn-frost" data-q-amt="100000">+100.000đ</button>
+        <button type="button" class="btn-frost" data-q-amt="500000">+500.000đ</button>
+        <button type="button" class="btn-frost" data-q-amt="-50000">Trừ 50.000đ</button>
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Ghi chú:</label>
+        <input type="text" id="modalTopupNote" class="input-box" value="${isDp ? 'Admin nạp tiền Ví Nguồn DP' : 'Admin nạp tiền ví CTV'}" />
+      </div>
+      <div class="action-row align-end">
+        <button type="button" class="btn-violet" id="btnConfirmTopupSubmit">${isDp ? 'Xác nhận cập nhật Ví Nguồn DP →' : 'Xác nhận cập nhật Ví CTV →'}</button>
+      </div>
+    `;
+
+    body.querySelectorAll('[data-topup-wallet]').forEach((tabBtn) => {
+      tabBtn.addEventListener('click', () => {
+        const nextWallet = tabBtn.dataset.topupWallet === 'backup' ? 'backup' : 'main';
+        if (nextWallet === activeWallet) return;
+        activeWallet = nextWallet;
+        adjustmentKey = createRequestKey();
+        renderTopupBody();
+      });
     });
-  });
 
-  body.querySelector('#btnConfirmTopupSubmit')?.addEventListener('click', async () => {
-    const amount = Number(body.querySelector('#modalTopupAmt')?.value || 0);
-    const note = body.querySelector('#modalTopupNote')?.value || '';
-    try {
-      const r = await apiFetch(`/api/admin/ctv/${ctvId}/balance`, 'POST', { amount, note, idempotency_key: adjustmentKey });
-      showToast(r.message);
-      overlay.style.display = 'none';
-      await loadAdminOverview();
-      renderCurrentView();
-    } catch (err) {
-      showToast(err.message);
-    }
-  });
+    body.querySelectorAll('[data-q-amt]').forEach((b) => {
+      b.addEventListener('click', () => {
+        body.querySelector('#modalTopupAmt').value = b.dataset.qAmt;
+      });
+    });
 
+    body.querySelector('#btnConfirmTopupSubmit')?.addEventListener('click', async (ev) => {
+      const submitBtn = ev.currentTarget;
+      if (submitBtn.disabled) return;
+      const amount = Number(body.querySelector('#modalTopupAmt')?.value || 0);
+      const note = body.querySelector('#modalTopupNote')?.value || '';
+      submitBtn.disabled = true;
+      try {
+        const r = await apiFetch(`/api/admin/ctv/${ctvId}/balance`, 'POST', {
+          amount,
+          note,
+          wallet: activeWallet,
+          idempotency_key: adjustmentKey,
+        });
+        showToast(r.message);
+        overlay.style.display = 'none';
+        await loadAdminOverview();
+        renderCurrentView();
+      } catch (err) {
+        showToast(err.message);
+        submitBtn.disabled = false;
+      }
+    });
+  };
+
+  renderTopupBody();
   overlay.style.display = 'flex';
 }
 
@@ -5431,8 +5517,12 @@ function renderAdminSystemPageHtml() {
             <strong style="font-size:18px;font-weight:500;color:var(--color-platinum);">${stats.totalCtvCount || 0} CTV</strong>
           </div>
           <div class="stat-subcard" style="padding:12px 14px;">
-            <div style="font-size:11px;color:var(--color-fog-veil);">Tổng số dư ví CTV</div>
+            <div style="font-size:11px;color:var(--color-fog-veil);">Tổng số dư Ví CTV</div>
             <strong style="font-size:18px;font-weight:500;color:var(--color-lavender-phosphor);">${formatVnd(stats.totalCtvBalance || 0)}</strong>
+          </div>
+          <div class="stat-subcard" style="padding:12px 14px;">
+            <div style="font-size:11px;color:var(--color-fog-veil);">Tổng số dư Ví Nguồn DP</div>
+            <strong style="font-size:18px;font-weight:500;color:var(--color-aurora-gradient);">${formatVnd(stats.totalCtvBackupBalance || 0)}</strong>
           </div>
           <div class="stat-subcard" style="padding:12px 14px;">
             <div style="font-size:11px;color:var(--color-fog-veil);">Đơn hàng / Giao dịch</div>

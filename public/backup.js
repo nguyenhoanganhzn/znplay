@@ -9,22 +9,40 @@ export const backupPricingCategories = Object.entries(backupServiceNames).map(([
 
 export function mountBackup(container, { apiFetch, state, escapeHtml: esc, formatVnd: money, formatDateVi, updateShellAuthUI, showToast }) {
   if (container.querySelector('#backupView')) return;
+  const admin = state.user.role === 'admin';
   container.innerHTML = `<section id="backupView" class="glass-panel">
     <div class="panel-title-row"><h2 class="panel-title-text">Nguồn dự phòng</h2>
     <button type="button" class="btn-frost" data-refresh>Làm mới danh mục</button></div>
+    ${!admin ? '<div data-wallet-strip></div>' : ''}
     <div data-services aria-live="polite">Đang tải dịch vụ…</div>
     <div data-editor></div></section>
     <section class="glass-panel"><div class="panel-title-row"><h2 class="panel-title-text">Đơn nguồn dự phòng</h2>
     <button type="button" class="btn-frost" data-orders-refresh>Làm mới danh sách</button></div>
     <div data-orders>Đang tải đơn…</div></section>`;
   const root = container.querySelector('#backupView');
+  const walletStrip = root.querySelector('[data-wallet-strip]');
   const catalog = root.querySelector('[data-services]');
   const editor = root.querySelector('[data-editor]');
   const orderList = container.querySelector('[data-orders]');
   const ordersRefreshBtn = container.querySelector('[data-orders-refresh]');
-  const admin = state.user.role === 'admin';
   const pendingStorage = 'znplay_backup_pending_' + state.user.id;
   let services = [], selectedServiceKey = '', orderLimit = 20, ordersVersion = 0, catalogVersion = 0;
+
+  function renderWalletStrip() {
+    if (!walletStrip || admin) return;
+    const dpBal = Number(state.user?.backupBalance || 0);
+    const mainBal = Number(state.user?.balance || 0);
+    walletStrip.innerHTML = `<div class="backup-wallet-strip ${dpBal <= 0 ? 'is-empty' : ''}">
+      <div class="backup-wallet-chips">
+        <span class="backup-wallet-chip is-dp">Ví Nguồn DP: <strong>${money(dpBal)}</strong></span>
+        <span class="backup-wallet-chip">Ví CTV (bình thường): <strong>${money(mainBal)}</strong></span>
+      </div>
+      <div class="tool-note">${dpBal <= 0
+        ? 'Ví Nguồn DP hiện là 0đ. Chỉ tài khoản có tiền trong Ví Nguồn DP mới đặt được đơn nguồn dự phòng (không dùng chung Ví CTV bình thường). Liên hệ Admin để nạp Ví Nguồn DP.'
+        : 'Đơn nguồn dự phòng sẽ trừ trực tiếp từ Ví Nguồn DP, hoàn toàn tách biệt với Ví CTV bình thường.'}</div>
+    </div>`;
+  }
+  renderWalletStrip();
 
   const button = (label, attr, style = 'btn-frost') => `<button type="button" class="${style}" ${attr}>${label}</button>`;
   const numeric = (key, label, min, max, initial) => `<label>${label}<input class="input-box" required type="number" name="${key}" min="${min}" max="${max}" step="1" value="${initial}"></label>`;
@@ -249,14 +267,19 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
             : `${quote.summary} · Giá CTV: ${money(quote.sellPrice)}`, 'quote');
           submit.textContent = previous ? 'Kiểm tra yêu cầu đã gửi' : 'Xác nhận đặt đơn';
         } else {
+          if (!admin && Number(state.user?.backupBalance || 0) < selection.price) {
+            throw Object.assign(new Error(`Số dư Ví Nguồn DP không đủ để thanh toán đơn này (Hiện có: ${money(state.user?.backupBalance || 0)}, Cần: ${money(selection.price)}). Liên hệ Admin để nạp Ví Nguồn DP.`), { status: 400 });
+          }
           const { fingerprint, requestKey } = selection;
           const pending = readPending();
           writePending({ ...pending, [fingerprint]: { requestKey, price: selection.price } });
           const result = await apiFetch('/api/orders/place', 'POST', { ...input, expected_price: selection.price, idempotency_key: requestKey });
           forgetRequest(fingerprint);
-          if (state.user && !admin && result.userBalance !== undefined) {
-            state.user.balance = result.userBalance;
+          if (state.user && !admin) {
+            if (result.userBalance !== undefined) state.user.balance = result.userBalance;
+            if (result.userBackupBalance !== undefined) state.user.backupBalance = result.userBackupBalance;
             updateShellAuthUI();
+            renderWalletStrip();
           }
           reset();
           form.reset();
@@ -283,7 +306,7 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
         showMessage(errText, 'error');
         if (placing && error.code === 'ORDER_REVIEW_REQUIRED' && !admin) {
           apiFetch('/api/auth/me').then(me => {
-            if (me?.user) { state.user = me.user; updateShellAuthUI(); }
+            if (me?.user) { state.user = me.user; updateShellAuthUI(); renderWalletStrip(); }
           }).catch(() => {});
         }
         if (placing) await loadOrders();

@@ -437,6 +437,7 @@ function createInitialDb() {
     phone: '',
     role: 'admin',
     balance: 0,
+    backupBalance: 0,
     isLocked: false,
     createdAt: new Date().toISOString(),
   });
@@ -599,6 +600,9 @@ function normalizeDb(raw) {
     if (u.password && !String(u.password).startsWith('scrypt$')) {
       u.password = hashPassword(u.password);
       migrated = true;
+    }
+    if (u.backupBalance === undefined) {
+      u.backupBalance = 0;
     }
   }
   return { data: merged, migrated };
@@ -840,14 +844,25 @@ function publicOrder(order, isAdmin) {
 function releaseIntent(intent, reason) {
   if (intent.heldAmount > 0 && !intent.releasedAt) {
     const owner = db.users.find(u => u.id === intent.userId);
-    if (!owner || !validMoney(owner.balance) || !validMoney(owner.balance + intent.heldAmount)) throw new Error('Không thể đối soát do tài khoản hoặc số dư không hợp lệ.');
-    owner.balance += intent.heldAmount;
-    intent.releasedAt = new Date().toISOString();
-    const isBackup = isBackupCategory(intent.category);
-    db.transactions.unshift({ id: crypto.randomUUID(), userId: owner.id, userName: owner.name,
-      type: 'order_release', amount: intent.heldAmount, balanceAfter: owner.balance,
-      ...(isBackup && { source: 'backup', category: intent.category, intentId: intent.id }),
-      note: reason, createdAt: intent.releasedAt });
+    const isBackup = intent.wallet === 'backup' || isBackupCategory(intent.category);
+    if (!owner) throw new Error('Không thể đối soát do tài khoản hoặc số dư không hợp lệ.');
+    if (isBackup) {
+      const current = Number(owner.backupBalance ?? 0);
+      if (!validMoney(current) || !validMoney(current + intent.heldAmount)) throw new Error('Không thể đối soát do tài khoản hoặc số dư không hợp lệ.');
+      owner.backupBalance = current + intent.heldAmount;
+      intent.releasedAt = new Date().toISOString();
+      db.transactions.unshift({ id: crypto.randomUUID(), userId: owner.id, userName: owner.name,
+        type: 'order_release', wallet: 'backup', source: 'backup', category: intent.category, intentId: intent.id,
+        amount: intent.heldAmount, balanceAfter: owner.backupBalance,
+        note: reason, createdAt: intent.releasedAt });
+    } else {
+      if (!validMoney(owner.balance) || !validMoney(owner.balance + intent.heldAmount)) throw new Error('Không thể đối soát do tài khoản hoặc số dư không hợp lệ.');
+      owner.balance += intent.heldAmount;
+      intent.releasedAt = new Date().toISOString();
+      db.transactions.unshift({ id: crypto.randomUUID(), userId: owner.id, userName: owner.name,
+        type: 'order_release', wallet: 'main', amount: intent.heldAmount, balanceAfter: owner.balance,
+        note: reason, createdAt: intent.releasedAt });
+    }
   }
 }
 
@@ -1397,7 +1412,8 @@ function requireAdmin(req, res, next) {
 
 function sanitizeUser(u) {
   const { id, username, email, name, phone, role, balance, isLocked, createdAt, lastSeenAt, archivedAt } = u;
-  return { id, username, email, name, phone, role, balance, isLocked, createdAt, lastSeenAt, archivedAt };
+  const backupBalance = Number(u.backupBalance ?? 0);
+  return { id, username, email, name, phone, role, balance, backupBalance, isLocked, createdAt, lastSeenAt, archivedAt };
 }
 
 // ============================================================================
@@ -2698,7 +2714,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     const previous = db.orderIntents.find(i => i.userId === user.id && i.requestKey === requestKey);
     if (previous) {
       if (previous.payloadHash !== payloadHash) return res.status(409).json({ success: false, message: 'Mã yêu cầu đã được dùng với nội dung khác.' });
-      if (previous.response) return res.status(previous.responseStatus || 200).json({ ...previous.response, userBalance: user.balance });
+      if (previous.response) return res.status(previous.responseStatus || 200).json({ ...previous.response, userBalance: user.balance, userBackupBalance: Number(user.backupBalance ?? 0) });
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Yêu cầu này đang xử lý hoặc chờ admin đối soát. Không gửi đơn mới để tránh trừ tiền hai lần.' });
     }
     if (db.orderIntents.some(i => i.userId === user.id && (i.status === 'uncertain' || i.requiresReview))) {
@@ -2972,7 +2988,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     const racedIntent = db.orderIntents.find(i => i.userId === user.id && i.requestKey === requestKey);
     if (racedIntent) {
       if (racedIntent.payloadHash !== payloadHash) return res.status(409).json({ success: false, message: 'Mã yêu cầu đã được dùng với nội dung khác.' });
-      if (racedIntent.response) return res.status(racedIntent.responseStatus || 200).json({ ...racedIntent.response, userBalance: user.balance });
+      if (racedIntent.response) return res.status(racedIntent.responseStatus || 200).json({ ...racedIntent.response, userBalance: user.balance, userBackupBalance: Number(user.backupBalance ?? 0) });
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Yêu cầu đã được tiếp nhận, không gửi lại trong khi đang chờ Server Zn xử lý.' });
     }
     // Reserve funds synchronously and persist BEFORE any billable source request.
@@ -2980,32 +2996,50 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         (isBackup && i.status === 'processing' && i.category === category)))) {
       return res.status(409).json({ success: false, code: 'ORDER_REVIEW_REQUIRED', message: 'Có yêu cầu đang xử lý hoặc chờ đối soát. Vui lòng kiểm tra trước khi đặt tiếp.' });
     }
-    if (!isAdmin && (!validMoney(user.balance) || user.balance < sellPrice)) {
-      return res.status(400).json({
-        success: false,
-        code: 'INSUFFICIENT_BALANCE',
-        message: `Số dư ví CTV không đủ để thanh toán đơn này (Số dư hiện tại: ${Number(
-          user.balance || 0
-        ).toLocaleString('vi-VN')}đ, Cần thanh toán: ${sellPrice.toLocaleString(
-          'vi-VN'
-        )}đ). Vui lòng nạp thêm tiền vào ví!`,
-      });
+    if (!isAdmin) {
+      if (isBackup) {
+        const currentBackupBal = Number(user.backupBalance ?? 0);
+        if (!validMoney(currentBackupBal) || currentBackupBal < sellPrice) {
+          return res.status(400).json({
+            success: false,
+            code: 'INSUFFICIENT_BALANCE',
+            message: `Số dư Ví Nguồn DP không đủ để thanh toán đơn này (Số dư Ví Nguồn DP hiện tại: ${currentBackupBal.toLocaleString('vi-VN')}đ, Cần thanh toán: ${sellPrice.toLocaleString('vi-VN')}đ). Chỉ tài khoản có tiền trong Ví Nguồn DP mới được đặt đơn nguồn dự phòng!`,
+          });
+        }
+      } else if (!validMoney(user.balance) || user.balance < sellPrice) {
+        return res.status(400).json({
+          success: false,
+          code: 'INSUFFICIENT_BALANCE',
+          message: `Số dư ví CTV không đủ để thanh toán đơn này (Số dư hiện tại: ${Number(
+            user.balance || 0
+          ).toLocaleString('vi-VN')}đ, Cần thanh toán: ${sellPrice.toLocaleString(
+            'vi-VN'
+          )}đ). Vui lòng nạp thêm tiền vào ví!`,
+        });
+      }
     }
 
     intent = { id: crypto.randomUUID(), requestKey, payloadHash, userId: user.id, userName: user.name,
-      category, customerId: isWeatherBuff || isBackup ? null : Number(customer_id), expectedCost: costPrice, sellPrice,
+      category, wallet: isBackup ? 'backup' : 'main', customerId: isWeatherBuff || isBackup ? null : Number(customer_id), expectedCost: costPrice, sellPrice,
       customer: isBackup ? { nickname: backup.args.charName } : isWeatherBuff ? { customerId: null, nickname: 'Chưa gán khách', suid: '' } : (selection?.customer || { customerId: Number(customer_id) }), summary: orderSummary,
       ...(isBackup && { categoryName: 'Dự phòng · ' + backupServices[backup.args.service], parameters: backup.args }),
       heldAmount: isAdmin ? 0 : sellPrice, status: 'processing', createdAt: new Date().toISOString() };
     if (!isAdmin) {
-      user.balance -= sellPrice;
-      db.transactions.unshift({ id: intent.id, userId: user.id, userName: user.name, type: 'order_hold',
-        amount: -sellPrice, balanceAfter: user.balance,
-        ...(isBackup && { source: 'backup', category }),
-        note: `Giữ tiền cho yêu cầu ${intent.id}`, createdAt: intent.createdAt });
+      if (isBackup) {
+        user.backupBalance = Number(user.backupBalance ?? 0) - sellPrice;
+        db.transactions.unshift({ id: intent.id, userId: user.id, userName: user.name, type: 'order_hold',
+          wallet: 'backup', source: 'backup', category,
+          amount: -sellPrice, balanceAfter: user.backupBalance,
+          note: `Giữ tiền Ví Nguồn DP cho yêu cầu ${intent.id}`, createdAt: intent.createdAt });
+      } else {
+        user.balance -= sellPrice;
+        db.transactions.unshift({ id: intent.id, userId: user.id, userName: user.name, type: 'order_hold',
+          wallet: 'main', amount: -sellPrice, balanceAfter: user.balance,
+          note: `Giữ tiền cho yêu cầu ${intent.id}`, createdAt: intent.createdAt });
+      }
     }
     db.orderIntents.unshift(intent);
-    req.auditDetails = { intentId: intent.id, category, customerId: intent.customerId, sellPrice, heldAmount: intent.heldAmount };
+    req.auditDetails = { intentId: intent.id, category, wallet: intent.wallet, customerId: intent.customerId, sellPrice, heldAmount: intent.heldAmount };
     await saveDb(db);
     sourceDispatched = true;
     const hnResult = isBackup ? await backupSource.create(backup.args) : await hnApiCall(apiPath, 'POST', hnPayload);
@@ -3117,6 +3151,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         : 'Tạo đơn hàng thành công!',
       order: publicOrder(localOrder, isAdmin),
       userBalance: user.balance,
+      userBackupBalance: Number(user.backupBalance ?? 0),
     };
     req.needsSave = true;
     res.json(intent.response);
@@ -4331,10 +4366,11 @@ function buildBackupTransactionMatchers() {
 
 function isBackupTransaction(tx, backupIntentIds) {
   if (!tx || typeof tx !== 'object') return false;
-  if (tx.source === 'backup' || isBackupCategory(tx.category)) return true;
+  if (tx.wallet === 'backup' || tx.source === 'backup' || isBackupCategory(tx.category)) return true;
+  if (tx.wallet === 'main') return false;
   if (tx.id && backupIntentIds.has(tx.id)) return true;
   if (tx.intentId && backupIntentIds.has(tx.intentId)) return true;
-  if (typeof tx.note === 'string' && (/^Tạo đơn Dự phòng\b/i.test(tx.note) || /^Nguồn dự phòng\b/i.test(tx.note) || /trên Nguồn dự phòng\b/i.test(tx.note))) {
+  if (typeof tx.note === 'string' && (/^Tạo đơn Dự phòng\b/i.test(tx.note) || /^Nguồn dự phòng\b/i.test(tx.note) || /trên Nguồn dự phòng\b/i.test(tx.note) || /Ví Nguồn DP/i.test(tx.note))) {
     return true;
   }
   return false;
@@ -4344,10 +4380,16 @@ function walletTotalsByUser() {
   const totals = new Map();
   const backupIntentIds = buildBackupTransactionMatchers();
   for (const tx of db.transactions) {
-    const row = totals.get(tx.userId) || { totalTopup: 0, totalSpent: 0, backupSpent: 0, held: 0, backupHeld: 0, deducted: 0 };
+    const row = totals.get(tx.userId) || {
+      totalTopup: 0, totalSpent: 0, held: 0, deducted: 0,
+      backupTopup: 0, backupSpent: 0, backupHeld: 0, backupDeducted: 0,
+    };
     const amount = Number(tx.amount);
     const isBackup = isBackupTransaction(tx, backupIntentIds);
-    if (tx.type === 'admin_topup') row.totalTopup += amount;
+    if (tx.type === 'admin_topup') {
+      if (isBackup) row.backupTopup += amount;
+      else row.totalTopup += amount;
+    }
     if (tx.type === 'order_debit' || tx.type === 'order_refund') {
       if (isBackup) row.backupSpent -= amount;
       else row.totalSpent -= amount;
@@ -4356,7 +4398,10 @@ function walletTotalsByUser() {
       if (isBackup) row.backupHeld -= amount;
       else row.held -= amount;
     }
-    if (tx.type === 'admin_deduct') row.deducted -= amount;
+    if (tx.type === 'admin_deduct') {
+      if (isBackup) row.backupDeducted -= amount;
+      else row.deducted -= amount;
+    }
     totals.set(tx.userId, row);
   }
   return totals;
@@ -4390,7 +4435,9 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
       const myOrders = db.localOrders.filter((o) => o.status !== 'cancelled' && o.placedBy?.id === user.id);
       const myTrx = db.transactions.filter((t) => t.userId === user.id);
       const userWallet = walletTotalsByUser().get(user.id);
-      const totalSpent = (userWallet?.totalSpent || 0) + (userWallet?.backupSpent || 0);
+      const mainSpent = userWallet?.totalSpent || 0;
+      const backupSpent = userWallet?.backupSpent || 0;
+      const totalSpent = mainSpent + backupSpent;
       res.json({
         success: true,
         mode: 'ctv',
@@ -4398,7 +4445,10 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
         summary: {
           orderCount: myOrders.length,
           totalSpent,
+          mainSpent,
+          backupSpent,
           currentBalance: user.balance,
+          backupBalance: Number(user.backupBalance ?? 0),
         },
         orders: req.query.limit === undefined ? myOrders.map(order => publicOrder({ ...order, note: null }, false)) : undefined,
         transactionCount: myTrx.length,
@@ -4446,24 +4496,31 @@ app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
         ...st,
         totalTopup: w?.totalTopup || 0,
         totalSpent: w?.totalSpent || 0,
+        backupTopup: w?.backupTopup || 0,
         backupSpent: w?.backupSpent || 0,
         backupHeld: w?.backupHeld || 0,
       };
     });
   const walletTotals = { totalTopup: 0, totalSpent: 0, balance: 0 };
+  let backupTopup = 0;
   let backupSpent = 0;
   let backupHeld = 0;
+  let backupBalance = 0;
   for (const ctv of ctvs) {
     walletTotals.totalTopup += ctv.totalTopup;
     walletTotals.totalSpent += ctv.totalSpent;
     walletTotals.balance += Number(ctv.balance ?? 0);
+    backupTopup += ctv.backupTopup;
     backupSpent += ctv.backupSpent;
     backupHeld += ctv.backupHeld;
+    backupBalance += Number(ctv.backupBalance ?? 0);
   }
   res.json({ success: true, storageHealthy,
     walletTotals,
+    backupTopup,
     backupSpent,
     backupHeld,
+    backupBalance,
     adminPayable: Number.isSafeInteger(spent) && spent >= 0 && Number.isSafeInteger(spent + walletTotals.balance) ? spent + walletTotals.balance : null,
     ctvCount: ctvs.length,
     ctvs: ctvs.slice(0, listLimit(req.query.ctvs)),
@@ -4501,7 +4558,10 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
   }
 
   const ctvTransactions = db.transactions.filter(t => t.userId === ctv.id);
-  const wallet = walletTotalsByUser().get(ctv.id) || { totalTopup: 0, totalSpent: 0, backupSpent: 0, held: 0, backupHeld: 0, deducted: 0 };
+  const wallet = walletTotalsByUser().get(ctv.id) || {
+    totalTopup: 0, totalSpent: 0, held: 0, deducted: 0,
+    backupTopup: 0, backupSpent: 0, backupHeld: 0, backupDeducted: 0,
+  };
   const debitRows = ctvTransactions.filter(t => t.type === 'order_debit');
   const debits = new Map(debitRows.map(t => [t.id, -Number(t.amount)]));
   // Early orders have no intent ID. Only link an unambiguous timestamp, amount and description.
@@ -4525,6 +4585,7 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
     ctv: sanitizeUser(ctv),
     summary: {
       balance: Number(ctv.balance || 0),
+      backupBalance: Number(ctv.backupBalance || 0),
       orderCount: ctvOrders.length,
       completedCount,
       runningCount,
@@ -4533,7 +4594,9 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       totalCost,
       totalProfit,
       ...wallet,
-      unaccountedBalance: Number(ctv.balance || 0) - (wallet.totalTopup - wallet.totalSpent - wallet.backupSpent - wallet.held - wallet.backupHeld - wallet.deducted),
+      unaccountedBalance:
+        (Number(ctv.balance || 0) + Number(ctv.backupBalance || 0)) -
+        ((wallet.totalTopup + wallet.backupTopup) - (wallet.totalSpent + wallet.backupSpent) - (wallet.held + wallet.backupHeld) - (wallet.deducted + wallet.backupDeducted)),
       lastOrderAt: ctvOrders[0]?.createdAt || null,
     },
     filteredCount: filtered.length,
@@ -4620,11 +4683,17 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
     if (debit) {
       debit.type = 'order_debit';
       debit.note = `Đối soát đơn #${remoteOrderId} trên ${intentSourceName}`;
-      if (intentIsBackup) { debit.source = 'backup'; debit.category = intent.category; }
+      if (intentIsBackup) { debit.wallet = 'backup'; debit.source = 'backup'; debit.category = intent.category; }
     }
     intent.status = 'completed';
     intent.remoteOrderId = remoteOrderId;
-    intent.response = { success: true, message: 'Đơn đã được admin đối soát.', order: publicOrder(order, owner.role === 'admin'), userBalance: owner.balance };
+    intent.response = {
+      success: true,
+      message: 'Đơn đã được admin đối soát.',
+      order: publicOrder(order, owner.role === 'admin'),
+      userBalance: owner.balance,
+      userBackupBalance: Number(owner.backupBalance ?? 0),
+    };
   } else return res.status(400).json({ success: false, message: 'Kết quả đối soát không hợp lệ.' });
   intent.reviewedBy = req.user.id;
   intent.reviewedAt = new Date().toISOString();
@@ -4651,8 +4720,11 @@ app.post('/api/admin/orders/:id/refund', asyncRoute(async (req, res) => {
     return res.status(400).json({ success: false, message: 'Số hoàn không được vượt phần đã đối soát Server Zn, giá trị đơn hoặc số chưa hoàn; cần ghi chú và xác nhận.' });
   }
   const owner = db.users.find(u => u.id === order.placedBy.id);
-  if (!owner || !validMoney(owner.balance + amount)) return res.status(409).json({ success: false, message: 'Số dư tài khoản nhận không hợp lệ.' });
-  owner.balance += amount;
+  const refundIsBackup = isBackupCategory(order.category);
+  const currentOwnerBal = refundIsBackup ? Number(owner?.backupBalance ?? 0) : Number(owner?.balance ?? 0);
+  if (!owner || !validMoney(currentOwnerBal) || !validMoney(currentOwnerBal + amount)) return res.status(409).json({ success: false, message: 'Số dư tài khoản nhận không hợp lệ.' });
+  if (refundIsBackup) owner.backupBalance = currentOwnerBal + amount;
+  else owner.balance += amount;
   order.sourceRefunded = sourceTotal;
   order.refundedAmount = refundedTotal;
   order.refundPending = refundedTotal < order.sellPrice;
@@ -4660,14 +4732,14 @@ app.post('/api/admin/orders/:id/refund', asyncRoute(async (req, res) => {
     const idx = db.localOrders.findIndex(o => o.id === order.id);
     if (idx >= 0) db.localOrders.splice(idx, 1);
   }
-  const refundIsBackup = isBackupCategory(order.category);
   db.transactions.unshift({ id: crypto.randomUUID(), refundKey: idempotency_key, userId: owner.id, userName: owner.name,
-    type: 'order_refund', amount, balanceAfter: owner.balance,
+    type: 'order_refund', wallet: refundIsBackup ? 'backup' : 'main', amount,
+    balanceAfter: refundIsBackup ? owner.backupBalance : owner.balance,
     ...(refundIsBackup && { source: 'backup', category: order.category, orderId: order.id }),
     note: `Hoàn đơn #${order.remoteOrderId}: ${note.trim()}`, createdAt: new Date().toISOString() });
-  req.auditDetails = { orderId: order.id, userId: owner.id, amount, sourceRefund, note: note.trim() };
+  req.auditDetails = { orderId: order.id, userId: owner.id, wallet: refundIsBackup ? 'backup' : 'main', amount, sourceRefund, note: note.trim() };
   req.needsSave = true;
-  res.json({ success: true, message: !order.refundPending ? 'Đã hoàn đủ tiền về ví CTV và dọn sạch đơn đã hủy.' : 'Đã hoàn ví theo kết quả đối soát; đã ghi nhật ký.' });
+  res.json({ success: true, message: !order.refundPending ? `Đã hoàn đủ tiền về ${refundIsBackup ? 'Ví Nguồn DP' : 'ví CTV'} và dọn sạch đơn đã hủy.` : 'Đã hoàn ví theo kết quả đối soát; đã ghi nhật ký.' });
 }));
 
 app.put('/api/admin/password', asyncRoute(async (req, res) => {
@@ -4713,6 +4785,8 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
         ...sanitizeUser(u),
         totalOrders: ctvOrders.length,
         totalSpent,
+        mainSpent: uw?.totalSpent || 0,
+        backupSpent: uw?.backupSpent || 0,
         totalProfit,
       };
     });
@@ -4722,6 +4796,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
   const totalCost = db.localOrders.reduce((s, o) => s + Number(o.costPrice || 0) - Number(o.sourceRefunded || 0), 0);
   const totalProfit = totalRevenue - totalCost;
   const totalCtvBalance = ctvList.reduce((s, u) => s + Number(u.balance || 0), 0);
+  const totalCtvBackupBalance = ctvList.reduce((s, u) => s + Number(u.backupBalance || 0), 0);
 
   res.json({
     success: true,
@@ -4755,6 +4830,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       totalProfit,
       totalCtvCount: ctvList.length,
       totalCtvBalance,
+      totalCtvBackupBalance,
       totalTransactions: db.transactions.length,
     },
     ctvs: ctvList,
@@ -4886,7 +4962,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
     }
   }
   for (const u of raw.users) {
-    if (!u || typeof u !== 'object' || typeof u.id !== 'string' || typeof u.username !== 'string' || !['admin', 'ctv'].includes(u.role) || !validMoney(Number(u.balance ?? 0))) {
+    if (!u || typeof u !== 'object' || typeof u.id !== 'string' || typeof u.username !== 'string' || !['admin', 'ctv'].includes(u.role) || !validMoney(Number(u.balance ?? 0)) || !validMoney(Number(u.backupBalance ?? 0))) {
       return res.status(400).json({ success: false, message: 'Danh sách tài khoản trong tệp sao lưu không hợp lệ.' });
     }
   }
@@ -5166,7 +5242,7 @@ app.post('/api/admin/source/reconnect', requireAdmin, handleReconnectSource);
 
 // Create CTV Account
 app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
-  const { name, username, email, password, phone, balance } = req.body || {};
+  const { name, username, email, password, phone, balance, backupBalance } = req.body || {};
   const cleanUsername = String(username || '').trim().toLowerCase();
   const cleanEmail = String(email || `${cleanUsername}@znstudio.vn`).trim().toLowerCase();
 
@@ -5189,7 +5265,10 @@ app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
   }
 
   const initBalance = balance === undefined ? 0 : balance;
-  if (!validMoney(initBalance)) return res.status(400).json({ success: false, message: 'Số dư khởi tạo phải là số nguyên không âm và hữu hạn.' });
+  const initBackupBalance = backupBalance === undefined ? 0 : backupBalance;
+  if (!validMoney(initBalance) || !validMoney(initBackupBalance)) {
+    return res.status(400).json({ success: false, message: 'Số dư khởi tạo phải là số nguyên không âm và hữu hạn.' });
+  }
   const newCtv = {
     id: `usr_ctv_${crypto.randomUUID()}`,
     username: cleanUsername,
@@ -5199,6 +5278,7 @@ app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
     phone: String(phone || '').trim(),
     role: 'ctv',
     balance: initBalance,
+    backupBalance: initBackupBalance,
     isLocked: false,
     createdAt: new Date().toISOString(),
   };
@@ -5209,10 +5289,25 @@ app.post('/api/admin/ctv', requireAdmin, asyncRoute(async (req, res) => {
       id: crypto.randomUUID(),
       userId: newCtv.id,
       userName: newCtv.name,
+      wallet: 'main',
       type: 'admin_topup',
       amount: initBalance,
       balanceAfter: initBalance,
       note: 'Số dư khởi tạo khi mở tài khoản CTV',
+      createdAt: new Date().toISOString(),
+    });
+  }
+  if (initBackupBalance > 0) {
+    db.transactions.unshift({
+      id: crypto.randomUUID(),
+      userId: newCtv.id,
+      userName: newCtv.name,
+      wallet: 'backup',
+      source: 'backup',
+      type: 'admin_topup',
+      amount: initBackupBalance,
+      balanceAfter: initBackupBalance,
+      note: 'Số dư Ví Nguồn DP khởi tạo khi mở tài khoản CTV',
       createdAt: new Date().toISOString(),
     });
   }
@@ -5260,42 +5355,58 @@ app.put('/api/admin/ctv/:id', requireAdmin, asyncRoute(async (req, res) => {
   });
 }));
 
-// Top-up / Deduct CTV Balance
+// Top-up / Deduct CTV Balance (supports 'main' = Ví CTV bình thường, 'backup' = Ví Nguồn DP)
 app.post('/api/admin/ctv/:id/balance', requireAdmin, asyncRoute(async (req, res) => {
   const ctv = db.users.find((u) => u.id === req.params.id && u.role === 'ctv');
   if (!ctv) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản CTV.' });
   }
 
+  const rawWallet = req.body?.wallet;
+  if (rawWallet !== undefined && !['main', 'backup'].includes(rawWallet)) {
+    return res.status(400).json({ success: false, message: 'Loại ví điều chỉnh không hợp lệ (chỉ hỗ trợ Ví CTV hoặc Ví Nguồn DP).' });
+  }
+  const wallet = rawWallet === 'backup' ? 'backup' : 'main';
+  const isBackupWallet = wallet === 'backup';
+  const walletLabel = isBackupWallet ? 'Ví Nguồn DP' : 'Ví CTV';
+
   const amount = req.body?.amount;
   const adjustmentKey = req.body?.idempotency_key;
   if (typeof adjustmentKey !== 'string' || !/^[\w-]{16,80}$/.test(adjustmentKey)) return res.status(400).json({ success: false, message: 'Thiếu mã chống điều chỉnh ví trùng.' });
   if (db.transactions.some(t => t.adjustmentKey === adjustmentKey)) return res.status(409).json({ success: false, message: 'Yêu cầu điều chỉnh ví đã được xử lý.' });
-  const note = String(req.body?.note || 'Admin điều chỉnh số dư').trim();
-  if (!validMoney(ctv.balance) || !Number.isSafeInteger(amount) || amount === 0 || !validMoney(ctv.balance + amount) || note.length > 500) {
-    return res.status(400).json({ success: false, message: 'Số tiền phải là số nguyên khác 0, không làm ví âm hoặc vượt giới hạn.' });
+  const defaultNote = isBackupWallet
+    ? (amount > 0 ? 'Admin nạp tiền Ví Nguồn DP' : 'Admin trừ tiền Ví Nguồn DP')
+    : 'Admin điều chỉnh số dư';
+  const note = String(req.body?.note || defaultNote).trim();
+  const currentBal = isBackupWallet ? Number(ctv.backupBalance ?? 0) : Number(ctv.balance ?? 0);
+  if (!validMoney(currentBal) || !Number.isSafeInteger(amount) || amount === 0 || !validMoney(currentBal + amount) || note.length > 500) {
+    return res.status(400).json({ success: false, message: `Số tiền phải là số nguyên khác 0, không làm ${walletLabel} âm hoặc vượt giới hạn.` });
   }
 
-  ctv.balance += amount;
+  const nextBal = currentBal + amount;
+  if (isBackupWallet) ctv.backupBalance = nextBal;
+  else ctv.balance = nextBal;
   db.transactions.unshift({
     id: crypto.randomUUID(),
     adjustmentKey,
     userId: ctv.id,
     userName: ctv.name,
+    wallet,
+    ...(isBackupWallet && { source: 'backup' }),
     type: amount > 0 ? 'admin_topup' : 'admin_deduct',
     amount,
-    balanceAfter: ctv.balance,
+    balanceAfter: nextBal,
     note,
     createdAt: new Date().toISOString(),
   });
-  req.auditDetails = { userId: ctv.id, amount, balanceAfter: ctv.balance, note };
+  req.auditDetails = { userId: ctv.id, wallet, amount, balanceAfter: nextBal, note };
   req.needsSave = true;
 
   res.json({
     success: true,
-    message: `Đã ${amount > 0 ? 'nạp' : 'trừ'} ${Math.abs(amount).toLocaleString('vi-VN')}đ cho CTV ${
+    message: `Đã ${amount > 0 ? 'nạp' : 'trừ'} ${Math.abs(amount).toLocaleString('vi-VN')}đ ${isBackupWallet ? 'vào Ví Nguồn DP ' : ''}cho CTV ${
       ctv.name
-    }. Số dư mới: ${ctv.balance.toLocaleString('vi-VN')}đ`,
+    }. Số dư ${walletLabel} mới: ${nextBal.toLocaleString('vi-VN')}đ`,
     ctv: sanitizeUser(ctv),
   });
 }));

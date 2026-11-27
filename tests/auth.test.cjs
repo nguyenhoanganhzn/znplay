@@ -110,14 +110,32 @@ test('backup orders use live quotes, per-service markup, wallet-only dispatch an
   assert.equal(adminQuote.body.sellPrice, 5000);
   assert.equal(adminQuote.body.costPrice, undefined);
   const payload = { ...input, payWith: 'qr', idempotency_key: crypto.randomUUID(), expected_price: 5000 };
+  // CTV with 50,000đ in normal wallet but 0đ in Ví Nguồn DP MUST be blocked from placing backup orders
+  const noDpRes = await s.request('/api/orders/place', 'POST', ctv, payload);
+  assert.equal(noDpRes.status, 400);
+  assert.equal(noDpRes.body.code, 'INSUFFICIENT_BALANCE');
+  assert.equal(posts, 0);
+  assert.equal(s.db.users.find(u => u.id === 'seller').balance, 50000);
+  // Admin tops up Ví Nguồn DP separately (20,000đ) without touching normal Ví CTV (50,000đ)
+  const dpTopup = await s.request('/api/admin/ctv/seller/balance', 'POST', admin, {
+    wallet: 'backup', amount: 20000, note: 'Nạp Ví Nguồn DP test', idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(dpTopup.status, 200);
+  assert.equal(dpTopup.body.ctv.balance, 50000);
+  assert.equal(dpTopup.body.ctv.backupBalance, 20000);
   currentCost = 5000;
   assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).body.code, 'PRICE_CHANGED');
   currentCost = 4000;
   const results = await Promise.all([1, 2].map(() => s.request('/api/orders/place', 'POST', ctv, payload)));
   assert.ok(results.some(r => r.body.success));
   assert.equal(posts, 1);
-  assert.equal(s.db.users.find(u => u.id === 'seller').balance, 45000);
-  assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).body.success, true);
+  // Backup order deducts ONLY Ví Nguồn DP (20k -> 15k), leaving normal Ví CTV untouched (50k)
+  assert.equal(s.db.users.find(u => u.id === 'seller').balance, 50000);
+  assert.equal(s.db.users.find(u => u.id === 'seller').backupBalance, 15000);
+  const replay = await s.request('/api/orders/place', 'POST', ctv, payload);
+  assert.equal(replay.body.success, true);
+  assert.equal(replay.body.userBalance, 50000);
+  assert.equal(replay.body.userBackupBalance, 15000);
   const adminOrder = await s.request('/api/orders/place', 'POST', admin, { ...payload, idempotency_key: crypto.randomUUID() });
   assert.equal(adminOrder.status, 200);
   const list = await s.request('/api/backup/orders', 'GET', ctv);
@@ -177,7 +195,7 @@ test('backup resume survives transient post-resume refresh failure and failed ba
   assert.equal(rawBackupJs.status, 404);
 });
 
-test('admin monitor separates backup source spending from Server Zn totals while deducting remaining balance and payable accurately', async t => {
+test('admin monitor separates backup wallet from Server Zn wallet with strict isolation and accurate accounting', async t => {
   let mode = 'ok', nextId = 500;
   const s = await startTestServer(t, async (url) => {
     if (url.includes('/api/seller-settlements')) return Response.json({ success: true, data: { weekly_limit: { spent: 35000, limit: 1000000 } } });
@@ -193,71 +211,99 @@ test('admin monitor separates backup source spending from Server Zn totals while
     seed(data) {
       const seller = data.users.find(u => u.id === 'seller');
       seller.balance = 60000;
+      seller.backupBalance = 0;
       data.transactions = [
-        { id: 'tx_topup', userId: 'seller', userName: 'Seller', type: 'admin_topup', amount: 100000, balanceAfter: 100000, note: 'Nạp ví', createdAt: '2026-11-26T01:00:00.000Z' },
-        { id: 'tx_zn_order', userId: 'seller', userName: 'Seller', type: 'order_debit', amount: -40000, balanceAfter: 60000, note: 'Tạo đơn Buff Tim: 1000 Tim', createdAt: '2026-11-26T02:00:00.000Z' },
+        { id: 'tx_topup', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'admin_topup', amount: 100000, balanceAfter: 100000, note: 'Nạp ví', createdAt: '2026-11-26T01:00:00.000Z' },
+        { id: 'tx_zn_order', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'order_debit', amount: -40000, balanceAfter: 60000, note: 'Tạo đơn Buff Tim: 1000 Tim', createdAt: '2026-11-26T02:00:00.000Z' },
       ];
     },
   });
   const admin = (await s.login('owner', 'owner-test-password')).body.token;
   const ctv = (await s.login('seller', 'seller-test-password')).body.token;
 
-  // Before backup order: balance 60k, Server Zn spent 40k, weekly spent 35k => adminPayable 95k, backupSpent 0
-  const before = (await s.request('/api/admin/monitor', 'GET', admin)).body;
-  assert.deepEqual(before.walletTotals, { totalTopup: 100000, totalSpent: 40000, balance: 60000 });
-  assert.equal(before.backupSpent, 0);
-  assert.equal(before.backupHeld, 0);
-  assert.equal(before.adminPayable, 95000);
+  // Reject invalid wallet type on admin balance endpoint
+  assert.equal((await s.request('/api/admin/ctv/seller/balance', 'POST', admin, {
+    wallet: 'invalid', amount: 10000, idempotency_key: crypto.randomUUID(),
+  })).status, 400);
 
-  // CTV places a 30k backup order (25k cost + 5k default markup); Admin also places one (must not affect CTV totals)
+  // Before DP topup: CTV has 60k in Ví CTV, 0đ in Ví Nguồn DP -> blocked from ordering on Nguồn dự phòng
+  const blocked = await s.request('/api/orders/place', 'POST', ctv, {
+    category: 'backup_emptymap', charName: 'BlockedHero', expected_price: 30000, idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.body.code, 'INSUFFICIENT_BALANCE');
+
+  // Admin tops up 80,000đ into Ví Nguồn DP -> Ví CTV totals & adminPayable remain completely unaffected!
+  const topupDp = await s.request('/api/admin/ctv/seller/balance', 'POST', admin, {
+    wallet: 'backup', amount: 80000, note: 'Nạp Ví Nguồn DP', idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(topupDp.status, 200);
+  assert.equal(topupDp.body.ctv.balance, 60000);
+  assert.equal(topupDp.body.ctv.backupBalance, 80000);
+
+  const afterTopup = (await s.request('/api/admin/monitor', 'GET', admin)).body;
+  assert.deepEqual(afterTopup.walletTotals, { totalTopup: 100000, totalSpent: 40000, balance: 60000 });
+  assert.equal(afterTopup.adminPayable, 95000);
+  assert.equal(afterTopup.backupTopup, 80000);
+  assert.equal(afterTopup.backupSpent, 0);
+  assert.equal(afterTopup.backupBalance, 80000);
+
+  // CTV places a 30k backup order; Admin also places one (must not affect CTV totals)
   const ctvBackup = await s.request('/api/orders/place', 'POST', ctv, {
     category: 'backup_emptymap', charName: 'CtvHero', expected_price: 30000, idempotency_key: crypto.randomUUID(),
   });
   assert.equal(ctvBackup.status, 200);
+  assert.equal(ctvBackup.body.userBalance, 60000);
+  assert.equal(ctvBackup.body.userBackupBalance, 50000);
   const adminBackup = await s.request('/api/orders/place', 'POST', admin, {
     category: 'backup_emptymap', charName: 'AdminHero', expected_price: 30000, idempotency_key: crypto.randomUUID(),
   });
   assert.equal(adminBackup.status, 200);
 
   // After CTV backup order:
-  // - Server Zn totalSpent stays 40k (untouched!)
-  // - backupSpent becomes 30k (separate!)
-  // - remaining balance drops 60k -> 30k (deducted!)
-  // - adminPayable drops 95k -> 65k (35k weekly spent + 30k remaining balance!)
+  // - Server Zn wallet totals stay 100k / 40k / 60k, adminPayable stays 95k (100% isolated!)
+  // - Ví Nguồn DP updates cleanly: backupTopup 80k, backupSpent 30k, backupBalance 50k!
   const after = (await s.request('/api/admin/monitor', 'GET', admin)).body;
-  assert.deepEqual(after.walletTotals, { totalTopup: 100000, totalSpent: 40000, balance: 30000 });
+  assert.deepEqual(after.walletTotals, { totalTopup: 100000, totalSpent: 40000, balance: 60000 });
+  assert.equal(after.adminPayable, 95000);
+  assert.equal(after.backupTopup, 80000);
   assert.equal(after.backupSpent, 30000);
   assert.equal(after.backupHeld, 0);
-  assert.equal(after.adminPayable, 65000);
-  assert.equal(after.ctvs[0].totalSpent, 40000);
+  assert.equal(after.backupBalance, 50000);
+  assert.equal(after.ctvs[0].balance, 60000);
+  assert.equal(after.ctvs[0].backupBalance, 50000);
+  assert.equal(after.ctvs[0].backupTopup, 80000);
   assert.equal(after.ctvs[0].backupSpent, 30000);
   assert.doesNotMatch(JSON.stringify(after), /hoannguyen|hoannguyenplaytogether/i);
 
-  // Per-CTV detail reconciles with 0 unaccounted balance
+  // Per-CTV detail reconciles with 0 unaccounted balance across both wallets
   const detail = (await s.request('/api/admin/monitor/ctv/seller', 'GET', admin)).body;
   assert.equal(detail.summary.totalTopup, 100000);
   assert.equal(detail.summary.totalSpent, 40000);
+  assert.equal(detail.summary.balance, 60000);
+  assert.equal(detail.summary.backupTopup, 80000);
   assert.equal(detail.summary.backupSpent, 30000);
-  assert.equal(detail.summary.balance, 30000);
+  assert.equal(detail.summary.backupBalance, 50000);
   assert.equal(detail.summary.unaccountedBalance, 0);
 
-  // CTV settlement summary still counts CTV's total paid across both sources (40k + 30k = 70k)
+  // CTV settlement summary reports both wallets accurately
   const ctvSettlement = (await s.request('/api/settlements', 'GET', ctv)).body;
   assert.equal(ctvSettlement.summary.totalSpent, 70000);
-  assert.equal(ctvSettlement.summary.currentBalance, 30000);
+  assert.equal(ctvSettlement.summary.mainSpent, 40000);
+  assert.equal(ctvSettlement.summary.backupSpent, 30000);
+  assert.equal(ctvSettlement.summary.currentBalance, 60000);
+  assert.equal(ctvSettlement.summary.backupBalance, 50000);
 
-  // Uncertain backup order holds 30k in backupHeld, keeps balance 0, unaccountedBalance 0, and releases cleanly on reconcile not_created
+  // Uncertain backup order holds 30k strictly from backupBalance (50k -> 20k), never touching main balance (60k)
   mode = 'timeout';
   const heldRes = await s.request('/api/orders/place', 'POST', ctv, {
     category: 'backup_emptymap', charName: 'HeldHero', expected_price: 30000, idempotency_key: crypto.randomUUID(),
   });
   assert.equal(heldRes.body.code, 'ORDER_REVIEW_REQUIRED');
   const duringHold = (await s.request('/api/admin/monitor', 'GET', admin)).body;
-  assert.equal(duringHold.walletTotals.balance, 0);
-  assert.equal(duringHold.walletTotals.totalSpent, 40000);
-  assert.equal(duringHold.backupSpent, 30000);
+  assert.equal(duringHold.walletTotals.balance, 60000);
+  assert.equal(duringHold.backupBalance, 20000);
   assert.equal(duringHold.backupHeld, 30000);
-  assert.equal(duringHold.adminPayable, 35000);
   assert.equal((await s.request('/api/admin/monitor/ctv/seller', 'GET', admin)).body.summary.unaccountedBalance, 0);
 
   const uncertainIntent = s.db.orderIntents.find(i => i.status === 'uncertain');
@@ -265,12 +311,11 @@ test('admin monitor separates backup source spending from Server Zn totals while
     confirmed: true, resolution: 'not_created', note: 'Checked backup source, order was not created',
   })).status, 200);
   const afterRelease = (await s.request('/api/admin/monitor', 'GET', admin)).body;
-  assert.equal(afterRelease.walletTotals.balance, 30000);
-  assert.equal(afterRelease.backupSpent, 30000);
+  assert.equal(afterRelease.walletTotals.balance, 60000);
+  assert.equal(afterRelease.backupBalance, 50000);
   assert.equal(afterRelease.backupHeld, 0);
-  assert.equal(afterRelease.adminPayable, 65000);
 
-  // Refund on cancelled backup order reduces backupSpent only, never Server Zn totalSpent
+  // Refund on cancelled backup order credits strictly back to Ví Nguồn DP (50k -> 60k), leaving Ví CTV at 60k
   const backupOrder = s.db.localOrders.find(o => o.id === ctvBackup.body.order.id);
   backupOrder.status = 'cancelled';
   assert.equal((await s.request('/api/admin/orders/' + backupOrder.id + '/refund', 'POST', admin, {
@@ -278,13 +323,23 @@ test('admin monitor separates backup source spending from Server Zn totals while
   })).status, 200);
   const afterRefund = (await s.request('/api/admin/monitor', 'GET', admin)).body;
   assert.equal(afterRefund.walletTotals.totalSpent, 40000);
+  assert.equal(afterRefund.walletTotals.balance, 60000);
   assert.equal(afterRefund.backupSpent, 20000);
-  assert.equal(afterRefund.walletTotals.balance, 40000);
-  assert.equal(afterRefund.adminPayable, 75000);
+  assert.equal(afterRefund.backupBalance, 60000);
+  assert.equal(afterRefund.adminPayable, 95000);
   assert.equal((await s.request('/api/admin/monitor/ctv/seller', 'GET', admin)).body.summary.unaccountedBalance, 0);
 
-  // Monitor HTML renders 5 compact cards in 1 row with "Nguồn dự phòng" and 0 upstream leaks
+  // Admin creating a new CTV with separate initial balance + backupBalance works cleanly
+  const newCtv = await s.request('/api/admin/ctv', 'POST', admin, {
+    name: 'Dual CTV', username: 'dualctv', password: 'dual-ctv-password-123', balance: 15000, backupBalance: 25000,
+  });
+  assert.equal(newCtv.status, 200);
+  assert.equal(newCtv.body.ctv.balance, 15000);
+  assert.equal(newCtv.body.ctv.backupBalance, 25000);
+
+  // Monitor HTML + Admin CTV HTML render both wallets accurately with 0 upstream leaks
   const client = createClient();
+  client.state.user = { id: 'owner', role: 'admin', name: 'Admin' };
   client.state.adminMonitor = afterRefund;
   client.state.adminMonitorCtvId = 'seller';
   client.state.adminMonitorCtvDetail = (await s.request('/api/admin/monitor/ctv/seller', 'GET', admin)).body;
@@ -292,14 +347,20 @@ test('admin monitor separates backup source spending from Server Zn totals while
   assert.match(html, /monitor-wallet-grid is-five/);
   assert.match(html, /monitor-wallet-grid is-four/);
   assert.match(html, /Nguồn dự phòng/);
+  assert.match(html, /Ví Nguồn DP/);
+  assert.ok(html.includes('80.000đ'));
   assert.ok(html.includes('20.000đ'));
-  assert.ok(html.includes('40.000đ'));
-  assert.ok(html.includes('75.000đ'));
+  assert.ok(html.includes('95.000đ'));
   assert.doesNotMatch(html, /hoannguyen/i);
+  client.state.adminOverview = (await s.request('/api/admin/overview', 'GET', admin)).body;
+  const ctvMgmtHtml = vm.runInContext('renderAdminCtvPageHtml()', client.context);
+  assert.match(ctvMgmtHtml, /Nạp \/ Trừ Ví CTV/);
+  assert.match(ctvMgmtHtml, /Nạp \/ Trừ Ví Nguồn DP/);
+  assert.match(ctvMgmtHtml, /VÍ NGUỒN DP/);
   assert.equal((await s.request('/api/admin/monitor', 'GET', ctv)).status, 403);
 });
 
-test('backup source rejection releases once, ambiguous creation stays reserved for admin reconciliation', async t => {
+test('backup source rejection releases once to Ví Nguồn DP, ambiguous creation stays reserved for admin reconciliation', async t => {
   let mode = 'reject', creates = 0;
   const s = await startTestServer(t, async url => {
     if (url.endsWith('/services')) return Response.json({ services: { emptymap: { enabled: true, free: 0 } } });
@@ -313,23 +374,27 @@ test('backup source rejection releases once, ambiguous creation stays reserved f
   const admin = (await s.login('owner', 'owner-test-password')).body.token;
   const seller = s.db.users.find(u => u.id === 'seller');
   const payload = { category: 'backup_emptymap', charName: 'One', expected_price: 7000, idempotency_key: crypto.randomUUID() };
-  seller.balance = 6999;
+  seller.balance = 50000;
+  seller.backupBalance = 6999;
   assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).body.code, 'INSUFFICIENT_BALANCE');
   assert.equal(creates, 0);
-  seller.balance = 50000;
+  seller.backupBalance = 50000;
   for (let i = 0; i < 2; i++) assert.equal((await s.request('/api/orders/place', 'POST', ctv, payload)).status, 400);
   assert.equal(seller.balance, 50000);
+  assert.equal(seller.backupBalance, 50000);
   assert.equal(creates, 1);
   mode = 'timeout';
   const newPayload = { ...payload, idempotency_key: crypto.randomUUID() };
   assert.equal((await s.request('/api/orders/place', 'POST', ctv, newPayload)).body.code, 'ORDER_REVIEW_REQUIRED');
   assert.equal((await s.request('/api/orders/place', 'POST', ctv, newPayload)).body.code, 'ORDER_REVIEW_REQUIRED');
-  assert.equal(seller.balance, 43000);
+  assert.equal(seller.balance, 50000);
+  assert.equal(seller.backupBalance, 43000);
   assert.equal(creates, 2);
   const intent = s.db.orderIntents[0];
   const resolve = { confirmed: true, resolution: 'created', remoteOrderId: 42, actualCost: 2000, note: 'Verified source order' };
   assert.equal((await s.request('/api/admin/intents/' + intent.id + '/reconcile', 'POST', admin, resolve)).status, 200);
-  assert.equal(seller.balance, 43000);
+  assert.equal(seller.balance, 50000);
+  assert.equal(seller.backupBalance, 43000);
   assert.equal((await s.request('/api/backup/orders', 'GET', ctv)).body.orders[0].statusText, 'Đang chạy');
   assert.equal((await s.request('/api/admin/intents/' + intent.id + '/reconcile', 'POST', admin, resolve)).status, 409);
 });

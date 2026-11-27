@@ -431,6 +431,7 @@ const DEFAULT_DB = {
   users: [],
   sessions: {},
   localOrders: [],
+  externalBackupOrders: [],
   transactions: [],
   orderIntents: [],
   auditLog: [],
@@ -608,6 +609,7 @@ function normalizeDb(raw) {
   if (!Array.isArray(merged.users) || !merged.users.some(user => user.role === 'admin')) {
     throw new Error('Database has no administrator');
   }
+  if (!Array.isArray(merged.externalBackupOrders)) merged.externalBackupOrders = [];
   // Preserve local accounts; never reset their passwords from deployment variables.
   let migrated = applyUpstreamEnvironment(merged);
   for (const u of merged.users || []) {
@@ -2703,6 +2705,108 @@ const backupOrderRefreshCache = new Map();
 const backupOrderRefreshInflight = new Map();
 const backupOrderToggleCooldowns = new Map();
 const backupOrderToggleInflight = new Map();
+let externalBackupSyncAt = 0;
+let externalBackupSyncInflight = null;
+
+function findBackupOrderByToken(tok) {
+  return db.localOrders.find(o => isBackupCategory(o.category) && o.backupTrackToken === tok)
+    || (db.externalBackupOrders || []).find(o => isBackupCategory(o.category) && o.backupTrackToken === tok)
+    || null;
+}
+
+async function syncExternalBackupOrders({ force = false } = {}) {
+  const now = Date.now();
+  const minInterval = force ? 3000 : 15000;
+  if (externalBackupSyncAt > 0 && now - externalBackupSyncAt < minInterval) {
+    return { changed: false, cached: true };
+  }
+  if (externalBackupSyncInflight) return externalBackupSyncInflight;
+  externalBackupSyncInflight = (async () => {
+    const items = await backupSource.listOrders(50);
+    if (!Array.isArray(db.externalBackupOrders)) db.externalBackupOrders = [];
+    let changed = false;
+    const localByRemoteId = new Map();
+    for (const lo of db.localOrders) {
+      if (isBackupCategory(lo.category) && lo.remoteOrderId) {
+        localByRemoteId.set(Number(lo.remoteOrderId), lo);
+      }
+    }
+    const extByRemoteId = new Map();
+    for (const eo of db.externalBackupOrders) {
+      if (eo?.remoteOrderId) extByRemoteId.set(Number(eo.remoteOrderId), eo);
+    }
+    for (const job of items) {
+      const remId = Number(job.remoteOrderId);
+      const localMatch = localByRemoteId.get(remId);
+      if (localMatch) {
+        if (localMatch.backupStatus !== job.backupStatus || localMatch.completedCnt !== job.completedCnt || localMatch.totalCnt !== job.totalCnt) {
+          localMatch.backupStatus = job.backupStatus;
+          localMatch.status = job.status;
+          localMatch.isActive = job.isActive;
+          localMatch.totalCnt = job.totalCnt;
+          localMatch.completedCnt = job.completedCnt;
+          localMatch.backupProgress = job.backupProgress;
+          changed = true;
+        }
+        continue;
+      }
+      const existing = extByRemoteId.get(remId);
+      if (existing) {
+        if (!existing.backupTrackToken) {
+          ensureBackupTrackToken(existing);
+          changed = true;
+        }
+        if (existing.backupStatus !== job.backupStatus || existing.completedCnt !== job.completedCnt || existing.totalCnt !== job.totalCnt || existing.summary !== job.summary) {
+          existing.summary = job.summary;
+          existing.customer = job.customer;
+          existing.status = job.status;
+          existing.backupStatus = job.backupStatus;
+          existing.isActive = job.isActive;
+          existing.totalCnt = job.totalCnt;
+          existing.completedCnt = job.completedCnt;
+          existing.backupProgress = job.backupProgress;
+          changed = true;
+        } else {
+          existing.backupProgress = job.backupProgress;
+        }
+      } else {
+        const created = {
+          id: `BKS-${remId}`,
+          remoteOrderId: remId,
+          category: job.category,
+          categoryName: job.categoryName,
+          summary: job.summary,
+          customer: job.customer,
+          status: job.status,
+          backupStatus: job.backupStatus,
+          isActive: job.isActive,
+          totalCnt: job.totalCnt,
+          completedCnt: job.completedCnt,
+          backupProgress: job.backupProgress,
+          backupTrackToken: crypto.randomBytes(18).toString('base64url'),
+          externalSync: true,
+          createdAt: job.createdAt,
+        };
+        db.externalBackupOrders.unshift(created);
+        extByRemoteId.set(remId, created);
+        changed = true;
+      }
+    }
+    // Keep newest 200 external synced orders (always retaining open/active ones)
+    if (db.externalBackupOrders.length > 200) {
+      db.externalBackupOrders.sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
+      const active = db.externalBackupOrders.filter(o => !['done', 'completed', 'cancelled', 'failed'].includes(o.backupStatus || o.status));
+      const done = db.externalBackupOrders.filter(o => ['done', 'completed', 'cancelled', 'failed'].includes(o.backupStatus || o.status));
+      db.externalBackupOrders = [...active, ...done.slice(0, Math.max(0, 200 - active.length))];
+      changed = true;
+    }
+    externalBackupSyncAt = Date.now();
+    return { changed, cached: false };
+  })().finally(() => {
+    externalBackupSyncInflight = null;
+  });
+  return externalBackupSyncInflight;
+}
 
 async function refreshBackupOrderProgress(order, minCacheMs = 0) {
   const now = Date.now();
@@ -2820,7 +2924,7 @@ app.get('/api/public/backup-track/:token', asyncRoute(async (req, res) => {
     res.setHeader('Retry-After', String(rl.retrySec));
     return res.status(429).json({ success: false, message: 'Bạn thao tác quá nhanh. Vui lòng đợi vài giây rồi thử lại.' });
   }
-  const order = db.localOrders.find(o => isBackupCategory(o.category) && o.backupTrackToken === tok);
+  const order = findBackupOrderByToken(tok);
   if (!order) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy đơn theo dõi hoặc đơn đã hết hạn lưu trữ.' });
   }
@@ -2851,7 +2955,7 @@ app.post('/api/public/backup-track/:token/:action', asyncRoute(async (req, res) 
     res.setHeader('Retry-After', String(rl.retrySec));
     return res.status(429).json({ success: false, message: 'Bạn thao tác bật/tắt quá nhanh. Vui lòng đợi vài giây.' });
   }
-  const order = db.localOrders.find(o => isBackupCategory(o.category) && o.backupTrackToken === tok);
+  const order = findBackupOrderByToken(tok);
   if (!order) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy đơn theo dõi hoặc đơn đã hết hạn lưu trữ.' });
   }
@@ -2871,10 +2975,21 @@ app.post('/api/public/backup-track/:token/:action', asyncRoute(async (req, res) 
   });
 }));
 
-app.get('/api/backup/orders', requireAuth, (req, res) => {
+app.get('/api/backup/orders', requireAuth, asyncRoute(async (req, res) => {
   const isAdmin = req.user.role === 'admin';
-  const allowed = o => isBackupCategory(o.category) && (isAdmin || o.placedBy?.id === req.user.id);
-  const orders = db.localOrders.filter(allowed);
+  // ONLY Admin syncs & views orders created directly via backup API; CTV strictly sees only their own orders.
+  if (isAdmin && req.query.sync === '1') {
+    try {
+      const synced = await syncExternalBackupOrders({ force: req.query.force === '1' });
+      if (synced?.changed) req.needsSave = true;
+    } catch { }
+  }
+  const localAllowed = db.localOrders.filter(o => isBackupCategory(o.category) && (isAdmin || o.placedBy?.id === req.user.id));
+  const localRemoteIds = new Set(localAllowed.map(o => Number(o.remoteOrderId)).filter(Boolean));
+  const externalAllowed = isAdmin
+    ? (db.externalBackupOrders || []).filter(o => isBackupCategory(o.category) && !localRemoteIds.has(Number(o.remoteOrderId)))
+    : [];
+  const orders = [...localAllowed, ...externalAllowed].sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
   const limit = Math.min(500, listLimit(req.query.limit));
   const reviews = db.orderIntents.filter(i => isBackupCategory(i.category) && (isAdmin || i.userId === req.user.id) &&
     (['processing', 'uncertain'].includes(i.status) || i.requiresReview)).map(i => ({
@@ -2888,7 +3003,9 @@ app.get('/api/backup/orders', requireAuth, (req, res) => {
     const bStatus = o.backupStatus || o.status;
     return {
       ...publicOrder(o, false),
-      placedBy: isAdmin ? o.placedBy : undefined,
+      sellPrice: o.externalSync ? null : o.sellPrice,
+      externalSync: Boolean(o.externalSync),
+      placedBy: isAdmin ? (o.externalSync ? { id: 'backup_api_sync', name: 'Tạo trực tiếp qua API', role: 'admin' } : o.placedBy) : undefined,
       backupStatus: bStatus,
       backupTrackUrl: token ? '/track/backup/' + token : null,
       statusText: backupSource.statusText(bStatus),
@@ -2897,13 +3014,14 @@ app.get('/api/backup/orders', requireAuth, (req, res) => {
     };
   });
   res.json({ success: true, reviews, total: orders.length, orders: visible });
-});
+}));
 app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
+  const isAdmin = req.user.role === 'admin';
   const o = db.localOrders.find(row => row.id === req.params.id && isBackupCategory(row.category) &&
-    (req.user.role === 'admin' || row.placedBy?.id === req.user.id));
+    (isAdmin || row.placedBy?.id === req.user.id))
+    || (isAdmin ? (db.externalBackupOrders || []).find(row => row.id === req.params.id && isBackupCategory(row.category)) : null);
   if (!o) return res.status(404).json({ success: false, message: 'Không tìm thấy đơn dự phòng.' });
   if (!['refresh', 'resume', 'pause'].includes(req.params.action)) return res.status(400).json({ success: false, message: 'Thao tác không hợp lệ.' });
-  const isAdmin = req.user.role === 'admin';
   if (req.params.action === 'refresh') {
     const result = await refreshBackupOrderProgress(o, isAdmin ? 2000 : 4000);
     req.auditDetails = { orderId: o.id, remoteOrderId: o.remoteOrderId, status: o.status, cached: result.cached };
@@ -5202,6 +5320,7 @@ app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
     settings: safeSettings,
     users: db.users,
     localOrders: db.localOrders,
+    externalBackupOrders: db.externalBackupOrders || [],
     transactions: db.transactions,
     orderIntents: db.orderIntents,
     auditLog: db.auditLog,
@@ -5246,6 +5365,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
     users: structuredClone(raw.users),
     sessions: currentSessions,
     localOrders: structuredClone(raw.localOrders || []),
+    externalBackupOrders: Array.isArray(raw.externalBackupOrders) ? structuredClone(raw.externalBackupOrders) : [],
     transactions: structuredClone(raw.transactions || []),
     orderIntents: structuredClone(raw.orderIntents || []),
     auditLog: structuredClone(raw.auditLog || []).slice(0, 5000),

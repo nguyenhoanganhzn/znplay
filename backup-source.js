@@ -203,7 +203,7 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
     const leftMs = rawLeftMs !== null
       ? rawLeftMs
       : (Number.isFinite(endsAt) && endsAt > 0 ? Math.max(0, endsAt - Date.now()) : null);
-    const leftMin = leftMs !== null ? Math.ceil(leftMs / 60000) : null;
+    const leftMin = leftMs !== null && leftMs > 0 ? Math.ceil(leftMs / 60000) : null;
     const khu = nonNegInt(map.khu) ?? nonNegInt(prog.khu);
     const population = nonNegInt(map.population);
     const customersHere = nonNegInt(map.customersHere);
@@ -254,6 +254,72 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
         (result.job.service && result.job.service !== args.service)) throw fail('Nguồn chưa xác nhận đầy đủ đơn đã thanh toán.', 503);
     return { success: true, data: { id: result.job.id, total_price: result.job.amount, ...status(result.job) } };
   }
+  function buildJobSummary(job) {
+    const service = String(job?.service || '');
+    const title = backupServices[service] || cleanBackupText(String(job?.title || ''), 60) || 'Dịch vụ dự phòng';
+    const params = job?.params && typeof job.params === 'object' ? job.params : {};
+    const parts = [title];
+    if (service === 'guide') {
+      if (nonNegInt(params.bots) > 0) parts.push(`${nonNegInt(params.bots)} bot`);
+      if (nonNegInt(params.minutes) > 0) parts.push(`${nonNegInt(params.minutes)} phút`);
+    } else if (service === 'treasure') {
+      if (nonNegInt(params.minutes) > 0) parts.push(`${nonNegInt(params.minutes)} phút`);
+    } else if (service === 'seeds') {
+      const qty = nonNegInt(params.quantity) ?? nonNegInt(params.total);
+      if (qty > 0) parts.push(`${qty} hạt`);
+    } else if (service === 'weather') {
+      const items = Array.isArray(params.items) && params.items.length
+        ? params.items.slice(0, 12).map((it, idx) => `${cleanBackupText(String(it?.name || `Thời tiết #${idx + 1}`), 40)} × ${nonNegInt(it?.count) ?? 0}`).join(', ')
+        : (nonNegInt(params.total) > 0 ? `${nonNegInt(params.total)} lần` : '');
+      if (items) parts.push(items);
+    }
+    return cleanBackupText(parts.filter(Boolean).join(' · '), 220) || title;
+  }
+
+  function buildJobCharName(job) {
+    const params = job?.params && typeof job.params === 'object' ? job.params : {};
+    if (Array.isArray(params.charNames) && params.charNames.length) {
+      return cleanBackupText(params.charNames.map(n => String(n || '').trim()).filter(Boolean).join(', '), 160);
+    }
+    return cleanBackupText(String(params.charName || ''), 160);
+  }
+
+  function normalizeJobDate(value) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    return new Date().toISOString();
+  }
+
+  async function listOrders(limit = 50) {
+    const lim = Math.min(50, Math.max(1, Number(limit) || 50));
+    const data = await call('orders?limit=' + lim);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const results = [];
+    for (const job of items) {
+      if (!inRange(job?.id, 1, Number.MAX_SAFE_INTEGER)) continue;
+      if (!Object.hasOwn(backupServices, job?.service) || !Object.hasOwn(statuses, job?.status)) continue;
+      if (job.status === 'unpaid' && !job.paidAt) continue;
+      const st = status(job);
+      results.push({
+        remoteOrderId: job.id,
+        service: job.service,
+        category: 'backup_' + job.service,
+        categoryName: 'Dự phòng · ' + backupServices[job.service],
+        summary: buildJobSummary(job),
+        customer: { nickname: buildJobCharName(job) },
+        createdAt: normalizeJobDate(job.createdAt || job.paidAt),
+        ...st,
+      });
+    }
+    return results;
+  }
+
   async function refresh(order, reconciliation) {
     const { job } = await call('order?id=' + encodeURIComponent(order.remoteOrderId));
     if (job?.id !== Number(order.remoteOrderId) || job.service !== order.category.slice(7)) throw fail('Thông tin đơn tại nguồn chưa khớp.', 503);
@@ -263,7 +329,7 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
     }
     return status(job);
   }
-  return { health, catalog, prepare, create, refresh,
+  return { health, catalog, prepare, create, refresh, listOrders,
     pause: id => call('order/pause', { id }),
     resume: id => call('order/resume', { id }),
     statusText: key => Object.hasOwn(statuses, key) ? statuses[key] : 'Chờ cập nhật' };

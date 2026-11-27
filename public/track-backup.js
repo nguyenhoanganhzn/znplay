@@ -49,7 +49,7 @@
     if (p.population !== null && p.population !== undefined) mapBits.push(`${fmtNum(p.population)} người trong khu`);
     if (p.customersHere > 0) mapBits.push('Khách đang có mặt trong khu');
     else if (p.inZone === false) mapBits.push('Chưa thấy khách trong khu');
-    if (p.leftMin !== null && p.leftMin !== undefined && ['running', 'paused', 'ready'].includes(bStatus)) {
+    if (p.leftMin !== null && p.leftMin !== undefined && Number(p.leftMin) > 0 && ['running', 'paused', 'ready'].includes(bStatus)) {
       mapBits.push(`Còn khoảng ${fmtNum(p.leftMin)} phút`);
     }
     if (p.queuePos > 0) mapBits.push(`Vị trí hàng đợi #${fmtNum(p.queuePos)}`);

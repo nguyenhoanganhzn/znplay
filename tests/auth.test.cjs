@@ -2843,3 +2843,129 @@ test('backup on-demand progress sync and white-label tracking link load only whe
   const histTds = [...histTbody.matchAll(/<td(?:\s[^>]*)?>/gi)];
   assert.equal(histTds.length, histTh.length);
 });
+
+test('external backup API orders sync strictly for Admin only with ZnStudio tracking links and zero CTV visibility or accounting distortion', async t => {
+  let now = Date.parse('2026-11-27T16:15:00Z');
+  class Clock extends Date { static now() { return now; } }
+  let listHits = 0;
+  let resumeHits = 0;
+  let extStatus = 'ready';
+  const s = await startTestServer(t, async (url) => {
+    const u = new URL(url);
+    if (u.origin === 'https://ptg.qzeen.dev') {
+      if (u.pathname.endsWith('/orders')) {
+        listHits += 1;
+        return Response.json({
+          items: [
+            {
+              id: 3545, service: 'weather', title: 'Thuê buff thời tiết', status: extStatus, amount: 35100,
+              weatherLeft: 200, createdAt: 1795796022056, paidAt: 1795796022057,
+              params: {
+                charName: 'AlexChocoPie', charNames: ['AlexChocoPie'], total: 200, done: {},
+                items: [
+                  { productId: 90800002, count: 40, name: 'Bão' },
+                  { productId: 90800006, count: 40, name: 'Bão tuyết' },
+                  { productId: 90800008, count: 40, name: 'Cực quang' },
+                  { productId: 90800007, count: 40, name: 'Ánh trăng' },
+                  { productId: 90800011, count: 40, name: 'Gió cát' },
+                ],
+              },
+              progress: { steps: null, inRoom: true },
+            },
+            {
+              id: 3519, service: 'weather', title: 'Thuê buff thời tiết', status: 'running', amount: 25650,
+              weatherLeft: 80, createdAt: 1795790607307, paidAt: 1795790607307,
+              params: { charName: 'CtvPlayer', total: 100, done: { '0': 20 }, items: [{ productId: 90800006, count: 100, name: 'Bão tuyết' }] },
+              progress: { steps: [{ name: 'Bão tuyết', target: 100, done: 20 }] },
+            },
+          ],
+        });
+      }
+      if (u.pathname.endsWith('/order') && u.searchParams.get('id') === '3545') {
+        return Response.json({
+          job: {
+            id: 3545, service: 'weather', status: extStatus, amount: 35100, weatherLeft: 200,
+            params: { charName: 'AlexChocoPie', total: 200, done: {}, items: [{ productId: 90800002, count: 40, name: 'Bão' }] },
+            progress: { steps: [{ name: 'Bão', target: 40, done: 0 }] },
+          },
+        });
+      }
+      if (u.pathname.endsWith('/order/resume')) {
+        resumeHits += 1;
+        extStatus = 'running';
+        return Response.json({ ok: true });
+      }
+    }
+    return Response.json({ data: { current_page: 1, last_page: 1, data: [] } });
+  }, {
+    clock: Clock,
+    env: { QZEEN_API_KEY: 'mock-key-secret' },
+    seed(db) {
+      db.localOrders.push({
+        id: 'ctv-bk-3519', remoteOrderId: 3519, category: 'backup_weather', categoryName: 'Dự phòng · Thuê buff thời tiết',
+        summary: 'Thuê buff thời tiết · Bão tuyết × 100', customer: { nickname: 'CtvPlayer' },
+        costPrice: 25650, markupAmount: 5000, sellPrice: 30650,
+        placedBy: { id: 'seller', name: 'Seller', username: 'seller', role: 'ctv' },
+        status: 'running', backupStatus: 'running', isActive: true, totalCnt: 100, completedCnt: 0,
+        createdAt: new Date(1795790607307).toISOString(),
+      });
+    },
+  });
+
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+
+  // 1. CTV calling ?sync=1&force=1 NEVER triggers API sync and NEVER sees external orders
+  const ctvBefore = await s.request('/api/backup/orders?sync=1&force=1', 'GET', ctv);
+  assert.equal(ctvBefore.status, 200);
+  assert.equal(listHits, 0);
+  assert.deepEqual(ctvBefore.body.orders.map(o => o.remoteOrderId), [3519]);
+
+  // 2. Admin calling ?sync=1 pulls #3545 into Admin list with persistent ZnStudio tracking link and deduplicates #3519
+  const admList1 = await s.request('/api/backup/orders?sync=1', 'GET', admin);
+  assert.equal(admList1.status, 200);
+  assert.equal(listHits, 1);
+  assert.deepEqual(admList1.body.orders.map(o => o.remoteOrderId), [3545, 3519]);
+  const extOrder = admList1.body.orders[0];
+  assert.equal(extOrder.id, 'BKS-3545');
+  assert.equal(extOrder.externalSync, true);
+  assert.equal(extOrder.sellPrice, null);
+  assert.equal(extOrder.costPrice, undefined);
+  assert.equal(extOrder.customer.nickname, 'AlexChocoPie');
+  assert.equal(extOrder.totalCnt, 200);
+  assert.equal(extOrder.canResume, true);
+  assert.match(extOrder.backupTrackUrl, /^\/track\/backup\/[A-Za-z0-9_-]{16,64}$/);
+  assert.doesNotMatch(JSON.stringify(admList1.body), /35100|mock-key|qzeen/i);
+
+  // Syncing again keeps the exact same ZnStudio tracking token (shared links never break)
+  now += 20000;
+  const admList2 = await s.request('/api/backup/orders?sync=1', 'GET', admin);
+  assert.equal(admList2.body.orders[0].backupTrackUrl, extOrder.backupTrackUrl);
+
+  // 3. CTV STILL sees ONLY their own order #3519 and cannot control BKS-3545 (404)
+  const ctvAfter = await s.request('/api/backup/orders?sync=1&force=1', 'GET', ctv);
+  assert.deepEqual(ctvAfter.body.orders.map(o => o.remoteOrderId), [3519]);
+  assert.equal((await s.request('/api/backup/orders/BKS-3545/refresh', 'POST', ctv, {})).status, 404);
+  assert.equal((await s.request('/api/backup/orders/BKS-3545/resume', 'POST', ctv, {})).status, 404);
+
+  // 4. Financial overview & monitor are completely unaffected by synced API order #3545
+  const overview = await s.request('/api/admin/overview', 'GET', admin);
+  assert.equal(overview.body.stats.totalLocalOrders, 1);
+  assert.equal(overview.body.stats.totalRevenue, 30650);
+  assert.equal(overview.body.stats.totalCost, 25650);
+
+  // 5. Public ZnStudio tracking link for #3545 works and allows toggling Bật chạy without leaking prices/supplier
+  const token3545 = extOrder.backupTrackUrl.split('/').pop();
+  const pubView = await s.request('/api/public/backup-track/' + token3545);
+  assert.equal(pubView.status, 200);
+  assert.equal(pubView.body.order.remoteOrderId, 3545);
+  assert.equal(pubView.body.order.customerNickname, 'AlexChocoPie');
+  assert.equal(pubView.body.order.canResume, true);
+  assert.doesNotMatch(JSON.stringify(pubView.body), /35100|mock-key|qzeen/i);
+
+  const pubRun = await s.request('/api/public/backup-track/' + token3545 + '/resume', 'POST', '', {});
+  assert.equal(pubRun.status, 200);
+  assert.equal(resumeHits, 1);
+  assert.equal(pubRun.body.order.backupStatus, 'running');
+  assert.equal(pubRun.body.order.canPause, true);
+});

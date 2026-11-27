@@ -264,5 +264,7 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
     return status(job);
   }
   return { health, catalog, prepare, create, refresh,
-    resume: id => call('order/resume', { id }), statusText: key => Object.hasOwn(statuses, key) ? statuses[key] : 'Chờ cập nhật' };
+    pause: id => call('order/pause', { id }),
+    resume: id => call('order/resume', { id }),
+    statusText: key => Object.hasOwn(statuses, key) ? statuses[key] : 'Chờ cập nhật' };
 }

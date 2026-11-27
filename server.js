@@ -2679,14 +2679,17 @@ function ensureBackupTrackToken(order) {
 }
 
 function buildPublicBackupTrackView(order) {
+  const bStatus = order.backupStatus || order.status || 'pending';
   return {
     remoteOrderId: order.remoteOrderId,
     categoryName: order.categoryName || ('Dự phòng · ' + (backupServices[order.category?.slice(7)] || '')),
     summary: order.summary || '',
     customerNickname: order.customer?.nickname || '',
     status: order.status || 'pending',
-    backupStatus: order.backupStatus || order.status || 'pending',
-    statusText: backupSource.statusText(order.backupStatus || order.status),
+    backupStatus: bStatus,
+    statusText: backupSource.statusText(bStatus),
+    canPause: ['queued', 'preparing', 'friending', 'running'].includes(bStatus),
+    canResume: ['ready', 'paused'].includes(bStatus),
     totalCnt: Number(order.totalCnt || 0),
     completedCnt: Number(order.completedCnt || 0),
     progress: order.backupProgress || null,
@@ -2695,8 +2698,11 @@ function buildPublicBackupTrackView(order) {
 }
 
 const publicTrackLimits = new Map();
+const publicTrackToggleLimits = new Map();
 const backupOrderRefreshCache = new Map();
 const backupOrderRefreshInflight = new Map();
+const backupOrderToggleCooldowns = new Map();
+const backupOrderToggleInflight = new Map();
 
 async function refreshBackupOrderProgress(order, minCacheMs = 0) {
   const now = Date.now();
@@ -2717,6 +2723,82 @@ async function refreshBackupOrderProgress(order, minCacheMs = 0) {
     });
     backupOrderRefreshInflight.set(order.id, job);
   }
+  return job;
+}
+
+async function toggleBackupOrderState(order, action, { cooldownMs = 0, verifyBeforeAction = null } = {}) {
+  const now = Date.now();
+  const lastToggleAt = backupOrderToggleCooldowns.get(order.id) || 0;
+  if (cooldownMs > 0 && lastToggleAt > 0 && now - lastToggleAt < cooldownMs) {
+    const waitSec = Math.max(1, Math.ceil((cooldownMs - (now - lastToggleAt)) / 1000));
+    const err = new Error(`Vui lòng đợi ${waitSec} giây trước khi bật/tắt lại.`);
+    err.status = 429;
+    err.backupMessage = true;
+    throw err;
+  }
+  if (backupOrderToggleInflight.has(order.id)) {
+    const err = new Error('Đơn đang xử lý yêu cầu bật/tắt. Vui lòng đợi vài giây.');
+    err.status = 409;
+    err.backupMessage = true;
+    throw err;
+  }
+  const job = (async () => {
+    let latest = await backupSource.refresh(order);
+    let changed = false;
+    let postRefreshFailed = false;
+    const isTerminal = ['done', 'failed', 'cancelled', 'unpaid'].includes(latest.backupStatus);
+    if (isTerminal) {
+      Object.assign(order, latest);
+      backupOrderRefreshCache.set(order.id, Date.now());
+      const err = new Error(`Đơn đang ở trạng thái "${latest.statusText}", không thể bật/tắt.`);
+      err.status = 409;
+      err.backupMessage = true;
+      throw err;
+    }
+    const wantResume = action === 'resume';
+    const canAct = wantResume
+      ? ['ready', 'paused'].includes(latest.backupStatus)
+      : ['queued', 'preparing', 'friending', 'running'].includes(latest.backupStatus);
+    if (canAct) {
+      if (typeof verifyBeforeAction === 'function') verifyBeforeAction();
+      try {
+        if (wantResume) await backupSource.resume(Number(order.remoteOrderId));
+        else await backupSource.pause(Number(order.remoteOrderId));
+      } catch (e) {
+        if (e.status === 400) {
+          const err = new Error(wantResume
+            ? 'Không thể chạy tiếp đơn ở trạng thái hiện tại. Bấm "Tải lại dữ liệu" để kiểm tra.'
+            : 'Đơn này chưa hỗ trợ tạm dừng hoặc đã đổi trạng thái. Bấm "Tải lại dữ liệu" để kiểm tra.');
+          err.status = 400;
+          err.backupMessage = true;
+          throw err;
+        }
+        throw e;
+      }
+      changed = true;
+      if (backupOrderToggleCooldowns.size > 500) backupOrderToggleCooldowns.clear();
+      backupOrderToggleCooldowns.set(order.id, Date.now());
+      try {
+        latest = await backupSource.refresh(order);
+      } catch {
+        postRefreshFailed = true;
+        // Reflect expected optimistic status until user reloads if post-refresh timed out
+        latest = {
+          ...latest,
+          backupStatus: wantResume ? 'running' : 'paused',
+          status: wantResume ? 'running' : 'paused',
+          statusText: backupSource.statusText(wantResume ? 'running' : 'paused'),
+          isActive: wantResume,
+        };
+      }
+    }
+    Object.assign(order, latest);
+    backupOrderRefreshCache.set(order.id, Date.now());
+    return { latest, changed, postRefreshFailed };
+  })().finally(() => {
+    backupOrderToggleInflight.delete(order.id);
+  });
+  backupOrderToggleInflight.set(order.id, job);
   return job;
 }
 
@@ -2751,6 +2833,44 @@ app.get('/api/public/backup-track/:token', asyncRoute(async (req, res) => {
   res.json({ success: true, cached, order: buildPublicBackupTrackView(order) });
 }));
 
+app.post('/api/public/backup-track/:token/:action', asyncRoute(async (req, res) => {
+  const tok = String(req.params.token || '');
+  const action = String(req.params.action || '');
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(tok)) {
+    return res.status(404).json({ success: false, message: 'Liên kết theo dõi không hợp lệ.' });
+  }
+  if (!['pause', 'resume'].includes(action)) {
+    return res.status(400).json({ success: false, message: 'Thao tác điều khiển không hợp lệ.' });
+  }
+  if (!storageHealthy) {
+    return res.status(503).json({ success: false, message: 'Hệ thống đang tạm bận. Vui lòng thử lại sau.' });
+  }
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  const rl = checkBoundedBucket(publicTrackToggleLimits, ip, 12, 60000, 1500);
+  if (!rl.allowed) {
+    res.setHeader('Retry-After', String(rl.retrySec));
+    return res.status(429).json({ success: false, message: 'Bạn thao tác bật/tắt quá nhanh. Vui lòng đợi vài giây.' });
+  }
+  const order = db.localOrders.find(o => isBackupCategory(o.category) && o.backupTrackToken === tok);
+  if (!order) {
+    return res.status(404).json({ success: false, message: 'Không tìm thấy đơn theo dõi hoặc đơn đã hết hạn lưu trữ.' });
+  }
+  const { latest, changed, postRefreshFailed } = await toggleBackupOrderState(order, action, { cooldownMs: 3000 });
+  req.auditDetails = { publicTrack: true, orderId: order.id, remoteOrderId: order.remoteOrderId, action, changed, status: order.status };
+  req.needsSave = true;
+  const wantResume = action === 'resume';
+  res.json({
+    success: true,
+    changed,
+    order: buildPublicBackupTrackView(order),
+    message: postRefreshFailed
+      ? (wantResume ? 'Đã gửi lệnh bật chạy đơn. Bấm "Tải lại dữ liệu" sau vài giây để cập nhật tiến độ.' : 'Đã gửi lệnh tạm dừng đơn. Bấm "Tải lại dữ liệu" sau vài giây để cập nhật tiến độ.')
+      : changed
+      ? (wantResume ? `Đã bật chạy tiếp đơn #${order.remoteOrderId} (${latest.statusText}).` : `Đã tạm dừng đơn #${order.remoteOrderId} (${latest.statusText}).`)
+      : `Đơn #${order.remoteOrderId} hiện đang ở trạng thái: ${latest.statusText}.`,
+  });
+}));
+
 app.get('/api/backup/orders', requireAuth, (req, res) => {
   const isAdmin = req.user.role === 'admin';
   const allowed = o => isBackupCategory(o.category) && (isAdmin || o.placedBy?.id === req.user.id);
@@ -2765,13 +2885,15 @@ app.get('/api/backup/orders', requireAuth, (req, res) => {
     const hadToken = Boolean(o.backupTrackToken);
     const token = ensureBackupTrackToken(o);
     if (!hadToken && token) req.needsSave = true;
+    const bStatus = o.backupStatus || o.status;
     return {
       ...publicOrder(o, false),
       placedBy: isAdmin ? o.placedBy : undefined,
-      backupStatus: o.backupStatus || o.status,
+      backupStatus: bStatus,
       backupTrackUrl: token ? '/track/backup/' + token : null,
-      statusText: backupSource.statusText(o.backupStatus || o.status),
-      canResume: ['ready', 'paused'].includes(o.backupStatus),
+      statusText: backupSource.statusText(bStatus),
+      canPause: ['queued', 'preparing', 'friending', 'running'].includes(bStatus),
+      canResume: ['ready', 'paused'].includes(bStatus),
     };
   });
   res.json({ success: true, reviews, total: orders.length, orders: visible });
@@ -2780,7 +2902,7 @@ app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInt
   const o = db.localOrders.find(row => row.id === req.params.id && isBackupCategory(row.category) &&
     (req.user.role === 'admin' || row.placedBy?.id === req.user.id));
   if (!o) return res.status(404).json({ success: false, message: 'Không tìm thấy đơn dự phòng.' });
-  if (!['refresh', 'resume'].includes(req.params.action)) return res.status(400).json({ success: false, message: 'Thao tác không hợp lệ.' });
+  if (!['refresh', 'resume', 'pause'].includes(req.params.action)) return res.status(400).json({ success: false, message: 'Thao tác không hợp lệ.' });
   const isAdmin = req.user.role === 'admin';
   if (req.params.action === 'refresh') {
     const result = await refreshBackupOrderProgress(o, isAdmin ? 2000 : 4000);
@@ -2797,22 +2919,14 @@ app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInt
         : `Đã tải tiến độ mới nhất: ${backupSource.statusText(o.backupStatus || o.status)}${o.totalCnt > 0 ? ` (${o.completedCnt || 0}/${o.totalCnt})` : ''}.`,
     });
   }
-  let latest = await backupSource.refresh(o);
-  let resumed = false;
-  let postRefreshFailed = false;
-  if (['ready', 'paused'].includes(latest.backupStatus)) {
-    if (!getAuthUser(req) || isMaintenanceActive() && !isAdmin) throw new Error('Phiên đã thay đổi.');
-    await backupSource.resume(Number(o.remoteOrderId));
-    resumed = true;
-    try {
-      latest = await backupSource.refresh(o);
-    } catch {
-      postRefreshFailed = true;
-    }
-  }
-  Object.assign(o, latest);
-  backupOrderRefreshCache.set(o.id, Date.now());
-  req.auditDetails = { orderId: o.id, remoteOrderId: o.remoteOrderId, status: o.status, resumed };
+  const wantResume = req.params.action === 'resume';
+  const { latest, changed, postRefreshFailed } = await toggleBackupOrderState(o, req.params.action, {
+    cooldownMs: isAdmin ? 1500 : 3000,
+    verifyBeforeAction: () => {
+      if (!getAuthUser(req) || (isMaintenanceActive() && !isAdmin)) throw new Error('Phiên đã thay đổi.');
+    },
+  });
+  req.auditDetails = { orderId: o.id, remoteOrderId: o.remoteOrderId, status: o.status, action: req.params.action, changed, resumed: wantResume && changed };
   res.json({
     success: true,
     statusText: latest.statusText,
@@ -2820,9 +2934,9 @@ app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInt
     completedCnt: Number(o.completedCnt || 0),
     backupProgress: o.backupProgress || null,
     message: postRefreshFailed
-      ? 'Đã gửi lệnh chạy / tiếp tục. Bấm tải lại dữ liệu sau vài giây để xem tiến độ mới.'
-      : resumed
-      ? `Đã chạy / tiếp tục đơn #${o.remoteOrderId} (${latest.statusText}).`
+      ? (wantResume ? 'Đã gửi lệnh chạy / tiếp tục. Bấm tải lại dữ liệu sau vài giây để xem tiến độ mới.' : 'Đã gửi lệnh tạm dừng. Bấm tải lại dữ liệu sau vài giây để xem trạng thái mới.')
+      : changed
+      ? (wantResume ? `Đã bật chạy / tiếp tục đơn #${o.remoteOrderId} (${latest.statusText}).` : `Đã tạm dừng đơn #${o.remoteOrderId} (${latest.statusText}).`)
       : `Trạng thái hiện tại: ${latest.statusText}.`,
   });
 }));

@@ -101,4 +101,22 @@ test('backup source extracts live progress across services and strips supplier n
   assert.equal(e.completedCnt, 1);
   assert.equal(e.status, 'completed');
   assert.equal(e.backupProgress.unit, 'map');
+
+  // Verify pause and resume hit documented endpoints with exact JSON payload
+  const calls = [];
+  const ctrl = createBackupSource({
+    apiKey: 'mock-key',
+    validMoney: n => Number.isSafeInteger(n) && n >= 0,
+    sellingPrice: (_, cost) => cost,
+    request: async (url, opts) => {
+      calls.push({ url, method: opts.method, body: JSON.parse(opts.body) });
+      return Response.json({ ok: true });
+    },
+  });
+  await ctrl.pause(3519);
+  await ctrl.resume(3519);
+  assert.deepEqual(calls, [
+    { url: 'https://ptg.qzeen.dev/api/v1/order/pause', method: 'POST', body: { id: 3519 } },
+    { url: 'https://ptg.qzeen.dev/api/v1/order/resume', method: 'POST', body: { id: 3519 } },
+  ]);
 });

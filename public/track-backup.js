@@ -4,7 +4,10 @@
   const match = window.location.pathname.match(/^\/track\/backup\/([A-Za-z0-9_-]{16,64})$/);
   const token = match ? match[1] : '';
   let lastRefreshAt = 0;
+  let lastToggleAt = 0;
   let loading = false;
+  let toggling = false;
+  let currentOrder = null;
 
   const esc = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -28,19 +31,25 @@
     return 'amber';
   };
 
-  function renderOrder(order, notice = '') {
+  function renderOrder(order, notice = '', isError = false) {
+    currentOrder = order;
     const p = order.progress || {};
     const total = Math.max(0, Number(order.totalCnt || 0));
     const done = Math.max(0, Number(order.completedCnt || 0));
     const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
     const unit = p.unit || 'lần';
     const steps = Array.isArray(p.steps) ? p.steps : [];
+    const bStatus = String(order.backupStatus || order.status || '').toLowerCase();
+    const canPause = order.canPause === true || ['queued', 'preparing', 'friending', 'running'].includes(bStatus);
+    const canResume = order.canResume === true || ['ready', 'paused'].includes(bStatus);
+    const canToggle = canPause || canResume;
+    const isTerminal = ['done', 'completed', 'failed', 'cancelled'].includes(bStatus);
     const mapBits = [];
     if (p.khu !== null && p.khu !== undefined) mapBits.push(`Khu #${fmtNum(p.khu)}`);
     if (p.population !== null && p.population !== undefined) mapBits.push(`${fmtNum(p.population)} người trong khu`);
     if (p.customersHere > 0) mapBits.push('Khách đang có mặt trong khu');
     else if (p.inZone === false) mapBits.push('Chưa thấy khách trong khu');
-    if (p.leftMin !== null && p.leftMin !== undefined && ['running', 'paused', 'ready'].includes(order.backupStatus)) {
+    if (p.leftMin !== null && p.leftMin !== undefined && ['running', 'paused', 'ready'].includes(bStatus)) {
       mapBits.push(`Còn khoảng ${fmtNum(p.leftMin)} phút`);
     }
     if (p.queuePos > 0) mapBits.push(`Vị trí hàng đợi #${fmtNum(p.queuePos)}`);
@@ -52,10 +61,10 @@
             <img src="/logo.jpg" alt="ZnStudio" class="brand-logo-img" />
             <div>
               <div class="brand-title" style="font-size:17px;">ZnStudio</div>
-              <div class="tool-note">Theo dõi tiến độ đơn dịch vụ</div>
+              <div class="tool-note">Theo dõi & điều khiển tiến độ đơn</div>
             </div>
           </div>
-          <span class="badge-tag ${statusTone(order.backupStatus || order.status)}">${esc(order.statusText || 'Chờ cập nhật')}</span>
+          <span class="badge-tag ${statusTone(bStatus)}">${esc(order.statusText || 'Chờ cập nhật')}</span>
         </div>
 
         <div class="stat-subcard" style="gap:10px;">
@@ -66,6 +75,28 @@
             <span>Nhân vật: <strong style="color:#fff;">${esc(order.customerNickname || '—')}</strong></span>
             <span>·</span>
             <span>Tạo lúc: ${esc(fmtDate(order.createdAt))}</span>
+          </div>
+
+          <div class="track-control-bar">
+            <div class="track-control-info">
+              <div class="track-control-title">Điều khiển chạy đơn (Bật / Tắt)</div>
+              <div class="tool-note">${canPause
+                ? 'Đơn đang bật chạy — bấm để tạm dừng khi cần.'
+                : canResume
+                ? 'Đơn đang tạm dừng / sẵn sàng — bấm để bật chạy tiếp.'
+                : isTerminal
+                ? 'Đơn đã kết thúc, không thể bật/tắt thêm.'
+                : 'Bấm "Tải lại dữ liệu" để kiểm tra trạng thái mới nhất.'}</div>
+            </div>
+            ${canToggle ? `
+              <div class="track-control-actions">
+                <button type="button" class="switch-btn ${canPause ? 'is-on' : ''}" id="btnTrackSwitch" role="switch" aria-checked="${canPause ? 'true' : 'false'}" title="${canPause ? 'Tạm dừng đơn' : 'Bật chạy đơn'}"></button>
+                <button type="button" class="backup-toggle-pill ${canPause ? 'is-on' : ''}" id="btnTrackToggle" data-action="${canPause ? 'pause' : 'resume'}">
+                  <span class="backup-toggle-dot"></span>
+                  <span>${canPause ? 'Đang bật · Tạm dừng' : 'Đang tắt · Bật chạy'}</span>
+                </button>
+              </div>
+            ` : `<span class="badge-tag ${statusTone(bStatus)}">${esc(order.statusText || 'Đã khóa')}</span>`}
           </div>
 
           ${total > 0 ? `
@@ -97,7 +128,7 @@
         <div class="track-footer-row">
           <div class="tool-note">
             ${p.syncedAt ? `Cập nhật gần nhất: <strong>${esc(fmtDate(p.syncedAt))}</strong>` : 'Chưa tải dữ liệu trực tiếp — bấm nút bên cạnh để kiểm tra.'}
-            ${notice ? `<div style="margin-top:4px;color:var(--color-aurora-gradient);">${esc(notice)}</div>` : ''}
+            ${notice ? `<div style="margin-top:4px;color:${isError ? '#fda4af' : 'var(--color-aurora-gradient)'};">${esc(notice)}</div>` : ''}
           </div>
           <button type="button" class="btn-violet" id="btnTrackRefresh">Tải lại dữ liệu</button>
         </div>
@@ -105,10 +136,50 @@
     `;
 
     root.querySelector('#btnTrackRefresh')?.addEventListener('click', () => load(true));
+    const onToggle = () => toggleOrder(canPause ? 'pause' : 'resume');
+    root.querySelector('#btnTrackToggle')?.addEventListener('click', onToggle);
+    root.querySelector('#btnTrackSwitch')?.addEventListener('click', onToggle);
+  }
+
+  async function toggleOrder(action) {
+    if (toggling || loading || !token || !currentOrder) return;
+    const now = Date.now();
+    if (now - lastToggleAt < 3000) {
+      const wait = Math.ceil((3000 - (now - lastToggleAt)) / 1000);
+      renderOrder(currentOrder, `Vui lòng đợi ${wait} giây trước khi bật/tắt lại.`, true);
+      return;
+    }
+    toggling = true;
+    const sw = root.querySelector('#btnTrackSwitch');
+    const btn = root.querySelector('#btnTrackToggle');
+    const refBtn = root.querySelector('#btnTrackRefresh');
+    if (sw) sw.disabled = true;
+    if (refBtn) refBtn.disabled = true;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = action === 'pause' ? 'Đang tạm dừng, vui lòng chờ…' : 'Đang bật chạy, vui lòng chờ…';
+    }
+    try {
+      const res = await fetch('/api/public/backup-track/' + encodeURIComponent(token) + '/' + action, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success || !data.order) {
+        throw new Error(data?.message || 'Không thể thay đổi trạng thái đơn lúc này.');
+      }
+      lastToggleAt = Date.now();
+      renderOrder(data.order, data.message || 'Đã cập nhật trạng thái đơn.', false);
+    } catch (err) {
+      renderOrder(currentOrder, err.message, true);
+    } finally {
+      toggling = false;
+    }
   }
 
   async function load(refresh) {
-    if (loading) return;
+    if (loading || toggling) return;
     if (!token) {
       root.innerHTML = '<div class="track-card glass-panel"><p class="tool-warning">Liên kết theo dõi không hợp lệ.</p></div>';
       return;

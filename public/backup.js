@@ -146,7 +146,7 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
         ${admin && o.placedBy?.name ? `<small class="tool-note">Người đặt: ${esc(o.placedBy.name)}</small>` : ''}
         ${renderOrderProgressHtml(o)}
         <div class="tool-actions">${button('Tải lại dữ liệu', `data-order="${esc(o.id)}" data-action="refresh"`)}
-        ${o.canResume ? button('Chạy / tiếp tục', `data-order="${esc(o.id)}" data-action="resume"`, 'btn-violet') : ''}
+        ${o.canPause || o.canResume ? `<button type="button" class="backup-toggle-pill ${o.canPause ? 'is-on' : ''}" role="switch" aria-checked="${o.canPause ? 'true' : 'false'}" data-order="${esc(o.id)}" data-action="${o.canPause ? 'pause' : 'resume'}"><span class="backup-toggle-dot"></span><span>${o.canPause ? 'Đang bật · Tạm dừng' : 'Đang tắt · Bật chạy'}</span></button>` : ''}
         ${o.backupTrackUrl ? `<a href="${esc(o.backupTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost backup-track-link" data-open-track>Mở link theo dõi</a>${button('Sao chép link', `data-copy-track="${esc(o.backupTrackUrl)}"`)}` : ''}</div>
         <div class="tool-note backup-order-msg" data-order-msg aria-live="polite"></div></article>`).join('')}</div>
         ${orders.length < total && orderLimit < 500 ? `<div class="tool-actions" style="margin-top:12px;">${button('Xem thêm đơn', 'data-more')}</div>` : ''}` : '<p class="tool-note">Chưa có đơn nguồn dự phòng.</p>';
@@ -191,9 +191,13 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     const card = btn.closest('.backup-order-card');
     const msgEl = card?.querySelector('[data-order-msg]');
     if (msgEl) msgEl.textContent = '';
-    const originalText = btn.textContent;
+    const originalHtml = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = btn.dataset.action === 'resume' ? 'Đang chạy…' : 'Đang tải, vui lòng chờ…';
+    btn.textContent = btn.dataset.action === 'resume'
+      ? 'Đang bật chạy…'
+      : btn.dataset.action === 'pause'
+      ? 'Đang tạm dừng…'
+      : 'Đang tải, vui lòng chờ…';
     try {
       const res = await apiFetch('/api/backup/orders/' + encodeURIComponent(btn.dataset.order) + '/' + btn.dataset.action, 'POST', {});
       notify(res.message || ('Trạng thái: ' + (res.statusText || 'Đã cập nhật')));
@@ -202,7 +206,7 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
       if (msgEl) msgEl.textContent = e.message;
       notify(e.message);
       btn.disabled = false;
-      btn.textContent = originalText;
+      btn.innerHTML = originalHtml;
     }
   });
   orderList.onchange = event => {
@@ -284,7 +288,16 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     }
     form.oninput = reset;
     form.onchange = reset;
-    form.onclick = event => {
+    form.onclick = async event => {
+      const copyCreated = event.target.closest('[data-copy-created-track]');
+      if (copyCreated) {
+        const fullUrl = new URL(copyCreated.dataset.copyCreatedTrack, window.location.origin).href;
+        let copied = false;
+        if (typeof copyTextToClipboard === 'function') copied = await copyTextToClipboard(fullUrl);
+        else if (navigator.clipboard?.writeText) { try { await navigator.clipboard.writeText(fullUrl); copied = true; } catch { } }
+        notify(copied ? 'Đã sao chép link theo dõi tiến độ!' : fullUrl);
+        return;
+      }
       if (event.target.closest('[data-add]')) {
         form.querySelector('[data-lines]')?.insertAdjacentHTML('beforeend', weatherRow());
         syncRemoveButtons();
@@ -342,7 +355,20 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
             if (linesBox) { linesBox.innerHTML = weatherRow(); syncRemoveButtons(); }
           }
           const createdMsg = 'Đã tạo đơn #' + result.order.remoteOrderId + '.';
-          showMessage(createdMsg, 'ok');
+          const createdTrackUrl = result.order?.backupTrackToken ? '/track/backup/' + result.order.backupTrackToken : '';
+          if (createdTrackUrl) {
+            message.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+              <span>${esc(createdMsg)}</span>
+              <span class="tool-actions" style="margin:0;">
+                <a href="${esc(createdTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost backup-track-link">Mở link theo dõi</a>
+                <button type="button" class="btn-frost" data-copy-created-track="${esc(createdTrackUrl)}">Sao chép link</button>
+              </span>
+            </div>`;
+            message.hidden = false;
+            message.className = 'backup-quote-box is-ok';
+          } else {
+            showMessage(createdMsg, 'ok');
+          }
           notify(createdMsg);
           await loadOrders();
         }

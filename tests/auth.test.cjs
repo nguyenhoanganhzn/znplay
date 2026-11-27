@@ -2638,7 +2638,10 @@ test('backup on-demand progress sync and white-label tracking link load only whe
   let now = Date.parse('2026-11-27T15:30:00Z');
   class Clock extends Date { static now() { return now; } }
   let orderHits = 0;
+  let pauseHits = 0;
+  let resumeHits = 0;
   let doneCount = 9;
+  let remoteStatus = 'running';
   const s = await startTestServer(t, async (url) => {
     const u = new URL(url);
     if (u.origin === 'https://ptg.qzeen.dev') {
@@ -2649,11 +2652,21 @@ test('backup on-demand progress sync and white-label tracking link load only whe
       if (u.pathname.endsWith('/orders')) {
         return Response.json({ paid: true, job: { id: 3519, service: 'weather', status: 'running', amount: 25650, params: { total: 100 } } });
       }
+      if (u.pathname.endsWith('/order/pause')) {
+        pauseHits += 1;
+        remoteStatus = 'paused';
+        return Response.json({ ok: true });
+      }
+      if (u.pathname.endsWith('/order/resume')) {
+        resumeHits += 1;
+        remoteStatus = 'running';
+        return Response.json({ ok: true });
+      }
       if (u.pathname.endsWith('/order') && u.searchParams.get('id') === '3519') {
         orderHits += 1;
         return Response.json({
           job: {
-            id: 3519, service: 'weather', status: 'running', amount: 25650, weatherLeft: 100 - doneCount,
+            id: 3519, service: 'weather', status: remoteStatus, amount: 25650, weatherLeft: 100 - doneCount,
             params: { total: 100, done: { '0': doneCount }, items: [{ productId: 90800006, count: 100 }] },
             progress: {
               steps: [{ productId: 90800006, name: 'Bão tuyết', target: 100, done: doneCount }],
@@ -2670,6 +2683,7 @@ test('backup on-demand progress sync and white-label tracking link load only whe
     env: { QZEEN_API_KEY: 'mock-key-secret-xyz' },
     seed(db) {
       db.users[1].backupBalance = 50000;
+      db.users.push({ id: 'other-ctv', username: 'otherctv', password: 'other-ctv-test-password', role: 'ctv', name: 'Other CTV', balance: 0, backupBalance: 0 });
       // Seed a legacy pre-existing backup order without backupTrackToken to verify lazy backfill
       db.localOrders.push({
         id: 'legacy-bk-1', remoteOrderId: 3519, category: 'backup_weather', categoryName: 'Dự phòng · Thuê buff thời tiết',
@@ -2684,11 +2698,14 @@ test('backup on-demand progress sync and white-label tracking link load only whe
 
   const admin = (await s.login('owner', 'owner-test-password')).body.token;
   const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+  const otherCtv = (await s.login('otherctv', 'other-ctv-test-password')).body.token;
 
-  // 1. Listing backup orders backfills backupTrackUrl with 0 upstream calls
+  // 1. Listing backup orders backfills backupTrackUrl with 0 upstream calls and reports canPause=true
   const list1 = await s.request('/api/backup/orders', 'GET', ctv);
   assert.equal(list1.status, 200);
   assert.equal(orderHits, 0);
+  assert.equal(list1.body.orders[0].canPause, true);
+  assert.equal(list1.body.orders[0].canResume, false);
   const trackUrl = list1.body.orders[0].backupTrackUrl;
   assert.match(trackUrl, /^\/track\/backup\/[A-Za-z0-9_-]{16,64}$/);
   const trackToken = trackUrl.split('/').pop();
@@ -2698,6 +2715,8 @@ test('backup on-demand progress sync and white-label tracking link load only whe
   assert.equal(pubCached.status, 200);
   assert.equal(pubCached.body.cached, true);
   assert.equal(orderHits, 0);
+  assert.equal(pubCached.body.order.canPause, true);
+  assert.equal(pubCached.body.order.canResume, false);
   assert.equal(pubCached.body.order.totalCnt, 100);
   assert.equal(pubCached.body.order.completedCnt, 0);
   assert.equal(pubCached.body.order.sellPrice, undefined);
@@ -2705,9 +2724,10 @@ test('backup on-demand progress sync and white-label tracking link load only whe
   assert.equal(pubCached.body.order.placedBy, undefined);
   assert.doesNotMatch(JSON.stringify(pubCached.body), /30650|25650|mock-key|qzeen|hoannguyen|seller/i);
 
-  // 3. Invalid or unknown tracking tokens return 404
+  // 3. Invalid or unknown tracking tokens return 404; forbidden action like cancel returns 400
   assert.equal((await s.request('/api/public/backup-track/invalid')).status, 404);
   assert.equal((await s.request('/api/public/backup-track/aaaaaaaaaaaaaaaaaaaaaa')).status, 404);
+  assert.equal((await s.request('/api/public/backup-track/' + trackToken + '/cancel', 'POST', '', {})).status, 400);
 
   // 4. Clicking "Tải lại dữ liệu" (CTV refresh) fetches live progress (9/100) and obeys 4s CTV cache
   const ref1 = await s.request('/api/backup/orders/legacy-bk-1/refresh', 'POST', ctv, {});
@@ -2750,7 +2770,45 @@ test('backup on-demand progress sync and white-label tracking link load only whe
   assert.doesNotMatch(JSON.stringify(pubFresh.body), /30650|25650|mock-key|qzeen|hoannguyen|https?:\/\//i);
   assert.equal(orderHits, 3);
 
-  // 6. White-label HTML shell & minified track bundle serve cleanly while raw /track-backup.js is blocked
+  // 6. Public tracking toggle (Tạm dừng / Bật chạy) works safely, obeys 3s cooldown, blocks terminal orders, and never leaks prices
+  const pubPause = await s.request('/api/public/backup-track/' + trackToken + '/pause', 'POST', '', {});
+  assert.equal(pubPause.status, 200);
+  assert.equal(pubPause.body.changed, true);
+  assert.equal(pubPause.body.order.backupStatus, 'paused');
+  assert.equal(pubPause.body.order.canPause, false);
+  assert.equal(pubPause.body.order.canResume, true);
+  assert.equal(pauseHits, 1);
+  assert.doesNotMatch(JSON.stringify(pubPause.body), /30650|25650|mock-key|qzeen|hoannguyen/i);
+
+  // Rapid second toggle within 3s is rejected with 429
+  const pubTooFast = await s.request('/api/public/backup-track/' + trackToken + '/resume', 'POST', '', {});
+  assert.equal(pubTooFast.status, 429);
+  assert.equal(resumeHits, 0);
+
+  // After 3s, resume works and switches order back to running
+  now += 3500;
+  const pubResume = await s.request('/api/public/backup-track/' + trackToken + '/resume', 'POST', '', {});
+  assert.equal(pubResume.status, 200);
+  assert.equal(pubResume.body.changed, true);
+  assert.equal(pubResume.body.order.backupStatus, 'running');
+  assert.equal(pubResume.body.order.canPause, true);
+  assert.equal(pubResume.body.order.canResume, false);
+  assert.equal(resumeHits, 1);
+
+  // 7. Authenticated CTV pause/resume enforces strict ownership (other CTV gets 404)
+  assert.equal((await s.request('/api/backup/orders/legacy-bk-1/pause', 'POST', otherCtv, {})).status, 404);
+  now += 3500;
+  const ctvPause = await s.request('/api/backup/orders/legacy-bk-1/pause', 'POST', ctv, {});
+  assert.equal(ctvPause.status, 200);
+  assert.equal(pauseHits, 2);
+
+  // Terminal order ("done") refuses pause/resume with 409
+  now += 3500;
+  remoteStatus = 'done';
+  const doneToggle = await s.request('/api/public/backup-track/' + trackToken + '/resume', 'POST', '', {});
+  assert.equal(doneToggle.status, 409);
+
+  // 8. White-label HTML shell & minified track bundle serve cleanly while raw /track-backup.js is blocked
   const pageRes = await fetch(`${s.base}${trackUrl}`);
   assert.equal(pageRes.status, 200);
   const pageHtml = await pageRes.text();
@@ -2760,10 +2818,13 @@ test('backup on-demand progress sync and white-label tracking link load only whe
 
   const trackJs = await fetch(`${s.base}/assets/zn.track.js`);
   assert.equal(trackJs.status, 200);
-  assert.doesNotMatch(await trackJs.text(), /qzeen|hoannguyen/i);
+  const trackJsText = await trackJs.text();
+  assert.match(trackJsText, /btnTrackSwitch/);
+  assert.match(trackJsText, /btnTrackToggle/);
+  assert.doesNotMatch(trackJsText, /qzeen|hoannguyen/i);
   assert.equal((await fetch(`${s.base}/track-backup.js`)).status, 404);
 
-  // 7. Order History renders backup progress bar and tracking link with aligned cells
+  // 9. Order History renders backup progress bar and tracking link with aligned cells
   const client = createClient();
   client.state.user = { id: 'seller', role: 'ctv', name: 'Seller', balance: 50000, backupBalance: 50000 };
   client.state.orders = [{

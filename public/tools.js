@@ -511,11 +511,33 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
   }
 
   function walletCards(totals, overview) {
-    const fields = [['Tổng đã nạp', 'totalTopup'], ['Tổng đã sử dụng (sau hoàn tiền)', 'totalSpent'], ['Tổng còn lại', 'balance']];
-    const payable = overview ? `<div class="stat-subcard"><span class="tool-note">Admin phải thanh toán</span>
-      <strong class="wallet-value">${overview.adminPayable == null ? '—' : money(overview.adminPayable)}</strong>
-      <span class="tool-note">${overview.adminPayable == null ? 'Chưa lấy được hạn mức đã sử dụng từ Server Zn.' : 'Hạn mức Server Zn đã dùng trong tuần + tổng số dư ví CTV.'}</span></div>` : '';
-    return `<div class="stats-three-grid">${fields.map(([label, key]) => `<div class="stat-subcard"><span class="tool-note">${label}</span><strong class="wallet-value">${totals?.[key] == null ? '—' : money(totals[key])}</strong></div>`).join('')}${payable}</div>`;
+    const backupSpent = overview ? (overview.backupSpent ?? 0) : (totals?.backupSpent ?? 0);
+    const backupHeld = overview ? (overview.backupHeld ?? 0) : (totals?.backupHeld ?? 0);
+    const cards = [
+      { label: 'Tổng đã nạp', value: totals?.totalTopup, note: '' },
+      { label: 'Tổng đã sử dụng (sau hoàn tiền)', value: totals?.totalSpent, note: 'Chỉ tính đơn Server Zn.' },
+      { label: 'Tổng còn lại', value: totals?.balance, note: 'Đã trừ chi tiêu cả 2 nguồn.' },
+    ];
+    if (overview) {
+      cards.push({
+        label: 'Admin phải thanh toán',
+        value: overview.adminPayable,
+        note: overview.adminPayable == null ? 'Chưa lấy được hạn mức đã dùng từ Server Zn.' : 'Hạn mức Server Zn đã dùng trong tuần + tổng số dư ví CTV.',
+      });
+    }
+    cards.push({
+      label: 'Nguồn dự phòng',
+      value: backupSpent,
+      note: backupHeld > 0
+        ? `Tính riêng khỏi Server Zn · Đang giữ ${money(backupHeld)}.`
+        : 'Tính riêng đơn CTV nguồn dự phòng, không gộp vào Server Zn.',
+      isBackup: true,
+    });
+    const gridCls = overview ? 'stats-three-grid monitor-wallet-grid is-five' : 'stats-three-grid monitor-wallet-grid is-four';
+    return `<div class="${gridCls}">${cards.map(card => `<div class="stat-subcard monitor-wallet-card${card.isBackup ? ' is-backup-card' : ''}">
+      <span class="tool-note monitor-wallet-label">${card.label}</span>
+      <strong class="wallet-value">${card.value == null ? '—' : money(card.value)}</strong>
+      ${card.note ? `<span class="tool-note monitor-wallet-sub">${card.note}</span>` : ''}</div>`).join('')}</div>`;
   }
 
   function renderSelectedCtvDetailHtml() {
@@ -546,9 +568,13 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
         <td>${esc(date(t.createdAt))}</td><td>${esc(types[t.type] || t.type)}</td><td>${t.amount > 0 ? '+' : ''}${money(t.amount)}</td>
         <td>${money(t.balanceAfter)}</td><td>${esc(t.note || '—')}</td></tr>`).join('')) + moreButton(tab, d.transactionCount, 0, d.transactions.length);
     }
+    const extraNotes = [];
+    if (sum.held) extraNotes.push(`Đang giữ đơn Server Zn ${money(sum.held)}`);
+    if (sum.backupHeld) extraNotes.push(`Đang giữ đơn nguồn dự phòng ${money(sum.backupHeld)}`);
+    if (sum.deducted) extraNotes.push(`Admin đã trừ ví ${money(sum.deducted)}`);
     return panel(`Đối soát · ${esc(d.ctv.name)}`, `
       ${walletCards(sum)}
-      ${sum.held || sum.deducted ? `<p class="tool-note">Đang giữ cho đơn ${money(sum.held)} · Admin đã trừ ví ${money(sum.deducted)}</p>` : ''}
+      ${extraNotes.length ? `<p class="tool-note">${extraNotes.join(' · ')}</p>` : ''}
       ${sum.unaccountedBalance ? `<p class="tool-warning">Chênh lệch giữa số dư ví và sổ giao dịch: ${money(sum.unaccountedBalance)}. Tổng đã nạp và đã dùng chỉ gồm giao dịch có ghi nhận.</p>` : ''}
       <div class="tool-actions monitor-tabs">${Object.entries(labels).map(([key,label]) => button(label,'data-ctv-detail-tab',key,key === tab ? 'btn-violet' : 'btn-frost')).join('')}
         ${button('Đóng chi tiết','data-close-ctv-detail','')}</div>${content}`, 'id="monitorCtvDetailPanel"');
@@ -558,12 +584,12 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     const data = state.adminMonitor;
     if (!data) return panel('Giám sát CTV', `Đang tải… ${button(`${znIcon('refresh', 13)} Làm mới`,'data-refresh-monitor','')}`);
     const rows = data.ctvs.map(u => `<tr><td><strong>${esc(u.name)}</strong><div class="tool-note">${esc(u.username)}</div></td>
-      <td>${money(u.totalTopup)}</td><td>${money(u.totalSpent)}</td><td class="wallet-balance">${money(u.balance)}</td><td>${Number(u.orderCount || 0)}</td>
+      <td>${money(u.totalTopup)}</td><td>${money(u.totalSpent)}</td><td class="wallet-backup-cell">${money(u.backupSpent || 0)}</td><td class="wallet-balance">${money(u.balance)}</td><td>${Number(u.orderCount || 0)}</td>
       <td>${button(u.id === state.adminMonitorCtvId ? 'Đang xem' : 'Xem đơn', 'data-select-ctv', u.id, u.id === state.adminMonitorCtvId ? 'btn-violet' : 'btn-frost')}</td></tr>`).join('');
     return panel('Tổng ví của toàn bộ CTV', walletCards(data.walletTotals, data), 'id="monitorWalletTotals"')
       + panel('Ví và đơn hàng của CTV', `${!data.storageHealthy ? '<p class="tool-warning">Lỗi ghi dữ liệu ví.</p>' : ''}
       <div class="tool-actions">${button(`${znIcon('refresh', 13)} Làm mới`, 'data-refresh-monitor', '')}</div>
-      ${table(['CTV','Tổng đã nạp','Đã dùng sau hoàn tiền','Còn lại','Số đơn','Chi tiết'], rows)}${moreButton('ctvs', data.ctvCount, 0, data.ctvs.length)}`)
+      ${table(['CTV','Tổng đã nạp','Đã dùng (Server Zn)','Nguồn dự phòng','Còn lại','Số đơn','Chi tiết'], rows)}${moreButton('ctvs', data.ctvCount, 0, data.ctvs.length)}`)
       + renderSelectedCtvDetailHtml()
       + panel('50 hoạt động gần nhất', eventTable(data.events) + moreButton('systemEvents', data.eventCount, 0, data.events.length));
   }

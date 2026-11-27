@@ -843,8 +843,10 @@ function releaseIntent(intent, reason) {
     if (!owner || !validMoney(owner.balance) || !validMoney(owner.balance + intent.heldAmount)) throw new Error('Không thể đối soát do tài khoản hoặc số dư không hợp lệ.');
     owner.balance += intent.heldAmount;
     intent.releasedAt = new Date().toISOString();
+    const isBackup = isBackupCategory(intent.category);
     db.transactions.unshift({ id: crypto.randomUUID(), userId: owner.id, userName: owner.name,
       type: 'order_release', amount: intent.heldAmount, balanceAfter: owner.balance,
+      ...(isBackup && { source: 'backup', category: intent.category, intentId: intent.id }),
       note: reason, createdAt: intent.releasedAt });
   }
 }
@@ -2998,7 +3000,9 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     if (!isAdmin) {
       user.balance -= sellPrice;
       db.transactions.unshift({ id: intent.id, userId: user.id, userName: user.name, type: 'order_hold',
-        amount: -sellPrice, balanceAfter: user.balance, note: `Giữ tiền cho yêu cầu ${intent.id}`, createdAt: intent.createdAt });
+        amount: -sellPrice, balanceAfter: user.balance,
+        ...(isBackup && { source: 'backup', category }),
+        note: `Giữ tiền cho yêu cầu ${intent.id}`, createdAt: intent.createdAt });
     }
     db.orderIntents.unshift(intent);
     req.auditDetails = { intentId: intent.id, category, customerId: intent.customerId, sellPrice, heldAmount: intent.heldAmount };
@@ -4314,14 +4318,44 @@ app.delete('/api/orders/:category/:remoteId', requireAuth, financialGuard, limit
 // ============================================================================
 // WEEKLY SETTLEMENTS & TRANSACTION LEDGER
 // ============================================================================
+function buildBackupTransactionMatchers() {
+  const intentIds = new Set();
+  for (const intent of db.orderIntents || []) {
+    if (isBackupCategory(intent?.category) && intent.id) intentIds.add(intent.id);
+  }
+  for (const order of db.localOrders || []) {
+    if (isBackupCategory(order?.category) && order.intentId) intentIds.add(order.intentId);
+  }
+  return intentIds;
+}
+
+function isBackupTransaction(tx, backupIntentIds) {
+  if (!tx || typeof tx !== 'object') return false;
+  if (tx.source === 'backup' || isBackupCategory(tx.category)) return true;
+  if (tx.id && backupIntentIds.has(tx.id)) return true;
+  if (tx.intentId && backupIntentIds.has(tx.intentId)) return true;
+  if (typeof tx.note === 'string' && (/^Tạo đơn Dự phòng\b/i.test(tx.note) || /^Nguồn dự phòng\b/i.test(tx.note) || /trên Nguồn dự phòng\b/i.test(tx.note))) {
+    return true;
+  }
+  return false;
+}
+
 function walletTotalsByUser() {
   const totals = new Map();
+  const backupIntentIds = buildBackupTransactionMatchers();
   for (const tx of db.transactions) {
-    const row = totals.get(tx.userId) || { totalTopup: 0, totalSpent: 0, held: 0, deducted: 0 };
+    const row = totals.get(tx.userId) || { totalTopup: 0, totalSpent: 0, backupSpent: 0, held: 0, backupHeld: 0, deducted: 0 };
     const amount = Number(tx.amount);
+    const isBackup = isBackupTransaction(tx, backupIntentIds);
     if (tx.type === 'admin_topup') row.totalTopup += amount;
-    if (tx.type === 'order_debit' || tx.type === 'order_refund') row.totalSpent -= amount;
-    if (tx.type === 'order_hold' || tx.type === 'order_release') row.held -= amount;
+    if (tx.type === 'order_debit' || tx.type === 'order_refund') {
+      if (isBackup) row.backupSpent -= amount;
+      else row.totalSpent -= amount;
+    }
+    if (tx.type === 'order_hold' || tx.type === 'order_release') {
+      if (isBackup) row.backupHeld -= amount;
+      else row.held -= amount;
+    }
     if (tx.type === 'admin_deduct') row.deducted -= amount;
     totals.set(tx.userId, row);
   }
@@ -4355,7 +4389,8 @@ app.get('/api/settlements', requireAuth, async (req, res) => {
     } else {
       const myOrders = db.localOrders.filter((o) => o.status !== 'cancelled' && o.placedBy?.id === user.id);
       const myTrx = db.transactions.filter((t) => t.userId === user.id);
-      const totalSpent = walletTotalsByUser().get(user.id)?.totalSpent || 0;
+      const userWallet = walletTotalsByUser().get(user.id);
+      const totalSpent = (userWallet?.totalSpent || 0) + (userWallet?.backupSpent || 0);
       res.json({
         success: true,
         mode: 'ctv',
@@ -4405,16 +4440,30 @@ app.get('/api/admin/monitor', asyncRoute(async (req, res) => {
     .map(u => {
       const base = sanitizeUser(u);
       const st = orderStatsByCtv.get(u.id) || { orderCount: 0, totalSell: 0, totalProfit: 0, lastOrderAt: null };
-      return { ...base, ...st, totalTopup: wallets.get(u.id)?.totalTopup || 0, totalSpent: wallets.get(u.id)?.totalSpent || 0 };
+      const w = wallets.get(u.id);
+      return {
+        ...base,
+        ...st,
+        totalTopup: w?.totalTopup || 0,
+        totalSpent: w?.totalSpent || 0,
+        backupSpent: w?.backupSpent || 0,
+        backupHeld: w?.backupHeld || 0,
+      };
     });
   const walletTotals = { totalTopup: 0, totalSpent: 0, balance: 0 };
+  let backupSpent = 0;
+  let backupHeld = 0;
   for (const ctv of ctvs) {
     walletTotals.totalTopup += ctv.totalTopup;
     walletTotals.totalSpent += ctv.totalSpent;
     walletTotals.balance += Number(ctv.balance ?? 0);
+    backupSpent += ctv.backupSpent;
+    backupHeld += ctv.backupHeld;
   }
   res.json({ success: true, storageHealthy,
     walletTotals,
+    backupSpent,
+    backupHeld,
     adminPayable: Number.isSafeInteger(spent) && spent >= 0 && Number.isSafeInteger(spent + walletTotals.balance) ? spent + walletTotals.balance : null,
     ctvCount: ctvs.length,
     ctvs: ctvs.slice(0, listLimit(req.query.ctvs)),
@@ -4452,7 +4501,7 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
   }
 
   const ctvTransactions = db.transactions.filter(t => t.userId === ctv.id);
-  const wallet = walletTotalsByUser().get(ctv.id) || { totalTopup: 0, totalSpent: 0, held: 0, deducted: 0 };
+  const wallet = walletTotalsByUser().get(ctv.id) || { totalTopup: 0, totalSpent: 0, backupSpent: 0, held: 0, backupHeld: 0, deducted: 0 };
   const debitRows = ctvTransactions.filter(t => t.type === 'order_debit');
   const debits = new Map(debitRows.map(t => [t.id, -Number(t.amount)]));
   // Early orders have no intent ID. Only link an unambiguous timestamp, amount and description.
@@ -4484,7 +4533,7 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       totalCost,
       totalProfit,
       ...wallet,
-      unaccountedBalance: Number(ctv.balance || 0) - (wallet.totalTopup - wallet.totalSpent - wallet.held - wallet.deducted),
+      unaccountedBalance: Number(ctv.balance || 0) - (wallet.totalTopup - wallet.totalSpent - wallet.backupSpent - wallet.held - wallet.backupHeld - wallet.deducted),
       lastOrderAt: ctvOrders[0]?.createdAt || null,
     },
     filteredCount: filtered.length,
@@ -4538,14 +4587,16 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
   if (confirmed !== true || typeof note !== 'string' || note.trim().length < 10 || note.length > 500) {
     return res.status(400).json({ success: false, message: 'Cần xác nhận đã kiểm tra Server Zn và ghi chú đối soát ít nhất 10 ký tự.' });
   }
+  const intentIsBackup = isBackupCategory(intent.category);
+  const intentSourceName = intentIsBackup ? 'Nguồn dự phòng' : 'Server Zn';
   if (resolution === 'not_created') {
-    releaseIntent(intent, `Quản trị viên xác nhận Server Zn chưa tạo đơn: ${note.trim()}`);
+    releaseIntent(intent, `Quản trị viên xác nhận ${intentSourceName} chưa tạo đơn: ${note.trim()}`);
     intent.status = 'rejected';
     intent.responseStatus = 400;
-    intent.response = { success: false, message: 'Quản trị viên đã đối soát: Server Zn chưa tạo đơn, khoản giữ tiền đã được trả lại.' };
+    intent.response = { success: false, message: `Quản trị viên đã đối soát: ${intentSourceName} chưa tạo đơn, khoản giữ tiền đã được trả lại.` };
   } else if (resolution === 'created') {
     let backupState;
-    if (isBackupCategory(intent.category)) {
+    if (intentIsBackup) {
       if (!Number.isSafeInteger(remoteOrderId) || remoteOrderId <= 0 || !validMoney(actualCost)) {
         return res.status(400).json({ success: false, message: 'Mã đơn hoặc chi phí không hợp lệ.' });
       }
@@ -4553,8 +4604,8 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
       if (intent.status !== 'uncertain' || !db.orderIntents.includes(intent)) return res.status(409).json({ success: false, message: 'Yêu cầu đã thay đổi.' });
     }
     if (!Number.isSafeInteger(remoteOrderId) || remoteOrderId <= 0 || !validMoney(actualCost) ||
-        db.localOrders.some(o => (isBackupCategory(intent.category) ? isBackupCategory(o.category) : o.category === intent.category) && Number(o.remoteOrderId) === remoteOrderId)) {
-      return res.status(400).json({ success: false, message: 'Mã đơn hoặc chi phí Server Zn không hợp lệ hoặc đơn đã được liên kết.' });
+        db.localOrders.some(o => (intentIsBackup ? isBackupCategory(o.category) : o.category === intent.category) && Number(o.remoteOrderId) === remoteOrderId)) {
+      return res.status(400).json({ success: false, message: 'Mã đơn hoặc chi phí nguồn không hợp lệ hoặc đơn đã được liên kết.' });
     }
     const owner = db.users.find(u => u.id === intent.userId);
     if (!owner) return res.status(409).json({ success: false, message: 'Tài khoản đặt đơn không còn tồn tại.' });
@@ -4566,7 +4617,11 @@ app.post('/api/admin/intents/:id/reconcile', asyncRoute(async (req, res) => {
       status: 'pending', isActive: true, ...backupState, createdAt: intent.createdAt, note: note.trim() };
     db.localOrders.unshift(order);
     const debit = db.transactions.find(t => t.id === intent.id);
-    if (debit) { debit.type = 'order_debit'; debit.note = `Đối soát đơn #${remoteOrderId} trên Server Zn`; }
+    if (debit) {
+      debit.type = 'order_debit';
+      debit.note = `Đối soát đơn #${remoteOrderId} trên ${intentSourceName}`;
+      if (intentIsBackup) { debit.source = 'backup'; debit.category = intent.category; }
+    }
     intent.status = 'completed';
     intent.remoteOrderId = remoteOrderId;
     intent.response = { success: true, message: 'Đơn đã được admin đối soát.', order: publicOrder(order, owner.role === 'admin'), userBalance: owner.balance };
@@ -4605,8 +4660,11 @@ app.post('/api/admin/orders/:id/refund', asyncRoute(async (req, res) => {
     const idx = db.localOrders.findIndex(o => o.id === order.id);
     if (idx >= 0) db.localOrders.splice(idx, 1);
   }
+  const refundIsBackup = isBackupCategory(order.category);
   db.transactions.unshift({ id: crypto.randomUUID(), refundKey: idempotency_key, userId: owner.id, userName: owner.name,
-    type: 'order_refund', amount, balanceAfter: owner.balance, note: `Hoàn đơn #${order.remoteOrderId}: ${note.trim()}`, createdAt: new Date().toISOString() });
+    type: 'order_refund', amount, balanceAfter: owner.balance,
+    ...(refundIsBackup && { source: 'backup', category: order.category, orderId: order.id }),
+    note: `Hoàn đơn #${order.remoteOrderId}: ${note.trim()}`, createdAt: new Date().toISOString() });
   req.auditDetails = { orderId: order.id, userId: owner.id, amount, sourceRefund, note: note.trim() };
   req.needsSave = true;
   res.json({ success: true, message: !order.refundPending ? 'Đã hoàn đủ tiền về ví CTV và dọn sạch đơn đã hủy.' : 'Đã hoàn ví theo kết quả đối soát; đã ghi nhật ký.' });
@@ -4648,7 +4706,8 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
     .filter((u) => u.role === 'ctv')
     .map((u) => {
       const ctvOrders = db.localOrders.filter((o) => o.placedBy?.id === u.id);
-      const totalSpent = wallets.get(u.id)?.totalSpent || 0;
+      const uw = wallets.get(u.id);
+      const totalSpent = (uw?.totalSpent || 0) + (uw?.backupSpent || 0);
       const totalProfit = ctvOrders.reduce((s, o) => s + Number(o.sellPrice || 0) - Number(o.refundedAmount || 0) - Number(o.costPrice || 0) + Number(o.sourceRefunded || 0), 0);
       return {
         ...sanitizeUser(u),

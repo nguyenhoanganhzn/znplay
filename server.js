@@ -1120,8 +1120,7 @@ const CATEGORY_METADATA = {
     menuLabel: 'Buff Thời Tiết',
     unit: 'lần',
     apiOrderPath: '/api/weather-buff-orders',
-    // HoanNguyen's WeatherBuffOrdersBoard uses <OrderSystemStatusChip /> without a category key (depends only on is_send_task).
-    settingKey: null,
+    settingKey: 'is_send_weatherbufforder',
     rateKey: 'weather_buff_order',
   },
   fruit_coin: {
@@ -1130,7 +1129,7 @@ const CATEGORY_METADATA = {
     menuLabel: 'Trái cây',
     unit: 'trái / xu',
     apiOrderPath: '/api/fruit-coin-orders',
-    settingKey: 'is_send_fruitorder',
+    settingKey: 'is_send_fruitorder_coin',
     rateKey: 'fruit_order',
   },
   fruit_by_fruit: {
@@ -1139,7 +1138,7 @@ const CATEGORY_METADATA = {
     menuLabel: 'Trái cây',
     unit: 'trái',
     apiOrderPath: '/api/fruit-coin-orders',
-    settingKey: 'is_send_fruitorder',
+    settingKey: 'is_send_fruitorder_fruit',
     rateKey: 'fruit_order',
   },
 };
@@ -1840,7 +1839,19 @@ function getCurrentMondayStr() {
 }
 
 const SETTINGS_KEYS_PATH =
-  '/api/settings?keys=is_send_task,is_send_fruitorder,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffluotxemorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity';
+  '/api/settings?keys=is_send_task,is_send_fruitorder_coin,is_send_fruitorder_fruit,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffluotxemorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity';
+
+function orderTypeEnabled(settings, category) {
+  if (!enabled(settings?.is_send_task)) return false;
+  if (category === 'weather_buff' && settings.is_send_weatherbufforder === undefined) return true;
+  return enabled(settings[CATEGORY_METADATA[category].settingKey]);
+}
+
+function requireOrderTypeEnabled(settings, category) {
+  if (orderTypeEnabled(settings, category)) return;
+  const label = category === 'fruit_coin' ? 'Gửi xu' : category === 'fruit_by_fruit' ? 'Gửi trái cây' : CATEGORY_METADATA[category].menuLabel;
+  throw Object.assign(new Error(`${label} hiện không nhận đơn trên Server Zn.`), { code: 'ORDER_TYPE_DISABLED' });
+}
 
 const VALID_CATALOG_SCOPES = new Set([
   'fruit_coin',
@@ -1899,6 +1910,9 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
     const reqs = {
       settings: hnApiCall(SETTINGS_KEYS_PATH, 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
     };
+    if (scope === 'fruit_all') {
+      reqs.rates = hnApiCall('/api/tasks/processing-rate', 'GET', null, true, timeoutMs).catch(() => ({ data: {} }));
+    }
     if (scope === 'fruit_coin' || scope === 'fruit_all') {
       reqs.fruitCoin = hnApiCall('/api/fruit-coin-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
       reqs.fruitStock = hnApiCall('/api/fruit-stock', 'GET', null, true, timeoutMs).catch(() => ({ data: [], meta: {} }));
@@ -1941,7 +1955,8 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
     upstreamSuccess();
 
     const raw = ensureRawCatalogShell();
-    raw.hnSettings = results.settings?.data || raw.hnSettings || {};
+    raw.hnSettings = results.settings?.data || {};
+    if (results.rates) raw.processingRates = results.rates.data || {};
     if (results.fruitCoin) raw.fruitCoinPackages = Array.isArray(results.fruitCoin.data) ? results.fruitCoin.data : [];
     if (results.fruitItems) raw.fruitItems = Array.isArray(results.fruitItems.data) ? results.fruitItems.data : [];
     if (results.fruitStock) {
@@ -2178,7 +2193,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     const rawScope = typeof req.query.scope === 'string' ? req.query.scope.trim() : '';
     const scope = VALID_CATALOG_SCOPES.has(rawScope) ? rawScope : '';
     const compact = req.query.compact === '1' && !isAdmin;
-    const maxAgeMs = isAdmin ? ADMIN_CATALOG_FRESH_MS : CTV_CATALOG_FRESH_MS;
+    const maxAgeMs = scope === 'fruit_all' ? 30000 : isAdmin ? ADMIN_CATALOG_FRESH_MS : CTV_CATALOG_FRESH_MS;
     const lastScopeTs = scope
       ? Math.max(catalogScopeTimestamps.get(scope) || 0, catalogCache.timestamp || 0)
       : catalogCache.timestamp;
@@ -2201,23 +2216,8 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       ? raw.fruitStockMeta.coin_tiers
       : [];
 
-    // System status per category (exact match with HoanNguyen's OrderSystemStatusChip!)
-    // Weather Buff on HoanNguyen has no per-category setting key — it depends solely on is_send_task.
-    const isSendTask = enabled(raw.hnSettings?.is_send_task);
-    const weatherAllowed = raw.hnSettings?.is_send_weatherbufforder === undefined
-      ? true
-      : enabled(raw.hnSettings.is_send_weatherbufforder);
-    const systemStatus = {
-      farm_gift: isSendTask && enabled(raw.hnSettings?.is_send_farmgiftorder),
-      mail_gift: isSendTask && enabled(raw.hnSettings?.is_send_mailgiftorder),
-      guestbook: isSendTask && enabled(raw.hnSettings?.is_send_guestbookorder),
-      buff_tim: isSendTask && enabled(raw.hnSettings?.is_send_bufftimorder),
-      buff_luot_xem: isSendTask && enabled(raw.hnSettings?.is_send_buffluotxemorder),
-      buff_sao: isSendTask && enabled(raw.hnSettings?.is_send_buffsaoorder),
-      weather_buff: isSendTask && weatherAllowed,
-      fruit_coin: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
-      fruit_by_fruit: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
-    };
+    const systemStatus = Object.fromEntries(Object.keys(CATEGORY_METADATA).map(category =>
+      [category, orderTypeEnabled(raw.hnSettings, category)]));
 
     const hiddenCategories = getHiddenCategories();
     const isHiddenCat = (k) => !isAdmin && hiddenCategories[k] === true;
@@ -2228,7 +2228,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
     if (want('fruit_coin')) {
       catalog.fruit_coin = isHiddenCat('fruit_coin')
         ? []
-        : raw.fruitCoinPackages.map((pkg) => {
+        : raw.fruitCoinPackages.filter(pkg => enabled(pkg.is_active)).map((pkg) => {
             const basePkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, 0);
             const pricesByTier = {};
             for (const tier of coinTiers) {
@@ -2258,7 +2258,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
           stockMap.set(Number(s.fruit_item_id), s);
         }
 
-        catalog.fruit_by_fruit = raw.fruitItems.map((fi) => {
+        catalog.fruit_by_fruit = raw.fruitItems.filter(fi => enabled(fi.is_active)).map((fi) => {
           const st = stockMap.get(Number(fi.id));
           const iconPath = fi.item?.icon_path_and_name
             ? `/assets/playtogether/images/${fi.item.icon_path_and_name.replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
@@ -2384,7 +2384,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       visibilityVersion: categoryVisibilityVersion,
       hiddenCategories,
       systemStatus,
-      processingRates: scope ? undefined : raw.processingRates,
+      processingRates: !scope || scope === 'fruit_all' ? raw.processingRates : undefined,
       serverSettings: {
         min_coin_per_fruit: raw.hnSettings?.min_coin_per_fruit ?? 400000,
         max_coin_for_fruit_order: raw.hnSettings?.max_coin_for_fruit_order ?? 600000,
@@ -2413,7 +2413,35 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
   }
 });
 
-// Preview Fruit Order Price (Calculates CTV selling price using Admin's per-fruit/per-mutation prices)
+// HoanNguyen reserves each exact mutation combination separately (mask 0 is regular fruit).
+async function quoteFruitOrder(raw, fruitId, qty, mutations) {
+  const fi = raw.fruitItems.find(f => Number(f.id) === Number(fruitId) && enabled(f.is_active));
+  if (!fi) throw new Error('Loại trái cây này hiện không nhận đơn.');
+  if (!validFruitInput(qty, mutations) ||
+      mutations.some(key => !fi.mutation_prices?.some(m => Number(m.mutation_key) === key))) {
+    throw new Error('Số lượng hoặc hệ đột biến không hợp lệ.');
+  }
+  const detail = await hnApiCall(`/api/fruit-stock?fruit_item_id=${fi.id}`, 'GET', null, true, 5500);
+  if (Number(detail.data?.fruit_item_id) !== Number(fi.id) || !Array.isArray(detail.data?.combos)) {
+    throw new Error('Chưa xác minh được tồn kho của trái đã chọn.');
+  }
+  const mask = mutations.reduce((bits, key) => bits | (1 << (key - 1)), 0);
+  const combo = detail.data.combos.find(c => Number(c.mutations) === mask);
+  const available = Number(combo?.quantity ?? 0);
+  if (!Number.isSafeInteger(available) || qty > available) {
+    throw new Error(`Kho còn ${Math.max(0, available || 0).toLocaleString('vi-VN')} trái cho tổ hợp đã chọn.`);
+  }
+  const preview = await hnApiCall('/api/order-pricing/preview-fruit', 'POST', {
+    fruit_item_id: Number(fi.id), total_cnt: qty, mutation_list: mutations,
+  });
+  const costPrice = Number(preview.data?.total_price ?? NaN);
+  const sellPrice = calculateFruitOrderSellingPrice(fi, qty, mutations);
+  if (!validMoney(costPrice) || !validMoney(sellPrice, false) || sellPrice < costPrice) {
+    throw new Error('Bảng giá trái cây chưa hợp lệ. Liên hệ quản trị viên để cập nhật giá.');
+  }
+  return { fi, costPrice, sellPrice };
+}
+
 app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req, res) => {
   try {
     const user = req.user;
@@ -2426,23 +2454,9 @@ app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req
     const muts = mutation_list === undefined ? [] : mutation_list;
     if (!validFruitInput(qty, muts)) return res.status(400).json({ success: false, message: 'Số lượng phải là số nguyên 1–1500; hệ đột biến phải hợp lệ và không trùng.' });
 
-    const raw = await fetchRawCatalogFromHoanNguyen(false);
-    const fi = raw.fruitItems.find((f) => Number(f.id) === Number(fruit_item_id));
-    if (!fi) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy loại trái cây này.' });
-    }
-
-    const previewRes = await hnApiCall('/api/order-pricing/preview-fruit', 'POST', {
-      fruit_item_id: Number(fruit_item_id),
-      total_cnt: qty,
-      mutation_list: muts,
-    });
-
-    const costPrice = Number(previewRes?.data?.total_price ?? 0);
-    const sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts);
-    if (!validMoney(costPrice) || !validMoney(sellPrice, false) || sellPrice < costPrice) {
-      throw new Error('Bảng giá chưa hợp lệ hoặc giá bán thấp hơn chi phí Server Zn. Liên hệ quản trị viên để cập nhật giá.');
-    }
+    const raw = await fetchScopedCatalogFromHoanNguyen('fruit_by_fruit', { force: false, maxAgeMs: 1500 });
+    requireOrderTypeEnabled(raw.hnSettings, 'fruit_by_fruit');
+    const { costPrice, sellPrice } = await quoteFruitOrder(raw, fruit_item_id, qty, muts);
 
     const responseData = {
       total_price: sellPrice,
@@ -2462,6 +2476,7 @@ app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req
     res.status(400).json({
       success: false,
       message: publicError(req, err, 'Không thể tính giá đơn trái cây.'),
+      code: err.code === 'ORDER_TYPE_DISABLED' ? err.code : undefined,
     });
   }
 });
@@ -3489,19 +3504,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     }
     const rawCatalog = isBackup ? {} : await fetchScopedCatalogFromHoanNguyen(category, { force: true, timeoutMs: 5500 });
 
-    // Check if the category is currently active on HoanNguyen
-    const isSendTask = enabled(rawCatalog.hnSettings?.is_send_task);
-    const settingKey = CATEGORY_METADATA[category]?.settingKey;
-    const weatherAllowed = rawCatalog.hnSettings?.is_send_weatherbufforder === undefined
-      ? true
-      : enabled(rawCatalog.hnSettings.is_send_weatherbufforder);
-    if ((settingKey && (!isSendTask || !enabled(rawCatalog.hnSettings?.[settingKey]))) ||
-        (isWeatherBuff && (!isSendTask || !weatherAllowed))) {
-      return res.status(400).json({
-        success: false,
-        message: `Danh mục "${CATEGORY_METADATA[category]?.menuLabel || category}" hiện đang tạm ngưng hoạt động trên hệ thống máy chủ. Vui lòng quay lại sau!`,
-      });
-    }
+    if (!isBackup) requireOrderTypeEnabled(rawCatalog.hnSettings, category);
 
     let apiPath = '';
     let hnPayload = {};
@@ -3522,10 +3525,14 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         return res.status(400).json({ success: false, message: 'Gói Xu nông trại không hợp lệ.' });
       }
       const tiers = rawCatalog.fruitStockMeta?.coin_tiers || [];
-      const selectedTier =
-        tiers.find((t) => Number(t.min_coin) === Number(min_coin_filter)) ||
-        tiers.find((t) => t.is_default) ||
-        tiers[0];
+      const selectedTier = min_coin_filter == null
+        ? tiers.find(t => enabled(t.is_default)) || tiers[0]
+        : tiers.find(t => Number(t.min_coin) === Number(min_coin_filter));
+      const coinQuantity = Number(pkg.coin_quantity ?? pkg.quantity);
+      if (!selectedTier || !Number.isSafeInteger(coinQuantity) || coinQuantity <= 0 ||
+          !(Number(selectedTier.quantity) >= coinQuantity)) {
+        throw new Error('Kho xu ở mốc giá đã chọn không đủ cho gói này.');
+      }
       const tierMarkup = Number(selectedTier?.markup_percent || 0);
       const { isOnSale, sale } = resolveActiveSale(pkg);
       const rawBaseCost = Number(pkg.original_price ?? pkg.total_price ?? 0);
@@ -3556,19 +3563,9 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
       apiPath = '/api/fruit-coin-orders';
       const qty = Number(total_cnt);
       const muts = mutation_list === undefined ? [] : mutation_list;
-      if (!validFruitInput(qty, muts)) return res.status(400).json({ success: false, message: 'Số lượng hoặc hệ đột biến không hợp lệ.' });
-      const fi = rawCatalog.fruitItems.find((f) => Number(f.id) === Number(fruit_item_id));
-      if (!fi || !enabled(fi.is_active)) {
-        return res.status(400).json({ success: false, message: 'Loại trái cây không hợp lệ.' });
-      }
-
-      const preview = await hnApiCall('/api/order-pricing/preview-fruit', 'POST', {
-        fruit_item_id: Number(fruit_item_id),
-        total_cnt: qty,
-        mutation_list: muts,
-      });
-      costPrice = Number(preview?.data?.total_price ?? 0);
-      sellPrice = calculateFruitOrderSellingPrice(fi, qty, muts);
+      const quote = await quoteFruitOrder(rawCatalog, fruit_item_id, qty, muts);
+      const { fi } = quote;
+      ({ costPrice, sellPrice } = quote);
 
       const mutNames = muts.map((m) => FRUIT_MUTATIONS[m]?.name || m).join(', ');
       orderSummary = `${qty.toLocaleString('vi-VN')} trái ${fi?.item?.name || `#${fruit_item_id}`}${
@@ -3939,6 +3936,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     res.status(err.status === 503 ? 503 : 400).json({
       success: false,
       message: publicError(req, err, 'Lỗi khi tạo đơn hàng.'),
+      code: err.code === 'ORDER_TYPE_DISABLED' ? err.code : undefined,
     });
   }
 }));
@@ -4390,13 +4388,28 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     if (req.query.limit !== undefined) {
       const stats = { total_orders: results.length, completed_orders: 0, active_orders: 0, inactive_orders: 0,
         total_units: 0, completed_units: 0, active_units: 0, inactive_units: 0 };
+      if (categoryFilter === 'fruit_all') {
+        for (const unit of ['coin', 'fruit']) {
+          for (const key of ['total', 'completed', 'active', 'inactive']) stats[`${key}_${unit}_units`] = 0;
+        }
+      }
       for (const o of results) {
-        stats.total_units += Number(o.totalCnt || 0);
-        stats.completed_units += Number(o.completedCnt || 0);
+        const total = Number(o.totalCnt || 0);
+        const completed = Number(o.completedCnt || 0);
+        const remaining = Math.max(0, total - completed);
+        const unit = o.category === 'fruit_coin' ? 'coin' : 'fruit';
+        if (categoryFilter === 'fruit_all') {
+          stats[`total_${unit}_units`] += total;
+          stats[`completed_${unit}_units`] += completed;
+        }
+        stats.total_units += total;
+        stats.completed_units += completed;
         if (o.status === 'completed') stats.completed_orders++;
         else if (!['cancelled', 'failed'].includes(o.status)) {
           stats[o.isActive ? 'active_orders' : 'inactive_orders']++;
-          stats[o.isActive ? 'active_units' : 'inactive_units'] += Math.max(0, o.totalCnt - o.completedCnt);
+          const group = o.isActive ? 'active' : 'inactive';
+          stats[`${group}_units`] += remaining;
+          if (categoryFilter === 'fruit_all') stats[`${group}_${unit}_units`] += remaining;
         }
       }
       const q = String(req.query.q || '').trim().toLowerCase();

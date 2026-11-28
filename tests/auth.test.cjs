@@ -629,10 +629,11 @@ function financeSource(onCreate = async () => ({ success: true, data: { id: 501,
     let data = { success: true, data: [] };
     if (path === '/api/auth/login') data = { token: 'test-source-token', user: { id: 10 } };
     else if (path === '/api/customers/resolve-by-role-id') data.data = { id: 101, nickname: 'Test customer', suid: 'test-suid', role_id: 'TEST-1234' };
-    else if (path === '/api/settings') data.data = { is_send_task: true, is_send_bufftimorder: true, is_send_fruitorder: true, is_send_buffsaoorder: true };
+    else if (path === '/api/settings') data.data = { is_send_task: true, is_send_bufftimorder: true, is_send_fruitorder_coin: true, is_send_fruitorder_fruit: true, is_send_buffsaoorder: true };
     else if (path === '/api/buff-tim-price-packages') data.data = [{ id: 7, is_active: true, quantity: 100, total_price: 10000 }];
     else if (path === '/api/fruit-coin-price-packages') data.data = [{ id: 8, is_active: true, coin_quantity: 1000, total_price: 10000 }];
     else if (path === '/api/fruit-items') data.data = [{ id: 1, is_active: true, base_price: 130, item: { name: 'Test fruit' }, mutation_prices: [{ mutation_key: 1, unit_price: 1000 }] }];
+    else if (path === '/api/fruit-stock' && new URL(url).searchParams.has('fruit_item_id')) data.data = { fruit_item_id: 1, combos: [{ mutations: 0, quantity: 20 }] };
     else if (path === '/api/order-pricing/preview-fruit') data.data = { total_price: 1300 };
     else if (path === '/api/buff-tim-orders' && options.method === 'POST') data = await onCreate(JSON.parse(options.body));
     return { ok: true, status: 200, json: async () => data };
@@ -652,6 +653,59 @@ async function prepareBuyer(server) {
     }
   };
 }
+
+test('fruit checkout follows live mode switches and the available stock for the selected combo or coin tier', async t => {
+  const source = financeSource();
+  const settings = { is_send_task: true, is_send_fruitorder: true, is_send_fruitorder_coin: false, is_send_fruitorder_fruit: true };
+  const dispatches = [];
+  const json = body => ({ ok: true, status: 200, json: async () => body });
+  const s = await startTestServer(t, async (url, options) => {
+    const { pathname, searchParams } = new URL(url);
+    if (pathname === '/api/settings') {
+      const keys = searchParams.get('keys').split(',');
+      return json({ data: Object.fromEntries(Object.entries(settings).filter(([k]) => keys.includes(k))) });
+    }
+    if (pathname === '/api/fruit-stock' && !searchParams.has('fruit_item_id')) {
+      return json({ data: [], meta: { coin_tiers: [{ min_coin: 400000, is_default: true, quantity: 1000 }, { min_coin: 500000, quantity: 999 }] } });
+    }
+    if (pathname === '/api/fruit-coin-orders' && options.method === 'POST') {
+      const type = JSON.parse(options.body).type;
+      dispatches.push(type);
+      return json({ success: true, data: { id: 100 + dispatches.length, total_price: type === 'by_fruit' ? 1300 : 10000 } });
+    }
+    return source(url, options);
+  });
+  const { token } = await prepareBuyer(s);
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const place = (who, body) => s.request('/api/orders/place', 'POST', who, {
+    customer_id: 101, idempotency_key: crypto.randomUUID(), ...body,
+  });
+  const fruit = { category: 'fruit_by_fruit', fruit_item_id: 1, total_cnt: 10, mutation_list: [], expected_price: 1700 };
+  const coin = { category: 'fruit_coin', coin_price_package_id: 8, min_coin_filter: 400000, expected_price: 15000 };
+  const catalog = async () => (await s.request('/api/catalog?scope=fruit_all&refresh=1', 'GET', admin)).body.systemStatus;
+  const st = await catalog();
+  assert.equal(st.fruit_coin, false);
+  assert.equal(st.fruit_by_fruit, true);
+  for (const who of [token, admin]) assert.equal((await place(who, coin)).body.code, 'ORDER_TYPE_DISABLED');
+  assert.match((await place(token, { ...fruit, total_cnt: 21 })).body.message, /Kho còn 20/);
+  assert.match((await place(token, { ...fruit, mutation_list: [1] })).body.message, /Kho còn 0/);
+  assert.equal(s.db.orderIntents.length, 0);
+  assert.equal(s.db.transactions.length, 0);
+  assert.equal((await place(token, fruit)).status, 200);
+  settings.is_send_fruitorder_coin = '1';
+  settings.is_send_fruitorder_fruit = '0';
+  assert.equal((await place(token, fruit)).body.code, 'ORDER_TYPE_DISABLED');
+  assert.match((await place(token, { ...coin, min_coin_filter: 500000 })).body.message, /không đủ/);
+  assert.equal((await place(token, coin)).status, 200);
+  delete settings.is_send_fruitorder_coin;
+  assert.equal((await place(admin, coin)).body.code, 'ORDER_TYPE_DISABLED');
+  settings.is_send_fruitorder_coin = settings.is_send_fruitorder_fruit = true;
+  settings.is_send_task = false;
+  assert.equal((await catalog()).fruit_by_fruit, false);
+  assert.equal((await place(token, fruit)).body.code, 'ORDER_TYPE_DISABLED');
+  assert.deepEqual(dispatches, ['by_fruit', 'by_coin']);
+  assert.equal(s.db.users.find(u => u.id === 'seller').balance, 33300);
+});
 
 test('simultaneous purchases reserve funds before source calls and cannot overdraw the wallet', async t => {
   let creates = 0;
@@ -1128,7 +1182,7 @@ test('weather_buff status follows is_send_task when source has no separate weath
   const server = await startTestServer(t, async (url, options) => {
     const p = new URL(url).pathname;
     if (p === '/api/settings') {
-      return { ok: true, status: 200, json: async () => ({ data: { is_send_task: true, is_send_fruitorder: true, is_send_farmgiftorder: false, is_send_bufftimorder: true } }) };
+      return { ok: true, status: 200, json: async () => ({ data: { is_send_task: true, is_send_fruitorder_coin: true, is_send_fruitorder_fruit: true, is_send_farmgiftorder: false, is_send_bufftimorder: true } }) };
     }
     if (p === '/api/buff-tim-price-packages') {
       return {
@@ -2269,6 +2323,8 @@ test('CTV scoped live progress sync fetches only active category endpoint and de
   const first = await server.request('/api/orders?category=fruit_all&limit=20', 'GET', seller);
   assert.equal(first.status, 200);
   assert.equal(first.body.orders[0].completedCnt, 37);
+  assert.equal(first.body.page.categoryStats.completed_coin_units, 37);
+  assert.equal(first.body.page.categoryStats.completed_fruit_units, 0);
   assert.equal(hitPaths.length, 2);
 
   // Within 10s, live progress poll uses cache -> 0 upstream calls.
@@ -2306,6 +2362,17 @@ test('CTV scoped live progress sync fetches only active category endpoint and de
   assert.match(html, /Chờ xử lý/);
   assert.match(html, /Tự động cập nhật tiến độ/);
   assert.doesNotMatch(html, />assigned<|>pending<|\(Active\)|\(Paused\)/);
+
+  client.state.user.role = 'admin';
+  client.state.catalogData.systemStatus = { fruit_coin: false, fruit_by_fruit: true };
+  client.state.orderPage = { categoryStats: { completed_orders: 94, total_orders: 187 } };
+  client.state.remoteSummaries = { fruit_coin: { completed_orders: 4, total_orders: 97, completed_fruit_units: 1029, total_fruit_units: 2237, completed_coin_units: 2503637177, total_coin_units: 5540000000 } };
+  const adminHtml = client.context.renderOrderCategoryPageHtml('fruit_coin');
+  assert.match(adminHtml, /Gửi xu · Không hoạt động/);
+  assert.match(adminHtml, /Gửi trái cây · Đang hoạt động/);
+  assert.match(adminHtml, /<strong>4<\/strong>\s*<span>\/ 97/);
+  assert.match(adminHtml, /1\.029 \/ 2\.237/);
+  assert.match(adminHtml, /2\.503\.637\.177 \/ 5\.540\.000\.000/);
 });
 
 test('on-demand customer snapshot endpoint enforces CTV isolation, caches responses, and includes daily fruit quota only for fruit orders', async t => {

@@ -128,7 +128,6 @@ const state = {
   // Modal Create Order State
   modalOrder: {
     category: 'fruit_coin',
-    fruitOrderType: 'by_coin', // 'by_coin' | 'by_fruit'
     customer: null, // { customerId, gameProfileId, nickname, suid, region, photoUrl }
     customerTab: 'ingame', // 'ingame' | 'roleid' | 'saved'
 
@@ -614,6 +613,21 @@ function isCatHiddenForCtv(catKey) {
   return getHiddenCategoriesMap()[catKey] === true;
 }
 
+const FRUIT_MODES = { fruit_coin: 'Gửi xu', fruit_by_fruit: 'Gửi trái cây' };
+
+function fruitModeOpen(category, catalog = state.catalogData) {
+  return !state.catalogWarning && !isCatHiddenForCtv(category) && catalog?.systemStatus?.[category] === true;
+}
+
+function fruitStatusChips(catalog) {
+  return Object.entries(FRUIT_MODES).filter(([key]) => !isCatHiddenForCtv(key)).map(([key, label]) => {
+    const known = !state.catalogWarning && typeof catalog?.systemStatus?.[key] === 'boolean';
+    const working = known && catalog.systemStatus[key];
+    const status = known ? (working ? 'Đang hoạt động' : 'Không hoạt động') : 'Chưa đồng bộ';
+    return `<span class="system-status-chip ${known ? (working ? 'is-working' : 'is-not-working') : ''}">● ${label} · ${status}</span>`;
+  }).join(' ');
+}
+
 function isOrderViewFullyHiddenForCtv(viewKey) {
   if (!state.user || state.user.role === 'admin') return false;
   if (viewKey === 'fruit_coin') {
@@ -885,7 +899,7 @@ function applyCatalogSideEffects(r) {
   updateDot('dot_buff_luot_xem', 'buff_luot_xem', st.buff_luot_xem);
   updateDot('dot_buff_sao', 'buff_sao', st.buff_sao);
   updateDot('dot_weather_buff', 'weather_buff', st.weather_buff);
-  updateDot('dot_fruit_coin', 'fruit_coin', st.fruit_coin);
+  updateDot('dot_fruit_coin', 'fruit_coin', Object.keys(FRUIT_MODES).some(key => fruitModeOpen(key, r)));
 
   updateShellAuthUI();
 }
@@ -933,6 +947,7 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
         visibilityVersion: r.visibilityVersion ?? prev.visibilityVersion,
         hiddenCategories: r.hiddenCategories || prev.hiddenCategories,
         systemStatus: r.systemStatus || prev.systemStatus,
+        processingRates: r.processingRates ?? prev.processingRates,
         serverSettings: r.serverSettings || prev.serverSettings,
         coinStock: r.coinStock !== undefined ? r.coinStock : prev.coinStock,
         coinTiers: r.coinTiers !== undefined ? r.coinTiers : prev.coinTiers,
@@ -951,6 +966,7 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
       pv: merged.pricingVersion,
       hc: merged.hiddenCategories,
       s: merged.systemStatus,
+      rates: merged.processingRates,
       wl: merged.weeklyLimit,
       fc: (merged.catalog?.fruit_coin || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
       fb: (merged.catalog?.fruit_by_fruit || []).map(f => [f.id, f.unit_price, f.stock_quantity]),
@@ -1211,7 +1227,9 @@ function renderOrderCategoryPageHtml(catKey) {
   );
 
   // Admin uses Server Zn live summary totals when available so numbers match 100%.
-  const remSum = state.orderPage?.categoryStats || (state.user?.role === 'admin' ? state.remoteSummaries?.[catKey] : null);
+  const adminSummary = state.user?.role === 'admin' ? state.remoteSummaries?.[catKey] : null;
+  const isFruitPage = catKey === 'fruit_coin';
+  const remSum = (isFruitPage && adminSummary) || state.orderPage?.categoryStats || adminSummary;
 
   const totalOrders = remSum ? Number(remSum.total_orders ?? catOrders.length) : catOrders.length;
   const completedOrders = remSum ? Number(remSum.completed_orders ?? 0) : catOrders.filter((o) => o.status === 'completed').length;
@@ -1243,9 +1261,23 @@ function renderOrderCategoryPageHtml(catKey) {
     buff_luot_xem: 'lượt xem',
     buff_sao: 'sao',
     weather_buff: 'lần',
-    fruit_coin: 'trái / xu',
+    fruit_coin: 'trái',
   };
   const unitName = unitLabelMap[catKey] || 'đơn vị';
+  const rateText = key => {
+    if (!isFruitPage) return Number(rateObj[key] || 0).toFixed(1);
+    const value = rates[rateKeyMap[catKey]]?.[key];
+    return value == null ? '—' : Number(value).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  };
+  const fruitProgress = isFruitPage ? ['fruit', 'coin'].map(unit => {
+    const label = unit === 'fruit' ? 'Trái cây' : 'Xu';
+    const count = group => {
+      const value = remSum?.[`${group}_${unit}_units`];
+      return value == null ? '—' : formatNum(value);
+    };
+    return `<div class="stat-meta-row"><strong>${label}</strong><span>${count('completed')} / ${count('total')}</span></div>
+      <div class="stat-meta-row"><span>Đang chạy <strong>${count('active')}</strong></span><span>Tạm dừng <strong>${count('inactive')}</strong></span></div>`;
+  }).join('<hr class="stat-divider" />') : '';
 
   // Extra footer buttons inside Stats Panel (Kho trái cây / Kho xu / Bảng giá)
   let footerButtonsHtml = '';
@@ -1273,9 +1305,9 @@ function renderOrderCategoryPageHtml(catKey) {
       <div class="panel-title-row">
         <div class="panel-title-left">
           <span class="panel-title-text">${escapeHtml(VIEW_TITLES[catKey])}</span>
-          <span class="system-status-chip ${!r ? '' : isWorking ? 'is-working' : 'is-not-working'}">
+          ${isFruitPage ? fruitStatusChips(r) : `<span class="system-status-chip ${!r ? '' : isWorking ? 'is-working' : 'is-not-working'}">
             ● ${state.catalogWarning ? 'Chưa đồng bộ' : !r ? 'Đang kiểm tra...' : isWorking ? 'Đang hoạt động' : 'Không hoạt động'}
-          </span>
+          </span>`}
           ${syncedTimeText ? `<span style="font-size:11px;color:var(--color-fog-veil);">Đồng bộ: ${escapeHtml(syncedTimeText)}</span>` : ''}
         </div>
         <button type="button" class="btn-frost" id="btnRefreshCatPage" style="font-size:12px;">
@@ -1304,9 +1336,9 @@ function renderOrderCategoryPageHtml(catKey) {
         <div class="stat-subcard">
           <div class="stat-subcard-head">
             <div class="stat-icon-box amber">${znIcon('layers', 16)}</div>
-            <span>Tiến độ ${escapeHtml(unitName)}</span>
+            <span>${isFruitPage ? 'Tiến độ trái cây và xu' : `Tiến độ ${escapeHtml(unitName)}`}</span>
           </div>
-          <div class="stat-main-metric">
+          ${isFruitPage ? fruitProgress : `<div class="stat-main-metric">
             <span>Đã gửi thành công:</span>
             <strong>${formatNum(completedUnits)}</strong>
             <span>/ ${formatNum(totalUnits)}</span>
@@ -1315,7 +1347,7 @@ function renderOrderCategoryPageHtml(catKey) {
           <div class="stat-meta-row">
             <span><span style="color:#5eead4;">↗ Đang chạy</span> <strong>${formatNum(activeRemainingUnits)}</strong></span>
             <span><span style="color:#fda4af;">— Tạm dừng</span> <strong>${formatNum(pausedRemainingUnits)}</strong></span>
-          </div>
+          </div>`}
         </div>
 
         <div class="stat-subcard">
@@ -1325,11 +1357,11 @@ function renderOrderCategoryPageHtml(catKey) {
           </div>
           <div class="stat-meta-row">
             <span style="display:inline-flex;align-items:center;gap:5px;">${znIcon('activity', 13)} <span>Tốc độ gửi:</span></span>
-            <strong style="color:#fff;">${Number(rateObj.assigned_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
+            <strong style="color:#fff;">${rateText('assigned_rate')} ${escapeHtml(unitName)}/phút</strong>
           </div>
           <div class="stat-meta-row">
             <span style="display:inline-flex;align-items:center;gap:5px;">${znIcon('check', 13)} <span>Thành công:</span></span>
-            <strong style="color:#5eead4;">${Number(rateObj.completed_rate || 0).toFixed(1)} ${escapeHtml(unitName)}/phút</strong>
+            <strong style="color:#5eead4;">${rateText('completed_rate')} ${escapeHtml(unitName)}/phút</strong>
           </div>
           <div class="stat-meta-row">
             <span style="display:inline-flex;align-items:center;gap:5px;">${znIcon('clock', 13)} <span>Chờ sau lỗi:</span></span>
@@ -1339,6 +1371,11 @@ function renderOrderCategoryPageHtml(catKey) {
       </div>
 
       ${footerButtonsHtml}
+      ${isFruitPage && r?.serverSettings ? `<p style="font-size:13px;color:var(--color-moon-mist);line-height:1.6;">
+        Mỗi khách nhận tối đa ${formatNum(r.serverSettings.max_fruits_per_customer_per_day)} trái/ngày, tính chung đơn xu và trái cây. Hạn mức làm mới lúc 07:00.
+        Đơn xu mặc định dùng trái từ ${formatNum(r.serverSettings.min_coin_per_fruit)} xu, trừ Nhân sâm.
+        Đơn trái cây cụ thể dùng trái từ ${formatNum(r.serverSettings.max_coin_for_fruit_order)} xu trở xuống.
+      </p>` : ''}
     </div>
 
     ${catKey === 'weather_buff'
@@ -1366,7 +1403,7 @@ function renderOrderCategoryPageHtml(catKey) {
       : ''
     }
         </div>
-        <button type="button" class="btn-violet" id="btnOpenAddOrderModal">
+        <button type="button" class="btn-violet" id="btnOpenAddOrderModal" ${isFruitPage && !Object.keys(FRUIT_MODES).some(key => fruitModeOpen(key)) ? 'disabled' : ''}>
           ${znIcon('plus', 14)} <span>Thêm Đơn Hàng</span>
         </button>
       </div>
@@ -2112,12 +2149,7 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
   overlay.style.display = 'flex';
 
-  const forceFruitSub = catKey === 'fruit_coin' && !presetOptions?.category && isCatHiddenForCtv('fruit_coin') && !isCatHiddenForCtv('fruit_by_fruit');
-  // ALWAYS sync ONLY the exact category being opened (2-3 tiny API calls, < 2s typical, hard 6.5s ceiling < 7s!)
-  const targetScope =
-    forceFruitSub || presetOptions?.category === 'fruit_by_fruit' || presetOptions?.fruitOrderType === 'by_fruit'
-      ? 'fruit_by_fruit'
-      : catKey;
+  const targetScope = catKey === 'fruit_coin' ? 'fruit_all' : catKey;
   await loadCatalog(true, targetScope, 6500);
   if (mySeq !== createOrderModalSeq || overlay.style.display === 'none' || !state.user) return;
 
@@ -2140,15 +2172,32 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
     return;
   }
 
-  const autoSwitchToFruit = catKey === 'fruit_coin' && !presetOptions?.category && isCatHiddenForCtv('fruit_coin') && !isCatHiddenForCtv('fruit_by_fruit');
-  state.modalOrder.category = presetOptions?.category || (autoSwitchToFruit ? 'fruit_by_fruit' : (catKey === 'fruit_coin' ? 'fruit_coin' : catKey));
+  let category = catKey;
+  if (catKey === 'fruit_coin') {
+    category = presetOptions?.category || Object.keys(FRUIT_MODES).find(key => fruitModeOpen(key) && r.catalog?.[key]?.length)
+      || Object.keys(FRUIT_MODES).find(key => fruitModeOpen(key));
+    if (!category || !fruitModeOpen(category)) {
+      body.innerHTML = `<p role="status">${category ? FRUIT_MODES[category] : 'Gửi xu và gửi trái cây'} hiện không nhận đơn.</p>${fruitStatusChips(r)}`;
+      renderCurrentView();
+      return;
+    }
+  }
+  state.modalOrder.category = category;
   state.modalOrder.requestKey = null;
   state.modalOrder.requestSignature = null;
   state.modalOrder.quotedPrice = 0;
-  state.modalOrder.fruitOrderType = presetOptions?.fruitOrderType || (autoSwitchToFruit ? 'by_fruit' : 'by_coin');
+  state.modalOrder.fruit_preview_price = 0;
+  state.modalOrder.fruitPreviewMessage = '';
   if (presetOptions?.fruit_item_id) state.modalOrder.fruit_item_id = Number(presetOptions.fruit_item_id);
 
   const cat = r.catalog || {};
+  if (category === 'fruit_by_fruit' && !cat.fruit_by_fruit?.some(f => Number(f.id) === Number(state.modalOrder.fruit_item_id))) {
+    state.modalOrder.fruit_item_id = cat.fruit_by_fruit?.[0]?.id ?? null;
+    state.modalOrder.fruit_mutation_list = [];
+  }
+  if (category === 'fruit_coin' && !r.coinTiers?.some(t => t.min_coin === state.modalOrder.min_coin_filter)) {
+    state.modalOrder.min_coin_filter = (r.coinTiers?.find(t => t.is_default) || r.coinTiers?.[0])?.min_coin ?? null;
+  }
   if (cat.fruit_coin?.length && !cat.fruit_coin.some(p => Number(p.id) === Number(state.modalOrder.coin_price_package_id))) {
     state.modalOrder.coin_price_package_id = cat.fruit_coin[0].id;
   }
@@ -2189,7 +2238,7 @@ function renderCreateOrderModalBody() {
   const catalog = r.catalog || {};
 
   if (catKey === 'fruit_coin' || catKey === 'fruit_by_fruit') {
-    const isByCoin = state.modalOrder.fruitOrderType === 'by_coin';
+    const isByCoin = catKey === 'fruit_coin';
     const coinPkgs = catalog.fruit_coin || [];
     const tiers = r.coinTiers || [];
     const fruits = catalog.fruit_by_fruit || [];
@@ -2200,11 +2249,11 @@ function renderCreateOrderModalBody() {
       <div>
         <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Hình thức đặt đơn Trái cây:</label>
         <div class="order-mode-options">
-          <button type="button" class="btn-frost ${isByCoin ? 'is-active' : ''}" id="modalTabByCoin" style="flex:1;">
-            ${znIcon('coins', 14)} <span>Gửi Xu Nông Trại (Theo Gói)</span>
+          <button type="button" class="btn-frost ${isByCoin ? 'is-active' : ''}" id="modalTabByCoin" style="flex:1;" ${fruitModeOpen('fruit_coin') ? '' : 'disabled'}>
+            ${znIcon('coins', 14)} <span>Gửi xu${fruitModeOpen('fruit_coin') ? '' : ' · Không nhận đơn'}</span>
           </button>
-          <button type="button" class="btn-frost ${!isByCoin ? 'is-active' : ''}" id="modalTabByFruit" style="flex:1;">
-            ${znIcon('fruit', 14)} <span>Gửi Trái Cây (Theo Số Lượng &amp; Đột Biến)</span>
+          <button type="button" class="btn-frost ${!isByCoin ? 'is-active' : ''}" id="modalTabByFruit" style="flex:1;" ${fruitModeOpen('fruit_by_fruit') ? '' : 'disabled'}>
+            ${znIcon('fruit', 14)} <span>Gửi trái cây${fruitModeOpen('fruit_by_fruit') ? '' : ' · Không nhận đơn'}</span>
           </button>
         </div>
       </div>
@@ -2523,32 +2572,11 @@ function bindCreateOrderModalEvents() {
     }
   });
 
-  // Fruit Order Type Tabs (by_coin vs by_fruit) — ALWAYS sync live under 6.5s so prices are 100% up-to-date
-  body.querySelector('#modalTabByCoin')?.addEventListener('click', async () => {
-    if (state.modalOrder.fruitOrderType === 'by_coin') return;
-    state.modalOrder.fruitOrderType = 'by_coin';
-    state.modalOrder.category = 'fruit_coin';
-    body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Xu từ Zn...', 'Đang lấy gói xu & giá mới nhất.');
-    await loadCatalog(true, 'fruit_coin', 6500);
-    const overlay = document.getElementById('appModalOverlay');
-    if (!overlay || overlay.style.display === 'none' || state.modalOrder.fruitOrderType !== 'by_coin') return;
-    renderCreateOrderModalBody();
-  });
-  body.querySelector('#modalTabByFruit')?.addEventListener('click', async () => {
-    if (state.modalOrder.fruitOrderType === 'by_fruit') return;
-    state.modalOrder.fruitOrderType = 'by_fruit';
-    state.modalOrder.category = 'fruit_by_fruit';
-    if (isCatHiddenForCtv('fruit_by_fruit')) {
-      renderCreateOrderModalBody();
-      return;
-    }
-    body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
-    await loadCatalog(true, 'fruit_by_fruit', 6500);
-    const overlay = document.getElementById('appModalOverlay');
-    if (!overlay || overlay.style.display === 'none' || state.modalOrder.fruitOrderType !== 'by_fruit') return;
-    renderCreateOrderModalBody();
-    if (!isCatHiddenForCtv('fruit_by_fruit')) triggerModalFruitPreview();
-  });
+  for (const [selector, category] of [['#modalTabByCoin', 'fruit_coin'], ['#modalTabByFruit', 'fruit_by_fruit']]) {
+    body.querySelector(selector)?.addEventListener('click', () => {
+      if (state.modalOrder.category !== category && fruitModeOpen(category)) openCreateOrderModal('fruit_coin', { category });
+    });
+  }
 
   // Coin Package & Tier selection
   body.querySelectorAll('[data-modal-coin-pkg]').forEach((card) => {
@@ -2649,16 +2677,23 @@ function estimateFruitOrderPriceLocally(fruitItem, qty, muts) {
 }
 
 let modalPreviewTimer = null;
+let fruitPreviewSeq = 0;
 function triggerModalFruitPreview() {
   if (modalPreviewTimer && typeof clearTimeout === 'function') clearTimeout(modalPreviewTimer);
+  const seq = ++fruitPreviewSeq;
+  const modalSeq = createOrderModalSeq;
   state.modalOrder.fruit_preview_price = 0;
-  state.modalOrder.quotedPrice = 0;
   const muts = state.modalOrder.fruit_variant_mode === 'specify' ? state.modalOrder.fruit_mutation_list : [];
-  const signature = JSON.stringify([state.modalOrder.fruit_item_id, state.modalOrder.fruit_total_cnt, state.modalOrder.fruit_variant_mode, state.modalOrder.fruit_mutation_list]);
-  const priceEl = document.getElementById('modalTotalPriceText');
+  if (!state.modalOrder.fruit_item_id || (state.modalOrder.fruit_variant_mode === 'specify' && !muts.length)) {
+    state.modalOrder.fruitPreviewMessage = state.modalOrder.fruit_item_id ? 'Chọn hệ đột biến' : 'Chưa có trái cây nhận đơn';
+    updateCreateOrderModalPrice();
+    return;
+  }
   const fi = (state.catalogData?.catalog?.fruit_by_fruit || []).find(f => Number(f.id) === Number(state.modalOrder.fruit_item_id));
   const localEst = estimateFruitOrderPriceLocally(fi, state.modalOrder.fruit_total_cnt, muts);
-  if (priceEl) priceEl.textContent = localEst > 0 ? `~${formatVnd(localEst)}` : 'Đang tính...';
+  state.modalOrder.fruitPreviewMessage = localEst > 0 ? `~${formatVnd(localEst)} · Đang kiểm tra kho` : 'Đang kiểm tra kho';
+  updateCreateOrderModalPrice();
+  const current = () => seq === fruitPreviewSeq && modalSeq === createOrderModalSeq && state.modalOrder.category === 'fruit_by_fruit';
 
   modalPreviewTimer = setTimeout(async () => {
     try {
@@ -2667,14 +2702,16 @@ function triggerModalFruitPreview() {
         total_cnt: state.modalOrder.fruit_total_cnt,
         mutation_list: muts,
       });
-      const currentSignature = JSON.stringify([state.modalOrder.fruit_item_id, state.modalOrder.fruit_total_cnt, state.modalOrder.fruit_variant_mode, state.modalOrder.fruit_mutation_list]);
-      if (r.success && r.data && signature === currentSignature) {
+      if (r.success && r.data && current()) {
+        state.modalOrder.fruitPreviewMessage = '';
         state.modalOrder.fruit_preview_price = r.data.total_price;
         state.modalOrder.fruit_preview_admin = r.data._admin || null;
         updateCreateOrderModalPrice();
       }
-    } catch {
-      if (priceEl) priceEl.textContent = 'Lỗi tính giá';
+    } catch (err) {
+      if (!current()) return;
+      state.modalOrder.fruitPreviewMessage = err.message || 'Chưa xác minh được tồn kho và giá.';
+      updateCreateOrderModalPrice();
     }
   }, 150);
 }
@@ -2704,8 +2741,22 @@ function updateCreateOrderModalPrice() {
     price = pObj?.total_price || 0;
   }
 
-  priceEl.textContent = formatVnd(price);
+  let message = '';
+  if (cat === 'fruit_by_fruit') message = state.modalOrder.fruitPreviewMessage;
+  if (cat === 'fruit_coin') {
+    const pkg = catalog.fruit_coin?.find(p => Number(p.id) === Number(state.modalOrder.coin_price_package_id));
+    const tier = state.catalogData.coinTiers?.find(t => Number(t.min_coin) === Number(state.modalOrder.min_coin_filter));
+    if (!pkg || !(tier?.quantity >= Number(pkg.coin_quantity || pkg.quantity))) {
+      price = 0;
+      message = pkg ? 'Kho xu ở mốc giá đã chọn không đủ.' : 'Chưa có gói xu nhận đơn.';
+    }
+  }
+  priceEl.textContent = message || formatVnd(price);
   state.modalOrder.quotedPrice = Number(price);
+  if (Object.hasOwn(FRUIT_MODES, cat)) {
+    const save = document.getElementById('btnModalSaveOrder');
+    if (save) save.disabled = !fruitModeOpen(cat) || !price || !state.modalOrder.customer?.customerId;
+  }
 }
 
 async function runModalCustomerSearch() {
@@ -2826,6 +2877,10 @@ async function runModalCustomerSearch() {
 
 async function submitModalOrder(confirmDuplicate = false) {
   const m = state.modalOrder;
+  if (Object.hasOwn(FRUIT_MODES, m.category) && !fruitModeOpen(m.category)) {
+    showToast(`${FRUIT_MODES[m.category]} hiện không nhận đơn.`);
+    return;
+  }
   const isWeather = m.category === 'weather_buff';
   if (!isWeather && !m.customer?.customerId) {
     showToast('Vui lòng tìm và chọn khách hàng trước khi lưu đơn!');
@@ -2941,6 +2996,10 @@ async function submitModalOrder(confirmDuplicate = false) {
     }
   } catch (err) {
     showToast(err.message);
+    if (err.code === 'ORDER_TYPE_DISABLED' && Object.hasOwn(FRUIT_MODES, m.category)) {
+      await openCreateOrderModal('fruit_coin', { category: m.category });
+      return;
+    }
     if (err.code === 'PRICE_CHANGED') {
       await loadCatalog(true, m.category, 6500);
       if (m.category === 'fruit_by_fruit') triggerModalFruitPreview();
@@ -3369,7 +3428,7 @@ async function openFruitWarehouseModal() {
       grid.innerHTML = visible
         .map(
           (f) => `
-          <div class="pkg-picker-card" data-wh-fruit="${f.id}">
+          <button type="button" class="pkg-picker-card" data-wh-fruit="${f.id}" ${fruitModeOpen('fruit_by_fruit') && f.stock_quantity > 0 ? '' : 'disabled'}>
             <div style="display:flex;align-items:center;gap:10px;">
               ${f.icon ? `<img src="${escapeHtml(f.icon)}" loading="lazy" decoding="async" style="width:36px;height:36px;object-fit:contain;" alt="" />` : `<span class="dashboard-cat-icon">${znIcon('fruit', 18)}</span>`}
               <div>
@@ -3378,7 +3437,7 @@ async function openFruitWarehouseModal() {
                 <div style="font-size:11px;color:#fbbf24;">Giá: ${formatVnd(f.unit_price)}/trái</div>
               </div>
             </div>
-          </div>
+          </button>
         `
         )
         .join('');
@@ -3386,7 +3445,6 @@ async function openFruitWarehouseModal() {
       grid.querySelectorAll('[data-wh-fruit]').forEach((card) => {
         card.addEventListener('click', () => {
           openCreateOrderModal('fruit_coin', {
-            fruitOrderType: 'by_fruit',
             category: 'fruit_by_fruit',
             fruit_item_id: Number(card.dataset.whFruit),
           });
@@ -3527,7 +3585,7 @@ function renderDashboardOverviewHtml() {
     { key: 'buff_luot_xem', icon: 'eye', name: 'Tăng lượt xem hồ sơ', working: st.buff_luot_xem },
     { key: 'buff_sao', icon: 'star', name: 'Buff Sao', working: st.buff_sao },
     { key: 'weather_buff', icon: 'cloud', name: 'Buff Thời Tiết', working: st.weather_buff },
-    { key: 'fruit_coin', icon: 'coins', name: 'Trái cây & Xu', working: st.fruit_coin },
+    { key: 'fruit_coin', icon: 'coins', name: 'Trái cây & Xu' },
   ];
 
   const coinHidden = isCatHiddenForCtv('fruit_coin');
@@ -3577,10 +3635,12 @@ function renderDashboardOverviewHtml() {
               </span>
               ${isHidden
                 ? `<span class="badge-tag amber" style="font-size:10.5px;">● Đang ẩn</span>`
+                : c.key === 'fruit_coin' ? ''
                 : `<span class="system-status-chip ${c.working ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                 ● ${c.working ? 'Hoạt động' : 'Tạm ngưng'}
               </span>`}
             </span>
+            ${c.key === 'fruit_coin' && !isHidden ? `<span style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;">${fruitStatusChips(r)}</span>` : ''}
             <span style="display:flex;justify-content:flex-end;margin-top:6px;">
               ${isHidden
                 ? `<span style="font-size:11.5px;color:#fde68a;">${HIDDEN_CATEGORY_TEXT}</span>`
@@ -5961,17 +6021,21 @@ function bindGlobalEvents() {
     btn.disabled = false;
   });
 
-  // Catalog auto-sync schedule: Admin every 1 min, CTV every 10 min (zero lag; pre-order modal ALWAYS live-syncs!).
+  // Keep the fruit board aligned with the source's 30-second status refresh.
   let lastClientCatalogSyncAt = Date.now();
   setInterval(async () => {
     if (!state.user || document.hidden) return;
     const isAdmin = state.user.role === 'admin';
     const intervalMs = isAdmin ? 60 * 1000 : 10 * 60 * 1000;
-    if (Date.now() - lastClientCatalogSyncAt < intervalMs) return;
-    lastClientCatalogSyncAt = Date.now();
+    const fullSyncDue = Date.now() - lastClientCatalogSyncAt >= intervalMs;
+    const fruitBoard = state.currentView === 'fruit_coin';
+    if (!fullSyncDue && !fruitBoard) return;
+    if (state.loadingCatalog) return;
+    if (fullSyncDue) lastClientCatalogSyncAt = Date.now();
     try {
-      const catChanged = await loadCatalog(false);
-      if (catChanged && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
+      const oldWarning = state.catalogWarning;
+      const catChanged = await loadCatalog(false, fruitBoard && !fullSyncDue ? 'fruit_all' : '');
+      if ((catChanged || oldWarning !== state.catalogWarning) && !isUserTypingOrModalOpen() && (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard' || state.currentView === 'admin_pricing')) {
         renderCurrentView();
       }
     } catch { }

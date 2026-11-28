@@ -682,6 +682,7 @@ function clearAuthState() {
   state.adminMonitorCtvTab = 'orders';
   state.adminMonitorCtvOrderSearch = '';
   state.adminMonitorCtvCatFilter = 'all';
+  state.adminMonitorCtvTopupWallet = 'all';
   setCtvMaintenanceOverlay(false);
   setCtvUpdateBanner(false);
   state.seenUpdateVersion = null;

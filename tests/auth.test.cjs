@@ -3347,11 +3347,13 @@ test('read-only POST lookups skip persistent DB writes while recording RAM monit
     },
   });
 
-  // 1. Startup compaction folded the 3,018 old settled entries into ledgerRollups while keeping 2,000 recent + 2 protected entries!
-  assert.equal(s.db.transactions.length, 2002);
+  // 1. Startup compaction folded the 3,016 old debits/deducts into ledgerRollups while keeping 2,000 recent + 2 protected + 2 admin_topup entries!
+  assert.equal(s.db.transactions.length, 2004);
   assert.ok(s.db.transactions.some(tx => tx.id === 'tx-old-hold'));
   assert.ok(s.db.transactions.some(tx => tx.id === 'tx-open-linked'));
-  assert.equal(s.db.ledgerRollups.seller.archivedCount, 3018);
+  assert.ok(s.db.transactions.some(tx => tx.id === 'tx-old-topup'));
+  assert.ok(s.db.transactions.some(tx => tx.id === 'tx-old-bk-topup'));
+  assert.equal(s.db.ledgerRollups.seller.archivedCount, 3016);
 
   const admin = (await s.login('owner', 'owner-test-password')).body.token;
   const ctv = (await s.login('seller', 'seller-test-password')).body.token;
@@ -3380,7 +3382,7 @@ test('read-only POST lookups skip persistent DB writes while recording RAM monit
 
   // 3. Export + import backup preserves ledgerRollups with 0đ drift
   const exported = (await s.request('/api/admin/backup/export', 'GET', admin)).body.backup;
-  assert.equal(exported.ledgerRollups.seller.archivedCount, 3018);
+  assert.equal(exported.ledgerRollups.seller.archivedCount, 3016);
   const imported = await s.request('/api/admin/backup/import', 'POST', admin, { backup: exported });
   assert.equal(imported.status, 200);
   const detAfterImport = (await s.request('/api/admin/monitor/ctv/seller', 'GET', admin)).body;
@@ -3560,4 +3562,56 @@ test('per-category CTV visibility toggles hide categories securely for CTV while
   assert.deepEqual(unhideRes.body.hiddenCategories, { fruit_by_fruit: true, backup_emptymap: true });
   const ctvCatAfter = (await s.request('/api/catalog', 'GET', ctv)).body;
   assert.ok(ctvCatAfter.catalog.buff_tim.length > 0);
+});
+
+test('admin CTV monitor top-up history returns only wallet deposits with wallet filters, paging, and admin-only access', async t => {
+  const s = await startTestServer(t, financeSource(), {
+    seed(db) {
+      const seller = db.users.find(u => u.id === 'seller');
+      seller.balance = 240000;
+      seller.backupBalance = 150000;
+      db.transactions.push(
+        { id: 't-top-3', userId: 'seller', userName: 'Seller', wallet: 'backup', source: 'backup', type: 'admin_topup', amount: 150000, balanceAfter: 150000, note: 'Nạp Ví Nguồn DP lần 1', createdAt: '2026-11-28T10:00:00Z' },
+        { id: 't-deb-1', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'order_debit', amount: -10000, balanceAfter: 240000, note: 'Đặt đơn Buff Tim', createdAt: '2026-11-28T09:30:00Z' },
+        { id: 't-ded-1', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'admin_deduct', amount: -50000, balanceAfter: 250000, note: 'Admin trừ tiền', createdAt: '2026-11-28T09:00:00Z' },
+        { id: 't-top-2', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'admin_topup', amount: 200000, balanceAfter: 300000, note: 'Nạp Ví CTV lần 2', createdAt: '2026-11-28T08:00:00Z' },
+        { id: 't-top-1', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'admin_topup', amount: 100000, balanceAfter: 100000, note: 'Nạp Ví CTV lần 1', createdAt: '2026-11-27T08:00:00Z' },
+      );
+    },
+  });
+
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+
+  // CTV cannot access Admin CTV monitor detail
+  assert.equal((await s.request('/api/admin/monitor/ctv/seller', 'GET', ctv)).status, 403);
+
+  // All top-ups: strictly ONLY admin_topup rows (3), never order_debit or admin_deduct!
+  const allRes = await s.request('/api/admin/monitor/ctv/seller?topups=2', 'GET', admin);
+  assert.equal(allRes.status, 200);
+  assert.equal(allRes.body.topupCount, 3);
+  assert.equal(allRes.body.topups.length, 2);
+  assert.ok(allRes.body.topups.every(tx => tx.type === 'admin_topup'));
+  assert.deepEqual(allRes.body.topups.map(tx => tx.id), ['t-top-3', 't-top-2']);
+  assert.equal(allRes.body.topupSummary.totalCount, 3);
+  assert.equal(allRes.body.topupSummary.mainCount, 2);
+  assert.equal(allRes.body.topupSummary.backupCount, 1);
+  assert.equal(allRes.body.topupSummary.mainTotal, 300000);
+  assert.equal(allRes.body.topupSummary.backupTotal, 150000);
+  assert.equal(allRes.body.topupSummary.lastTopupAt, '2026-11-28T10:00:00Z');
+  assert.equal(allRes.body.summary.unaccountedBalance, 0);
+
+  // Filter strictly by main wallet (Ví CTV)
+  const mainRes = await s.request('/api/admin/monitor/ctv/seller?topupWallet=main', 'GET', admin);
+  assert.equal(mainRes.status, 200);
+  assert.equal(mainRes.body.topupCount, 2);
+  assert.deepEqual(mainRes.body.topups.map(tx => tx.id), ['t-top-2', 't-top-1']);
+  assert.ok(mainRes.body.topups.every(tx => tx.wallet === 'main'));
+
+  // Filter strictly by backup wallet (Ví Nguồn DP)
+  const bkRes = await s.request('/api/admin/monitor/ctv/seller?topupWallet=backup', 'GET', admin);
+  assert.equal(bkRes.status, 200);
+  assert.equal(bkRes.body.topupCount, 1);
+  assert.deepEqual(bkRes.body.topups.map(tx => tx.id), ['t-top-3']);
+  assert.equal(bkRes.body.topups[0].wallet, 'backup');
 });

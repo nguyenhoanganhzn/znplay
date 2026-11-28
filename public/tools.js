@@ -483,8 +483,9 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
       renderCurrentView();
     }
     const params = new URLSearchParams({
-      orders: pageLimit('orders'), transactions: pageLimit('transactions'), events: pageLimit('events'),
+      orders: pageLimit('orders'), transactions: pageLimit('transactions'), topups: pageLimit('topups'), events: pageLimit('events'),
       category: state.adminMonitorCtvCatFilter || 'all', q: state.adminMonitorCtvOrderSearch || '',
+      topupWallet: state.adminMonitorCtvTopupWallet || 'all',
     });
     try {
       const result = await apiFetch(`/api/admin/monitor/ctv/${encodeURIComponent(ctvId)}?${params}`);
@@ -521,7 +522,7 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     } catch (err) { if (state.token === token) showToast(err.message); }
   }
 
-  const table = (headers, rows) => `<div class="table-wrap"><table class="data-table"><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="tool-note">Chưa có dữ liệu</td></tr>`}</tbody></table></div>`;
+  const table = (headers, rows, extraCls = '') => `<div class="table-wrap"><table class="data-table${extraCls ? ' ' + extraCls : ''}"><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="tool-note">Chưa có dữ liệu</td></tr>`}</tbody></table></div>`;
   function eventTable(events) {
     return table(['Thời điểm', 'Tài khoản', 'Hoạt động', 'Chi tiết'], events.map(e => `<tr>
       <td>${esc(date(e.createdAt))}</td><td>${esc(e.actorName)}</td>
@@ -565,7 +566,13 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (d?.ctv?.id !== id) return panel('Chi tiết CTV', state.adminMonitorCtvLoading ? 'Đang tải…' : 'Chưa tải được dữ liệu.');
     const sum = d.summary;
     const tab = state.adminMonitorCtvTab || 'orders';
-    const labels = { orders: 'Đơn đã đặt', transactions: 'Biến động ví', events: 'Hoạt động' };
+    const ts = d.topupSummary || { totalCount: d.topupCount || 0, mainCount: 0, backupCount: 0, mainTotal: sum.totalTopup || 0, backupTotal: sum.backupTopup || 0, archivedMainTopup: 0, archivedBackupTopup: 0, lastTopupAt: null };
+    const labels = {
+      orders: `${znIcon('orders', 12)} <span>Đơn đã đặt</span>`,
+      topups: `${znIcon('wallet', 12)} <span>Lịch sử nạp ví (${ts.totalCount})</span>`,
+      transactions: `${znIcon('activity', 12)} <span>Biến động ví</span>`,
+      events: `${znIcon('clock', 12)} <span>Hoạt động</span>`,
+    };
     const filters = `<div class="tool-actions"><input class="input-box" id="monitorCtvOrderSearch" aria-label="Tìm đơn" placeholder="Tìm khách, SUID, mã đơn hoặc gói" value="${esc(state.adminMonitorCtvOrderSearch || '')}">
       <select class="input-box" id="monitorCtvCatFilter" aria-label="Danh mục"><option value="all">Tất cả danh mục</option>
       ${Object.entries(CAT_LABELS).map(([key,label]) => `<option value="${key}" ${state.adminMonitorCtvCatFilter === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div>`;
@@ -576,8 +583,50 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
         <td>${esc(o.customer?.nickname || 'Chưa gán khách')}<div class="tool-note">${esc(o.customer?.suid || '')}</div></td>
         <td><strong>${esc(o.summary || '—')}</strong><div class="tool-note">${esc(o.categoryName)}</div></td>
         <td>${o.debit == null ? `Chưa liên kết giao dịch<div class="tool-note">Giá đơn ${money(o.sellPrice)}</div>` : money(o.debit)}
-          ${o.refundedAmount ? `<div class="tool-note">Đã hoàn ${money(o.refundedAmount)}</div>` : ''}</td></tr>`).join(''))
+          ${o.refundedAmount ? `<div class="tool-note">Đã hoàn ${money(o.refundedAmount)}</div>` : ''}</td></tr>`).join(''), 'monitor-compact-table')
         + moreButton(tab, d.filteredCount, 0, d.orders.length);
+    } else if (tab === 'topups') {
+      const wFilter = state.adminMonitorCtvTopupWallet || 'all';
+      const topupRows = (d.topups || []).map(t => {
+        const isDpTx = t.wallet === 'backup' || t.source === 'backup';
+        return `<tr>
+          <td style="white-space:nowrap;">${esc(date(t.createdAt))}</td>
+          <td style="white-space:nowrap;"><span class="badge-tag ${isDpTx ? 'green' : 'violet'} monitor-mini-badge">${isDpTx ? 'Ví Nguồn DP' : 'Ví CTV'}</span></td>
+          <td style="white-space:nowrap;font-weight:600;color:#4ade80;">+${money(t.amount)}</td>
+          <td style="white-space:nowrap;">${money(t.balanceAfter)}</td>
+          <td>${esc(t.note || 'Admin nạp ví')}</td>
+        </tr>`;
+      }).join('');
+      const archivedNotes = [];
+      if (ts.archivedMainTopup > 0) archivedNotes.push(`Ví CTV ${money(ts.archivedMainTopup)}`);
+      if (ts.archivedBackupTopup > 0) archivedNotes.push(`Ví Nguồn DP ${money(ts.archivedBackupTopup)}`);
+      content = `
+        <div class="monitor-topup-summary">
+          <div class="monitor-topup-stat">
+            <span class="tool-note">Tổng nạp Ví CTV</span>
+            <strong style="color:#4ade80;">+${money(ts.mainTotal)}</strong>
+            <span class="tool-note">${ts.mainCount} lần nạp</span>
+          </div>
+          <div class="monitor-topup-stat is-dp">
+            <span class="tool-note">Tổng nạp Ví Nguồn DP</span>
+            <strong style="color:var(--color-aurora-gradient);">+${money(ts.backupTotal)}</strong>
+            <span class="tool-note">${ts.backupCount} lần nạp</span>
+          </div>
+          <div class="monitor-topup-stat">
+            <span class="tool-note">Lần nạp gần nhất</span>
+            <strong style="color:var(--color-platinum);font-size:12.5px;">${ts.lastTopupAt ? esc(date(ts.lastTopupAt)) : 'Chưa có lượt nạp'}</strong>
+            <span class="tool-note">Chỉ hiện giao dịch nạp ví</span>
+          </div>
+        </div>
+        ${archivedNotes.length ? `<p class="tool-note" style="margin:0 0 8px;">Bao gồm số tiền đã gộp sổ cũ trước đây: ${archivedNotes.join(' · ')}.</p>` : ''}
+        <div class="tool-actions monitor-topup-filters">
+          ${button(`Tất cả (${ts.totalCount})`, 'data-topup-wallet-filter', 'all', `monitor-act-btn ${wFilter === 'all' ? 'btn-violet' : 'btn-frost'}`)}
+          ${button(`Ví CTV (${ts.mainCount})`, 'data-topup-wallet-filter', 'main', `monitor-act-btn ${wFilter === 'main' ? 'btn-violet' : 'btn-frost'}`)}
+          ${button(`Ví Nguồn DP (${ts.backupCount})`, 'data-topup-wallet-filter', 'backup', `monitor-act-btn ${wFilter === 'backup' ? 'btn-violet' : 'btn-frost'}`)}
+        </div>
+        ${table(['Thời điểm', 'Ví nhận', 'Số tiền nạp', 'Số dư sau nạp', 'Ghi chú'], topupRows || '<tr><td colspan="5" class="tool-note" style="text-align:center;padding:18px;">Chưa có lịch sử nạp ví nào cho CTV này.</td></tr>', 'monitor-compact-table')}
+        ${moreButton('topups', d.topupCount || 0, 0, (d.topups || []).length)}
+      `;
     } else if (tab === 'events') {
       content = eventTable(d.events) + moreButton(tab, d.eventCount, 0, d.events.length);
     } else {
@@ -585,11 +634,11 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
       content = table(['Thời điểm', 'Ví', 'Giao dịch', 'Số tiền', 'Số dư sau GD', 'Ghi chú'], d.transactions.map(t => {
         const isDpTx = t.wallet === 'backup' || t.source === 'backup';
         return `<tr>
-        <td>${esc(date(t.createdAt))}</td>
-        <td><span class="badge-tag ${isDpTx ? 'green' : 'violet'}" style="font-size:10.5px;">${isDpTx ? 'Ví Nguồn DP' : 'Ví CTV'}</span></td>
-        <td>${esc(types[t.type] || t.type)}</td><td>${t.amount > 0 ? '+' : ''}${money(t.amount)}</td>
-        <td>${money(t.balanceAfter)}</td><td>${esc(t.note || '—')}</td></tr>`;
-      }).join('')) + moreButton(tab, d.transactionCount, 0, d.transactions.length);
+        <td style="white-space:nowrap;">${esc(date(t.createdAt))}</td>
+        <td style="white-space:nowrap;"><span class="badge-tag ${isDpTx ? 'green' : 'violet'} monitor-mini-badge">${isDpTx ? 'Ví Nguồn DP' : 'Ví CTV'}</span></td>
+        <td style="white-space:nowrap;">${esc(types[t.type] || t.type)}</td><td style="white-space:nowrap;">${t.amount > 0 ? '+' : ''}${money(t.amount)}</td>
+        <td style="white-space:nowrap;">${money(t.balanceAfter)}</td><td>${esc(t.note || '—')}</td></tr>`;
+      }).join(''), 'monitor-compact-table') + moreButton(tab, d.transactionCount, 0, d.transactions.length);
     }
     const extraNotes = [];
     if (sum.held) extraNotes.push(`Đang giữ đơn Server Zn ${money(sum.held)}`);
@@ -600,22 +649,31 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
       ${walletCards(sum)}
       ${extraNotes.length ? `<p class="tool-note">${extraNotes.join(' · ')}</p>` : ''}
       ${sum.unaccountedBalance ? `<p class="tool-warning">Chênh lệch giữa số dư ví và sổ giao dịch: ${money(sum.unaccountedBalance)}. Tổng đã nạp và đã dùng chỉ gồm giao dịch có ghi nhận.</p>` : ''}
-      <div class="tool-actions monitor-tabs">${Object.entries(labels).map(([key,label]) => button(label,'data-ctv-detail-tab',key,key === tab ? 'btn-violet' : 'btn-frost')).join('')}
-        ${button('Đóng chi tiết','data-close-ctv-detail','')}</div>${content}`, 'id="monitorCtvDetailPanel"');
+      <div class="tool-actions monitor-tabs">${Object.entries(labels).map(([key,label]) => button(label,'data-ctv-detail-tab',key,`monitor-act-btn ${key === tab ? 'btn-violet' : 'btn-frost'}`)).join('')}
+        ${button(`${znIcon('close', 11)} <span>Đóng</span>`,'data-close-ctv-detail','','monitor-act-btn btn-frost')}</div>${content}`, 'id="monitorCtvDetailPanel"');
   }
 
   function renderAdminMonitorHtml() {
     const data = state.adminMonitor;
-    if (!data) return panel('Giám sát CTV', `Đang tải… ${button(`${znIcon('refresh', 13)} Làm mới`,'data-refresh-monitor','')}`);
-    const rows = data.ctvs.map(u => `<tr><td><strong>${esc(u.name)}</strong><div class="tool-note">${esc(u.username)}</div></td>
-      <td>${money(u.totalTopup)}</td><td>${money(u.totalSpent)}</td><td class="wallet-balance">${money(u.balance)}</td>
-      <td class="wallet-backup-cell"><strong>${money(u.backupBalance || 0)}</strong><div class="tool-note">Nạp ${money(u.backupTopup || 0)} · Dùng ${money(u.backupSpent || 0)}</div></td>
-      <td>${Number(u.orderCount || 0)}</td>
-      <td>${button(u.id === state.adminMonitorCtvId ? 'Đang xem' : 'Xem đơn', 'data-select-ctv', u.id, u.id === state.adminMonitorCtvId ? 'btn-violet' : 'btn-frost')}</td></tr>`).join('');
+    if (!data) return panel('Giám sát CTV', `Đang tải… ${button(`${znIcon('refresh', 12)} Làm mới`,'data-refresh-monitor','','monitor-act-btn btn-frost')}`);
+    const curTab = state.adminMonitorCtvTab || 'orders';
+    const rows = data.ctvs.map(u => {
+      const isSelected = u.id === state.adminMonitorCtvId;
+      const isOrdersActive = isSelected && curTab !== 'topups';
+      const isTopupsActive = isSelected && curTab === 'topups';
+      return `<tr class="${isSelected ? 'is-selected-ctv-row' : ''}"><td><strong>${esc(u.name)}</strong><div class="tool-note">${esc(u.username)}</div></td>
+      <td class="monitor-num-cell">${money(u.totalTopup)}</td><td class="monitor-num-cell">${money(u.totalSpent)}</td><td class="wallet-balance monitor-num-cell">${money(u.balance)}</td>
+      <td class="wallet-backup-cell monitor-num-cell"><strong>${money(u.backupBalance || 0)}</strong><div class="tool-note">Nạp ${money(u.backupTopup || 0)} · Dùng ${money(u.backupSpent || 0)}</div></td>
+      <td class="monitor-num-cell">${Number(u.orderCount || 0)}</td>
+      <td class="monitor-actions-cell"><div class="monitor-row-actions">
+        ${button(`${znIcon('orders', 12)} <span>${isOrdersActive ? 'Đang xem' : 'Xem đơn'}</span>`, 'data-select-ctv', u.id, `monitor-act-btn ${isOrdersActive ? 'btn-violet' : 'btn-frost'}`)}
+        ${button(`${znIcon('wallet', 12)} <span>${isTopupsActive ? 'Đang xem' : 'Lịch sử nạp'}</span>`, 'data-select-ctv-topups', u.id, `monitor-act-btn ${isTopupsActive ? 'btn-violet' : 'btn-frost'}`)}
+      </div></td></tr>`;
+    }).join('');
     return panel('Tổng ví của toàn bộ CTV', walletCards(data.walletTotals, data), 'id="monitorWalletTotals"')
       + panel('Ví và đơn hàng của CTV', `${!data.storageHealthy ? '<p class="tool-warning">Lỗi ghi dữ liệu ví.</p>' : ''}
-      <div class="tool-actions">${button(`${znIcon('refresh', 13)} Làm mới`, 'data-refresh-monitor', '')}</div>
-      ${table(['CTV','Đã nạp (Ví CTV)','Đã dùng (Server Zn)','Ví CTV còn lại','Ví Nguồn DP','Số đơn','Chi tiết'], rows)}${moreButton('ctvs', data.ctvCount, 0, data.ctvs.length)}`)
+      <div class="tool-actions">${button(`${znIcon('refresh', 12)} <span>Làm mới</span>`, 'data-refresh-monitor', '', 'monitor-act-btn btn-frost')}</div>
+      ${table(['CTV','Đã nạp (Ví CTV)','Đã dùng (Server Zn)','Ví CTV còn lại','Ví Nguồn DP','Số đơn','Chi tiết'], rows, 'monitor-ctv-table')}${moreButton('ctvs', data.ctvCount, 0, data.ctvs.length)}`, 'id="monitorCtvListPanel"')
       + renderSelectedCtvDetailHtml()
       + panel('50 hoạt động gần nhất', eventTable(data.events) + moreButton('systemEvents', data.eventCount, 0, data.events.length));
   }
@@ -623,25 +681,35 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
   function bindAdminMonitorEvents() {
     document.querySelectorAll('[data-refresh-monitor]').forEach(control => control.addEventListener('click', loadAdminMonitor));
 
-    const selectCtv = async (ctvId) => {
+    const selectCtv = async (ctvId, initialTab = 'orders') => {
       if (!ctvId) {
         state.adminMonitorCtvId = null;
         state.adminMonitorCtvDetail = null;
         renderCurrentView();
         return;
       }
-      state.adminMonitorCtvTab = 'orders';
-      for (const key of ['orders','events','transactions']) delete state.listLimits[key];
-      state.adminMonitorCtvOrderSearch = '';
-      state.adminMonitorCtvCatFilter = 'all';
-      await loadAdminMonitorCtvDetail(ctvId, false);
+      const sameCtv = state.adminMonitorCtvId === ctvId && state.adminMonitorCtvDetail?.ctv?.id === ctvId;
+      state.adminMonitorCtvTab = initialTab;
+      if (!sameCtv) {
+        for (const key of ['orders','events','transactions','topups']) delete state.listLimits[key];
+        state.adminMonitorCtvOrderSearch = '';
+        state.adminMonitorCtvCatFilter = 'all';
+        state.adminMonitorCtvTopupWallet = 'all';
+      }
+      await loadAdminMonitorCtvDetail(ctvId, sameCtv);
       document.getElementById('monitorCtvDetailPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
 
     document.querySelectorAll('[data-select-ctv]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        selectCtv(btn.dataset.selectCtv);
+        selectCtv(btn.dataset.selectCtv, 'orders');
+      });
+    });
+    document.querySelectorAll('[data-select-ctv-topups]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectCtv(btn.dataset.selectCtvTopups, 'topups');
       });
     });
     document.querySelectorAll('[data-close-ctv-detail]').forEach(btn => {
@@ -651,6 +719,13 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
       btn.addEventListener('click', () => {
         state.adminMonitorCtvTab = btn.dataset.ctvDetailTab;
         renderCurrentView();
+      });
+    });
+    document.querySelectorAll('[data-topup-wallet-filter]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.adminMonitorCtvTopupWallet = btn.dataset.topupWalletFilter || 'all';
+        state.listLimits.topups = 20;
+        loadAdminMonitorCtvDetail(state.adminMonitorCtvId, true);
       });
     });
     document.getElementById('monitorCtvOrderSearch')?.addEventListener('input', (e) => {

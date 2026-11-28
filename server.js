@@ -747,7 +747,8 @@ function pruneWeekHistory(cutoff) {
 const LEDGER_COMPACT_TRIGGER = 1500;
 const LEDGER_RETAIN_MIN = 500;
 const LEDGER_RETAIN_MS = 30 * 24 * 60 * 60 * 1000;
-const ROLLUP_ELIGIBLE_TYPES = new Set(['admin_topup', 'admin_deduct', 'order_debit', 'order_refund']);
+// Keep admin_topup records permanently so Admin always has the full CTV deposit history.
+const ROLLUP_ELIGIBLE_TYPES = new Set(['admin_deduct', 'order_debit', 'order_refund']);
 
 function compactOldTransactions({
   now = Date.now(),
@@ -5335,9 +5336,34 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
   }
 
   const ctvTransactions = db.transactions.filter(t => t.userId === ctv.id);
+  const backupIntentIds = buildBackupTransactionMatchers();
+  const ctvTopups = ctvTransactions.filter(t => t.type === 'admin_topup');
+  let topupMainCount = 0;
+  let topupBackupCount = 0;
+  for (const t of ctvTopups) {
+    if (isBackupTransaction(t, backupIntentIds)) topupBackupCount += 1;
+    else topupMainCount += 1;
+  }
+  const topupWalletFilter = req.query.topupWallet === 'main' || req.query.topupWallet === 'backup'
+    ? req.query.topupWallet
+    : 'all';
+  const filteredTopups = topupWalletFilter === 'all'
+    ? ctvTopups
+    : ctvTopups.filter(t => (isBackupTransaction(t, backupIntentIds) ? 'backup' : 'main') === topupWalletFilter);
   const wallet = walletTotalsByUser().get(ctv.id) || {
     totalTopup: 0, totalSpent: 0, held: 0, deducted: 0,
     backupTopup: 0, backupSpent: 0, backupHeld: 0, backupDeducted: 0,
+  };
+  const rollupRow = db.ledgerRollups?.[ctv.id] || null;
+  const topupSummary = {
+    totalCount: ctvTopups.length,
+    mainCount: topupMainCount,
+    backupCount: topupBackupCount,
+    mainTotal: wallet.totalTopup,
+    backupTotal: wallet.backupTopup,
+    archivedMainTopup: Number(rollupRow?.totalTopup || 0),
+    archivedBackupTopup: Number(rollupRow?.backupTopup || 0),
+    lastTopupAt: ctvTopups[0]?.createdAt || null,
   };
   const debitRows = ctvTransactions.filter(t => t.type === 'order_debit');
   const debits = new Map(debitRows.map(t => [t.id, -Number(t.amount)]));
@@ -5378,6 +5404,8 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
     },
     filteredCount: filtered.length,
     transactionCount: ctvTransactions.length,
+    topupCount: filteredTopups.length,
+    topupSummary,
     eventCount: ctvEvents.length,
     orders: filtered.slice(0, listLimit(req.query.orders)).map(o => ({
       id: o.id,
@@ -5397,6 +5425,10 @@ app.get('/api/admin/monitor/ctv/:id', (req, res) => {
       completedCnt: Number(o.completedCnt || 0),
       trackUrl: o.weather?.trackUrl || null,
       createdAt: o.createdAt,
+    })),
+    topups: filteredTopups.slice(0, listLimit(req.query.topups)).map(t => ({
+      ...sanitizeTransaction(t),
+      wallet: isBackupTransaction(t, backupIntentIds) ? 'backup' : 'main',
     })),
     transactions: ctvTransactions.slice(0, listLimit(req.query.transactions)).map(sanitizeTransaction),
     events: ctvEvents.slice(0, listLimit(req.query.events)).map(sanitizeAuditEvent),

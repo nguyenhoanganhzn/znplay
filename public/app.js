@@ -265,6 +265,7 @@ const VIEW_TITLES = {
   mail_gift: 'Đơn quà thư',
   guestbook: 'Đơn bài viết lưu bút',
   buff_tim: 'Đơn Buff Tim',
+  buff_luot_xem: 'Đơn Buff Lượt Xem Hồ Sơ',
   buff_sao: 'Đơn Buff Sao',
   weather_buff: 'Đơn Buff Thời Tiết',
   fruit_coin: 'Đơn Trái cây & Xu nông trại',
@@ -283,6 +284,7 @@ const ORDER_VIEWS = [
   'mail_gift',
   'guestbook',
   'buff_tim',
+  'buff_luot_xem',
   'buff_sao',
   'weather_buff',
   'fruit_coin',
@@ -815,6 +817,7 @@ function applyCatalogSideEffects(r) {
   updateDot('dot_mail_gift', st.mail_gift);
   updateDot('dot_guestbook', st.guestbook);
   updateDot('dot_buff_tim', st.buff_tim);
+  updateDot('dot_buff_luot_xem', st.buff_luot_xem);
   updateDot('dot_buff_sao', st.buff_sao);
   updateDot('dot_weather_buff', st.weather_buff);
   updateDot('dot_fruit_coin', st.fruit_coin);
@@ -883,6 +886,7 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
       fc: (merged.catalog?.fruit_coin || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
       fb: (merged.catalog?.fruit_by_fruit || []).map(f => [f.id, f.unit_price, f.stock_quantity]),
       bt: (merged.catalog?.buff_tim || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
+      blx: (merged.catalog?.buff_luot_xem || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
       bs: (merged.catalog?.buff_sao || []).map(p => [p.id, p.total_price]),
       gb: (merged.catalog?.guestbook || []).map(p => [p.id, p.total_price]),
       wb: (merged.catalog?.weather_buff || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
@@ -1118,6 +1122,7 @@ function renderOrderCategoryPageHtml(catKey) {
     mail_gift: 'mail_gift_order',
     guestbook: 'guest_book_order',
     buff_tim: 'buff_tim_order',
+    buff_luot_xem: 'buff_luot_xem_order',
     buff_sao: 'buff_sao_order',
     weather_buff: 'weather_buff_order',
     fruit_coin: 'fruit_order',
@@ -1161,6 +1166,7 @@ function renderOrderCategoryPageHtml(catKey) {
     mail_gift: 'thư',
     guestbook: 'bài viết',
     buff_tim: 'tim',
+    buff_luot_xem: 'lượt xem',
     buff_sao: 'sao',
     weather_buff: 'lần',
     fruit_coin: 'trái / xu',
@@ -1177,7 +1183,7 @@ function renderOrderCategoryPageHtml(catKey) {
         <button type="button" class="btn-frost" id="btnViewCategoryPrices">${znIcon('tag', 14)} <span>Xem bảng giá gói xu</span></button>
       </div>
     `;
-  } else if (['buff_tim', 'buff_sao', 'guestbook', 'mail_gift', 'farm_gift', 'weather_buff'].includes(catKey)) {
+  } else if (['buff_tim', 'buff_luot_xem', 'buff_sao', 'guestbook', 'mail_gift', 'farm_gift', 'weather_buff'].includes(catKey)) {
     footerButtonsHtml = `
       <div class="cat-footer-actions">
         <button type="button" class="btn-frost" id="btnViewCategoryPrices">${znIcon('tag', 14)} <span>Xem bảng giá ${escapeHtml(VIEW_TITLES[catKey])}</span></button>
@@ -1881,6 +1887,7 @@ async function openOrderCustomerSnapshotModal(cat, remoteOrderId, { force = fals
             <span class="snapshot-stat-item" title="Sao nhà"><span style="color:#fde68a;">${znIcon('star', 14)}</span> <strong>${formatNum(p.homeLikes || 0)}</strong></span>
             <span class="snapshot-stat-item" title="Lượt ghé thăm nhà"><span style="color:var(--color-aurora-gradient);">${znIcon('home', 14)}</span> <strong>${formatNum(p.totalHomeVisitCount || 0)}</strong></span>
             <span class="snapshot-stat-item" title="Người theo dõi"><span style="color:var(--color-lavender-phosphor);">${znIcon('users', 14)}</span> <strong>${formatNum(p.followerCount || 0)}</strong></span>
+            ${p.totalProfileVisitCount !== undefined ? `<span class="snapshot-stat-item" title="Tổng lượt xem hồ sơ"><span style="color:#67e8f9;">${znIcon('eye', 14)}</span> <strong>${formatNum(p.totalProfileVisitCount)}</strong></span>` : ''}
           </div>
 
           <div class="snapshot-captured-line">
@@ -2045,6 +2052,8 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
   }
   if (cat.buff_tim?.length && catKey === 'buff_tim') {
     state.modalOrder.price_package_id = cat.buff_tim[0].id;
+  } else if (cat.buff_luot_xem?.length && catKey === 'buff_luot_xem') {
+    state.modalOrder.price_package_id = cat.buff_luot_xem[0].id;
   } else if (cat.buff_sao?.length && catKey === 'buff_sao') {
     state.modalOrder.price_package_id = cat.buff_sao[0].id;
   } else if (cat.guestbook?.length && catKey === 'guestbook') {
@@ -2195,9 +2204,9 @@ function renderCreateOrderModalBody() {
       `
       }
     `;
-  } else if (catKey === 'buff_tim' || catKey === 'buff_sao' || catKey === 'guestbook' || catKey === 'weather_buff') {
+  } else if (catKey === 'buff_tim' || catKey === 'buff_luot_xem' || catKey === 'buff_sao' || catKey === 'guestbook' || catKey === 'weather_buff') {
     const pkgs = catalog[catKey] || [];
-    const unitTxt = catKey === 'buff_tim' ? 'Tim' : catKey === 'buff_sao' ? 'Sao' : catKey === 'weather_buff' ? 'Lần' : 'Bài viết';
+    const unitTxt = catKey === 'buff_tim' ? 'Tim' : catKey === 'buff_luot_xem' ? 'Lượt xem' : catKey === 'buff_sao' ? 'Sao' : catKey === 'weather_buff' ? 'Lần' : 'Bài viết';
 
     categoryFormHtml = `
       <div>
@@ -2563,7 +2572,7 @@ function updateCreateOrderModalPrice() {
     price = tObj?.total_price || 0;
   } else if (cat === 'fruit_by_fruit') {
     price = state.modalOrder.fruit_preview_price || 0;
-  } else if (cat === 'buff_tim' || cat === 'buff_sao' || cat === 'guestbook' || cat === 'weather_buff') {
+  } else if (cat === 'buff_tim' || cat === 'buff_luot_xem' || cat === 'buff_sao' || cat === 'guestbook' || cat === 'weather_buff') {
     const pkg = (catalog[cat] || []).find((p) => Number(p.id) === Number(state.modalOrder.price_package_id));
     price = pkg?.total_price || 0;
   } else if (cat === 'farm_gift' || cat === 'mail_gift') {
@@ -2721,7 +2730,7 @@ async function submitModalOrder(confirmDuplicate = false) {
     payload.total_cnt = m.fruit_total_cnt;
     payload.variant_mode = 'select';
     payload.mutation_list = m.fruit_variant_mode === 'specify' ? m.fruit_mutation_list : [];
-  } else if (m.category === 'buff_tim' || m.category === 'buff_sao' || m.category === 'guestbook' || m.category === 'weather_buff') {
+  } else if (m.category === 'buff_tim' || m.category === 'buff_luot_xem' || m.category === 'buff_sao' || m.category === 'guestbook' || m.category === 'weather_buff') {
     payload.price_package_id = m.price_package_id;
     payload.expect_sale = true;
     if (m.category === 'guestbook') {
@@ -3337,7 +3346,7 @@ async function openCategoryPriceListModal(catKey) {
   if (!items.length) {
     body.innerHTML = `<div style="color:var(--color-fog-veil);padding:16px 0;">Hiện chưa có gói giá nào đang mở bán cho danh mục này.</div>`;
   } else {
-    const units = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
+    const units = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_luot_xem: 'Lượt xem', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
     const rows = isGiftCat ? items.flatMap(g => (g.packages || []).map(pkg => ({ ...pkg, giftName: g.name }))) : items;
     renderLocalPages(body, rows, visible => {
       body.innerHTML = `<div class="pkg-picker-list">${visible.map(pkg => `<div class="pkg-picker-card">
@@ -3365,6 +3374,7 @@ function renderDashboardOverviewHtml() {
     { key: 'mail_gift', icon: 'mail', name: 'Quà thư', working: st.mail_gift },
     { key: 'guestbook', icon: 'message', name: 'Bài viết', working: st.guestbook },
     { key: 'buff_tim', icon: 'heart', name: 'Buff Tim', working: st.buff_tim },
+    { key: 'buff_luot_xem', icon: 'eye', name: 'Tăng lượt xem hồ sơ', working: st.buff_luot_xem },
     { key: 'buff_sao', icon: 'star', name: 'Buff Sao', working: st.buff_sao },
     { key: 'weather_buff', icon: 'cloud', name: 'Buff Thời Tiết', working: st.weather_buff },
     { key: 'fruit_coin', icon: 'coins', name: 'Trái cây & Xu', working: st.fruit_coin },
@@ -3628,11 +3638,12 @@ const PRICING_CATEGORIES = [
   { key: 'fruit_coin', icon: 'coins', label: '01. Gói Xu Nông Trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
   { key: 'fruit_by_fruit', icon: 'fruit', label: '02. Trái cây lẻ & 19 Đột biến', unitHint: 'trái', isFruitUnit: true, stepFixed: 10, presetsFixed: [20, 40, 50, 100] },
   { key: 'buff_tim', icon: 'heart', label: '03. Gói Buff Tim', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
-  { key: 'buff_sao', icon: 'star', label: '04. Gói Buff Sao', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000, 20000] },
-  { key: 'guestbook', icon: 'message', label: '05. Gói Bài viết lưu bút', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
-  { key: 'mail_gift', icon: 'mail', label: '06. Gói Quà thư', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
-  { key: 'farm_gift', icon: 'gift', label: '07. Gói Quà nông trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
-  { key: 'weather_buff', icon: 'cloud', label: '08. Gói Buff Thời Tiết', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'buff_luot_xem', icon: 'eye', label: '04. Gói Tăng lượt xem hồ sơ', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 3000, 5000, 10000] },
+  { key: 'buff_sao', icon: 'star', label: '05. Gói Buff Sao', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000, 20000] },
+  { key: 'guestbook', icon: 'message', label: '06. Gói Bài viết lưu bút', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'mail_gift', icon: 'mail', label: '07. Gói Quà thư', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'farm_gift', icon: 'gift', label: '08. Gói Quà nông trại', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
+  { key: 'weather_buff', icon: 'cloud', label: '09. Gói Buff Thời Tiết', unitHint: 'đơn', stepFixed: 1000, presetsFixed: [2000, 5000, 10000] },
   ...backupPricingCategories,
 ];
 
@@ -3660,7 +3671,7 @@ function getCategorySampleItem(catKey, catalog) {
   }
   const p = (catalog[catKey] || [])[0];
   if (!p) return null;
-  const uMap = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
+  const uMap = { fruit_coin: 'Xu', buff_tim: 'Tim', buff_luot_xem: 'Lượt xem', buff_sao: 'Sao', guestbook: 'Bài viết', weather_buff: 'Lần' };
   return { name: `Gói ${formatNum(p.quantity || p.coin_quantity)} ${uMap[catKey] || ''}`, cost: p._admin?.cost_effective ?? p.total_price };
 }
 
@@ -3686,6 +3697,7 @@ function getAllAdminFixedPackages(r) {
   };
   pushPkgs(r?.catalog?.fruit_coin, 'fruit_coin', 'Xu Nông Trại', 'Xu');
   pushPkgs(r?.catalog?.buff_tim, 'buff_tim', 'Buff Tim', 'Tim');
+  pushPkgs(r?.catalog?.buff_luot_xem, 'buff_luot_xem', 'Lượt xem hồ sơ', 'Lượt xem');
   pushPkgs(r?.catalog?.buff_sao, 'buff_sao', 'Buff Sao', 'Sao');
   pushPkgs(r?.catalog?.guestbook, 'guestbook', 'Bài Viết', 'Bài viết');
   pushPkgs(r?.catalog?.weather_buff, 'weather_buff', 'Buff Thời Tiết', 'Lần');
@@ -3712,7 +3724,7 @@ function getAllAdminFixedPackages(r) {
   return fixedPackages;
 }
 
-const FEATURED_PER_PKG_CATS = new Set(['fruit_coin', 'buff_tim', 'buff_sao']);
+const FEATURED_PER_PKG_CATS = new Set(['fruit_coin', 'buff_tim', 'buff_luot_xem', 'buff_sao']);
 
 function countCategoryOverrides(catKey, adm) {
   if (catKey === 'fruit_by_fruit') {
@@ -4012,6 +4024,7 @@ function renderAdminPricingPageHtml() {
           ['all', null, 'Tất cả'],
           ['fruit_coin', 'coins', 'Xu Nông Trại'],
           ['buff_tim', 'heart', 'Buff Tim'],
+          ['buff_luot_xem', 'eye', 'Lượt xem hồ sơ'],
           ['buff_sao', 'star', 'Buff Sao'],
           ['guestbook', 'message', 'Bài Viết'],
           ['weather_buff', 'cloud', 'Buff Thời Tiết'],

@@ -353,6 +353,7 @@ const DEFAULT_DB = {
       fruit_coin: 5000,
       fruit_by_fruit: 0, // Phí cộng thêm tùy chọn mỗi đơn Trái cây lẻ (+VNĐ/đơn)
       buff_tim: 5000,
+      buff_luot_xem: 5000,
       buff_sao: 5000,
       guestbook: 5000,
       farm_gift: 5000,
@@ -364,6 +365,7 @@ const DEFAULT_DB = {
       fruit_coin: 'fixed',
       fruit_by_fruit: 'fixed',
       buff_tim: 'fixed',
+      buff_luot_xem: 'fixed',
       buff_sao: 'fixed',
       guestbook: 'fixed',
       farm_gift: 'fixed',
@@ -375,6 +377,7 @@ const DEFAULT_DB = {
       fruit_coin: 0,
       fruit_by_fruit: 0,
       buff_tim: 0,
+      buff_luot_xem: 0,
       buff_sao: 0,
       guestbook: 0,
       farm_gift: 0,
@@ -955,6 +958,15 @@ const CATEGORY_METADATA = {
     apiOrderPath: '/api/buff-tim-orders',
     settingKey: 'is_send_bufftimorder',
     rateKey: 'buff_tim_order',
+  },
+  buff_luot_xem: {
+    key: 'buff_luot_xem',
+    name: 'Đơn Buff Lượt Xem Hồ Sơ',
+    menuLabel: 'Tăng lượt xem hồ sơ',
+    unit: 'lượt xem',
+    apiOrderPath: '/api/buff-luot-xem-orders',
+    settingKey: 'is_send_buffluotxemorder',
+    rateKey: 'buff_luot_xem_order',
   },
   buff_sao: {
     key: 'buff_sao',
@@ -1678,13 +1690,14 @@ function getCurrentMondayStr() {
 }
 
 const SETTINGS_KEYS_PATH =
-  '/api/settings?keys=is_send_task,is_send_fruitorder,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity';
+  '/api/settings?keys=is_send_task,is_send_fruitorder,is_send_farmgiftorder,is_send_mailgiftorder,is_send_guestbookorder,is_send_bufftimorder,is_send_buffluotxemorder,is_send_buffsaoorder,is_send_weatherbufforder,min_coin_per_fruit,max_coin_for_fruit_order,max_fruits_per_customer_per_day,is_buff_sao_custom_quantity,is_buff_tim_custom_quantity';
 
 const VALID_CATALOG_SCOPES = new Set([
   'fruit_coin',
   'fruit_by_fruit',
   'fruit_all',
   'buff_tim',
+  'buff_luot_xem',
   'buff_sao',
   'guestbook',
   'farm_gift',
@@ -1703,6 +1716,7 @@ function ensureRawCatalogShell() {
       fruitStock: [],
       fruitStockMeta: {},
       buffTimPackages: [],
+      buffLuotXemPackages: [],
       buffSaoPackages: [],
       guestbookPackages: [],
       farmGifts: [],
@@ -1748,6 +1762,9 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
     if (scope === 'buff_tim') {
       reqs.buffTim = hnApiCall('/api/buff-tim-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
     }
+    if (scope === 'buff_luot_xem') {
+      reqs.buffLuotXem = hnApiCall('/api/buff-luot-xem-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
+    }
     if (scope === 'buff_sao') {
       reqs.buffSao = hnApiCall('/api/buff-sao-price-packages?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error }));
     }
@@ -1782,6 +1799,7 @@ async function fetchScopedCatalogFromHoanNguyen(scope, { force = true, maxAgeMs 
       raw.fruitStockMeta = results.fruitStock.meta || raw.fruitStockMeta || {};
     }
     if (results.buffTim) raw.buffTimPackages = Array.isArray(results.buffTim.data) ? results.buffTim.data : [];
+    if (results.buffLuotXem) raw.buffLuotXemPackages = Array.isArray(results.buffLuotXem.data) ? results.buffLuotXem.data : [];
     if (results.buffSao) raw.buffSaoPackages = Array.isArray(results.buffSao.data) ? results.buffSao.data : [];
     if (results.guestbook) raw.guestbookPackages = Array.isArray(results.guestbook.data) ? results.guestbook.data : [];
     if (results.farmGifts) raw.farmGifts = Array.isArray(results.farmGifts.data) ? results.farmGifts.data : [];
@@ -1833,6 +1851,7 @@ async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
     fruitItemsRes,
     fruitStockRes,
     buffTimRes,
+    buffLuotXemRes,
     buffSaoRes,
     guestbookRes,
     farmGiftsRes,
@@ -1847,6 +1866,7 @@ async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
     hnApiCall('/api/fruit-items?active=1', 'GET', null, true, timeoutMs).catch(error => ({ upstreamError: error })),
     hnApiCall('/api/fruit-stock', 'GET', null, true, timeoutMs).catch(() => ({ data: [], meta: {} })),
     hnApiCall('/api/buff-tim-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
+    hnApiCall('/api/buff-luot-xem-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
     hnApiCall('/api/buff-sao-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
     hnApiCall('/api/guestbook-price-packages?active=1', 'GET', null, true, timeoutMs).catch(() => ({ data: [] })),
     // IMPORTANT: Only fetch active=1 gifts for seller order creation, matching HoanNguyen exactly!
@@ -1873,6 +1893,7 @@ async function buildRawCatalogFromHoanNguyen(force = false, opts = {}) {
     fruitStock: Array.isArray(fruitStockRes?.data) ? fruitStockRes.data : [],
     fruitStockMeta: fruitStockRes?.meta || {},
     buffTimPackages: Array.isArray(buffTimRes?.data) ? buffTimRes.data : [],
+    buffLuotXemPackages: Array.isArray(buffLuotXemRes?.data) ? buffLuotXemRes.data : [],
     buffSaoPackages: Array.isArray(buffSaoRes?.data) ? buffSaoRes.data : [],
     guestbookPackages: Array.isArray(guestbookRes?.data) ? guestbookRes.data : [],
     farmGifts: Array.isArray(farmGiftsRes?.data) ? farmGiftsRes.data : [],
@@ -2041,6 +2062,7 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       mail_gift: isSendTask && enabled(raw.hnSettings?.is_send_mailgiftorder),
       guestbook: isSendTask && enabled(raw.hnSettings?.is_send_guestbookorder),
       buff_tim: isSendTask && enabled(raw.hnSettings?.is_send_bufftimorder),
+      buff_luot_xem: isSendTask && enabled(raw.hnSettings?.is_send_buffluotxemorder),
       buff_sao: isSendTask && enabled(raw.hnSettings?.is_send_buffsaoorder),
       weather_buff: isSendTask && weatherAllowed,
       fruit_coin: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
@@ -2127,9 +2149,15 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       });
     }
 
-    // 3-5. Buff Tim, Buff Sao, Guestbook
+    // 3-5. Buff Tim, Buff Lượt Xem Hồ Sơ, Buff Sao, Guestbook
     if (want('buff_tim')) {
       catalog.buff_tim = raw.buffTimPackages.map((pkg) => buildPublicPackage(pkg, 'buff_tim', isAdmin, 0));
+    }
+    if (want('buff_luot_xem')) {
+      catalog.buff_luot_xem = (raw.buffLuotXemPackages || [])
+        .filter((pkg) => enabled(pkg.is_active))
+        .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
+        .map((pkg) => buildPublicPackage(pkg, 'buff_luot_xem', isAdmin, 0));
     }
     if (want('buff_sao')) {
       catalog.buff_sao = raw.buffSaoPackages.map((pkg) => buildPublicPackage(pkg, 'buff_sao', isAdmin, 0));
@@ -2543,6 +2571,8 @@ app.post('/api/customer/select-ingame', requireAuth, limitInteractive, async (re
       home_likes: Number(detail?.Profile?.HomeLikes ?? 0),
       total_home_visit_count: Number(detail?.Profile?.ProfileCount?.TotalHomeVisitCount ?? 0),
       follower_count: Number(detail?.Profile?.FollowerCount ?? 0),
+      today_profile_visit_count: Number(detail?.Profile?.ProfileCount?.TodayProfileVisitCount ?? 0),
+      total_profile_visit_count: Number(detail?.Profile?.ProfileCount?.TotalProfileVisitCount ?? 0),
     };
 
     const saveRes = await hnApiCall('/api/game-profiles', 'POST', payload);
@@ -3140,6 +3170,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
     let sellPrice = 0;
     let orderSummary = '';
     let selectedWeatherPkg = null;
+    let selectedPkgQty = 0;
 
     let backup;
     if (isBackup) {
@@ -3239,6 +3270,29 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         expect_sale: !!useSale,
         expect_package_sale_id: useSale ? Number(sale.id) : null,
         confirm_duplicate_customer: !!confirm_duplicate_customer,
+      };
+    } else if (category === 'buff_luot_xem') {
+      apiPath = '/api/buff-luot-xem-orders';
+      const pkg = (rawCatalog.buffLuotXemPackages || []).find((p) => Number(p.id) === Number(price_package_id));
+      if (!pkg || !enabled(pkg.is_active)) {
+        return res.status(400).json({ success: false, message: 'Gói Tăng lượt xem hồ sơ không hợp lệ.' });
+      }
+      const { isOnSale, sale } = resolveActiveSale(pkg);
+      const useSale = expect_sale !== false && isOnSale && sale;
+      const rawEffective = Number(useSale ? (pkg.effective_price ?? sale.sale_price) : pkg.total_price);
+      const calc = getPackageSellingPrice('buff_luot_xem', pkg.id, rawEffective, pkg.original_price ?? pkg.total_price, 0);
+      costPrice = calc.costEffective;
+      sellPrice = calc.sellEffective;
+      selectedPkgQty = Number(pkg.quantity || 0);
+      orderSummary = `Buff ${selectedPkgQty.toLocaleString('vi-VN')} Lượt xem${useSale ? ' (Sale)' : ''}`;
+
+      hnPayload = {
+        customer_id: Number(customer_id),
+        game_profile_id: game_profile_id ? Number(game_profile_id) : undefined,
+        price_package_id: Number(pkg.id),
+        is_active: true,
+        confirm_duplicate_customer: !!confirm_duplicate_customer,
+        ...(useSale ? { expect_sale: true, expect_package_sale_id: Number(sale.id) } : {}),
       };
     } else if (category === 'buff_sao') {
       apiPath = '/api/buff-sao-orders';
@@ -3496,7 +3550,7 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
         backupProgress: createdRemoteOrder.backupProgress || null,
         backupTrackToken: crypto.randomBytes(18).toString('base64url'),
       }),
-      totalCnt: (createdRemoteOrder.totalCnt || initialBackupTotal) ?? createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? (selectedWeatherPkg?.quantity || 0),
+      totalCnt: (isBackup ? (createdRemoteOrder.totalCnt || initialBackupTotal) : null) ?? createdRemoteOrder.total_cnt ?? createdRemoteOrder.package_quantity ?? hnPayload.total_cnt ?? (selectedWeatherPkg?.quantity || selectedPkgQty || 0),
       sendingCnt: createdRemoteOrder.sending_cnt ?? 0,
       completedCnt: createdRemoteOrder.completedCnt ?? createdRemoteOrder.completed_cnt ?? 0,
       failedCnt: createdRemoteOrder.failed_cnt ?? 0,
@@ -3565,6 +3619,8 @@ const orderPaths = [
   '/api/mail-gift-orders?page=1&per_page=100',
   '/api/weather-buff-orders?page=1&per_page=100&status_group=active&include_summary=1',
   '/api/weather-buff-orders?page=1&per_page=100&status_group=completed',
+  '/api/buff-luot-xem-orders?page=1&per_page=100&status_group=active&include_summary=1',
+  '/api/buff-luot-xem-orders?page=1&per_page=100&status_group=completed',
 ];
 
 const ORDER_CATEGORY_GROUPS = {
@@ -3577,6 +3633,7 @@ const ORDER_CATEGORY_GROUPS = {
   farm_gift: { activeIdx: [7], completedIdx: [], all: [7] },
   mail_gift: { activeIdx: [8], completedIdx: [], all: [8] },
   weather_buff: { activeIdx: [9], completedIdx: [10], all: [9, 10] },
+  buff_luot_xem: { activeIdx: [11], completedIdx: [12], all: [11, 12] },
 };
 
 const ORDER_ACTIVE_FRESH_MS = 10000;
@@ -3767,6 +3824,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
       mailGiftRes,
       weatherRes,
       weatherCompRes,
+      luotXemActiveRes,
+      luotXemCompRes,
     ] = remote.pages;
 
     const remoteMap = new Map();
@@ -3790,6 +3849,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     collectRemote(mailGiftRes, 'mail_gift');
     collectRemote(weatherRes, 'weather_buff');
     collectRemote(weatherCompRes, 'weather_buff');
+    collectRemote(luotXemActiveRes, 'buff_luot_xem');
+    collectRemote(luotXemCompRes, 'buff_luot_xem');
 
     const matchedRemoteKeys = new Set();
     for (const lo of db.localOrders) {
@@ -3904,7 +3965,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         const cat = rem._category;
         const cost = Number(rem.total_price || 0);
         let summary = '';
-        let custNickname = rem.customer?.nickname || `Khách #${rem.customer_id || rem.id}`;
+        let custNickname = rem.customer?.nickname || rem.customer?.role_id || `Khách #${rem.customer_id || rem.id}`;
         let custSuid = rem.customer?.suid || '';
         let weatherMeta;
 
@@ -3916,6 +3977,8 @@ app.get('/api/orders', requireAuth, async (req, res) => {
           }`;
         } else if (cat === 'buff_tim') {
           summary = `Buff ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')} Tim`;
+        } else if (cat === 'buff_luot_xem') {
+          summary = `Buff ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')} Lượt xem`;
         } else if (cat === 'buff_sao') {
           summary = `Buff ${Number(rem.total_cnt || 0).toLocaleString('vi-VN')} Sao`;
         } else if (cat === 'guestbook') {
@@ -4018,6 +4081,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         ? {
             fruit_coin: fruitActiveRes?.summary || fruitActiveRes?.data?.summary || null,
             buff_tim: timActiveRes?.summary || timActiveRes?.data?.summary || null,
+            buff_luot_xem: luotXemActiveRes?.summary || luotXemActiveRes?.data?.summary || null,
             buff_sao: saoActiveRes?.summary || saoActiveRes?.data?.summary || null,
             weather_buff: weatherRes?.summary || weatherRes?.data?.summary || null,
           }
@@ -4067,6 +4131,8 @@ function sanitizeGameProfile(gp, fallbackNickname = '') {
     homeLikes: toNonNegInt(gp.home_likes),
     totalHomeVisitCount: toNonNegInt(gp.total_home_visit_count),
     followerCount: toNonNegInt(gp.follower_count),
+    todayProfileVisitCount: gp.today_profile_visit_count != null ? toNonNegInt(gp.today_profile_visit_count) : undefined,
+    totalProfileVisitCount: gp.total_profile_visit_count != null ? toNonNegInt(gp.total_profile_visit_count) : undefined,
     capturedAt: gp.created_at || gp.updated_at || null,
     onlineStatus: typeof gp.Online_Status === 'string' ? gp.Online_Status.slice(0, 64) : null,
   };
@@ -5419,7 +5485,7 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
     const upstreamEmail = sourceEmail !== undefined ? sourceEmail : hoanNguyenEmail;
     const upstreamPassword = sourcePassword !== undefined ? sourcePassword : hoanNguyenPassword;
 
-    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff|backup_(weather|guide|emptymap|treasure|seeds))$/;
+    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_luot_xem|buff_sao|guestbook|farm_gift|mail_gift|weather_buff|backup_(weather|guide|emptymap|treasure|seeds))$/;
     for (const value of [defaultMarkup, defaultFruitUnitMarkup]) {
       if (value !== undefined && !validMoney(value)) throw new Error('Mức cộng giá phải là số nguyên không âm và hữu hạn.');
     }
@@ -5448,7 +5514,7 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
         throw new Error('Danh sách đặt lại giá danh mục không hợp lệ.');
       }
     }
-    const pkgKeyPattern = /^(fruit_coin|buff_tim|buff_sao|guestbook|farm_gift|mail_gift|weather_buff):[1-9]\d*$/;
+    const pkgKeyPattern = /^(fruit_coin|buff_tim|buff_luot_xem|buff_sao|guestbook|farm_gift|mail_gift|weather_buff):[1-9]\d*$/;
     if (packageMarkupOverrides !== undefined) {
       if (!packageMarkupOverrides || typeof packageMarkupOverrides !== 'object' || Array.isArray(packageMarkupOverrides) || Object.keys(packageMarkupOverrides).length > 5000) {
         throw new Error('Bảng packageMarkupOverrides không hợp lệ.');

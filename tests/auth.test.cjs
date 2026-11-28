@@ -577,6 +577,7 @@ test('empty CTV history skips source calls and concurrent admin reads share a pa
   const reads = await Promise.all([1, 2].map(() => server.request('/api/orders', 'GET', admin)));
   assert.ok(reads.every(r => r.status === 200 && r.body.partial === true));
   assert.equal(requests, 11);
+  assert.equal(requests, 13);
 });
 
 test('CTV navigation cannot render admin pages or preserve prior admin data', () => {
@@ -2057,6 +2058,7 @@ test('anti-DDoS and anti-abuse shields: account brute-force lock, image proxy ne
 
 test('order category and history tables omit sending, completed, failed, and note columns with aligned cells', () => {
   const categories = ['fruit_coin', 'weather_buff', 'buff_sao', 'buff_tim', 'farm_gift', 'mail_gift', 'guestbook'];
+  const categories = ['fruit_coin', 'weather_buff', 'buff_sao', 'buff_luot_xem', 'buff_tim', 'farm_gift', 'mail_gift', 'guestbook'];
   const sampleOrders = categories.map((cat, idx) => ({
     id: `ord-${idx + 1}`,
     remoteOrderId: 900 + idx,
@@ -2968,4 +2970,213 @@ test('external backup API orders sync strictly for Admin only with ZnStudio trac
   assert.equal(resumeHits, 1);
   assert.equal(pubRun.body.order.backupStatus, 'running');
   assert.equal(pubRun.body.order.canPause, true);
+});
+
+test('buff_luot_xem supports scoped catalog sync, markup/override pricing, CTV order placement, live sync and Admin UI', async t => {
+  const hitPaths = [];
+  let createdPayload = null;
+  let toggledId = null;
+  let deletedId = null;
+  const activeOrders = [
+    {
+      id: 33,
+      customer_id: 44143,
+      game_profile_id: null,
+      price_package_id: 3,
+      total_cnt: 1000,
+      total_price: 15000,
+      sending_cnt: 2,
+      completed_cnt: 224,
+      failed_cnt: 0,
+      status: 'assigned',
+      is_active: true,
+      created_at: new Date().toISOString(),
+      customer: { id: 44143, nickname: null, suid: '791671405587794844', role_id: 'MJ7Y-DV9L-LMYC' },
+      game_profile: { nickname: 'ViewUser', region: 'vn1', achievement_level: 9, user_likes: 50, home_likes: 20, total_home_visit_count: 10, follower_count: 5, total_profile_visit_count: 1234, today_profile_visit_count: 88 },
+    },
+  ];
+  const base = financeSource();
+  const s = await startTestServer(t, async (url, options = {}) => {
+    const u = new URL(url);
+    const p = u.pathname;
+    hitPaths.push(p);
+    if (p === '/api/settings') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            is_send_task: true,
+            is_send_bufftimorder: false,
+            is_send_buffluotxemorder: true,
+            is_send_buffsaoorder: true,
+            is_send_fruitorder: true,
+          },
+        }),
+      };
+    }
+    if (p === '/api/buff-luot-xem-price-packages') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: [
+            { id: 3, quantity: 1000, total_price: 15000, is_active: true },
+            { id: 2, quantity: 500, total_price: 9000, is_active: true },
+            { id: 9, quantity: 9999, total_price: 99999, is_active: false },
+          ],
+        }),
+      };
+    }
+    if (p === '/api/tasks/processing-rate') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: { buff_luot_xem_order: { assigned_rate: 0, completed_rate: 17.7, cooldown_second: 0 } },
+        }),
+      };
+    }
+    if (p === '/api/buff-luot-xem-orders' && options.method === 'POST') {
+      createdPayload = JSON.parse(options.body);
+      const next = {
+        id: 88,
+        customer_id: createdPayload.customer_id,
+        price_package_id: createdPayload.price_package_id,
+        total_cnt: 1000,
+        total_price: 15000,
+        completed_cnt: 0,
+        status: 'pending',
+        is_active: true,
+        created_at: new Date().toISOString(),
+        customer: { id: 101, nickname: 'Test customer', suid: 'test-suid' },
+      };
+      activeOrders.unshift(next);
+      return { ok: true, status: 200, json: async () => ({ success: true, data: next }) };
+    }
+    if (p === '/api/buff-luot-xem-orders' && (!options.method || options.method === 'GET')) {
+      const group = u.searchParams.get('status_group');
+      const list = group === 'completed' ? [] : activeOrders;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: { current_page: 1, last_page: 1, total: list.length, data: list },
+          summary: { total_orders: list.length, active_orders: list.length, completed_orders: 0, inactive_orders: 0 },
+        }),
+      };
+    }
+    if (p === '/api/buff-luot-xem-orders/88/toggle-active' && options.method === 'PUT') {
+      toggledId = 88;
+      return { ok: true, status: 200, json: async () => ({ success: true, data: { id: 88, is_active: false, status: 'pending' } }) };
+    }
+    if (p === '/api/buff-luot-xem-orders/88' && options.method === 'DELETE') {
+      deletedId = 88;
+      return { ok: true, status: 200, json: async () => ({ success: true }) };
+    }
+    return base(url, options);
+  }, {
+    seed(data) {
+      data.users.find(u => u.id === 'seller').balance = 100000;
+    },
+  });
+
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+
+  // 1. Scoped catalog sync calls ONLY /api/settings + /api/buff-luot-xem-price-packages, sorts ascending & hides inactive
+  hitPaths.length = 0;
+  const scoped = await s.request('/api/catalog?refresh=1&scope=buff_luot_xem&compact=1', 'GET', ctv);
+  assert.equal(scoped.status, 200);
+  assert.equal(scoped.body.systemStatus.buff_luot_xem, true);
+  assert.deepEqual([...new Set(hitPaths)].sort(), ['/api/buff-luot-xem-price-packages', '/api/settings']);
+  assert.deepEqual(scoped.body.catalog.buff_luot_xem.map(p => [p.id, p.quantity, p.total_price]), [
+    [2, 500, 14000],
+    [3, 1000, 20000],
+  ]);
+  assert.equal(scoped.body.catalog.buff_luot_xem[0]._admin, undefined);
+
+  // 2. Admin applies +% general rule and protected per-package markup override
+  const setRes = await s.request('/api/admin/settings', 'PUT', admin, {
+    categoryMarkupModes: { buff_luot_xem: 'percent' },
+    categoryMarkupPercents: { buff_luot_xem: 20 },
+    packageMarkupOverrides: { 'buff_luot_xem:3': { mode: 'fixed', value: 7000 } },
+  });
+  assert.equal(setRes.status, 200);
+  const pricedCtv = await s.request('/api/catalog?scope=buff_luot_xem&compact=1', 'GET', ctv);
+  assert.equal(pricedCtv.body.catalog.buff_luot_xem.find(p => p.id === 2).total_price, 10800); // 9000 * 1.2
+  assert.equal(pricedCtv.body.catalog.buff_luot_xem.find(p => p.id === 3).total_price, 22000); // 15000 + 7000
+
+  // 3. CTV places buff_luot_xem order -> exact upstream payload, wallet debit, and immediate totalCnt
+  await s.request('/api/customer/resolve-role-id', 'POST', ctv, { role_id: 'TEST-1234' });
+  const placed = await s.request('/api/orders/place', 'POST', ctv, {
+    category: 'buff_luot_xem',
+    customer_id: 101,
+    game_profile_id: null,
+    price_package_id: 3,
+    expected_price: 22000,
+    idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(placed.status, 200);
+  assert.deepEqual(createdPayload, {
+    customer_id: 101,
+    price_package_id: 3,
+    is_active: true,
+    confirm_duplicate_customer: false,
+  });
+  assert.equal(placed.body.order.totalCnt, 1000);
+  assert.equal(placed.body.order.sellPrice, 22000);
+  assert.equal(placed.body.userBalance, 78000);
+
+  // 4. Scoped CTV order view returns only CTV's own order (never Admin's external order #33), Admin sees both (#88 and #33 with role_id fallback)
+  hitPaths.length = 0;
+  const ctvOrders = await s.request('/api/orders?category=buff_luot_xem&live=1&limit=20', 'GET', ctv);
+  assert.equal(ctvOrders.status, 200);
+  assert.deepEqual(ctvOrders.body.orders.map(o => o.remoteOrderId), [88]);
+  assert.deepEqual([...new Set(hitPaths)], ['/api/buff-luot-xem-orders']);
+
+  const admOrders = await s.request('/api/orders?category=buff_luot_xem&limit=20', 'GET', admin);
+  assert.equal(admOrders.status, 200);
+  assert.ok(admOrders.body.orders.some(o => o.remoteOrderId === 88));
+  const synced33 = admOrders.body.orders.find(o => o.remoteOrderId === 33);
+  assert.ok(synced33);
+  assert.equal(synced33.customer.nickname, 'MJ7Y-DV9L-LMYC');
+  assert.equal(synced33.summary, 'Buff 1.000 Lượt xem');
+
+  // 5. Customer snapshot includes totalProfileVisitCount and isolates CTV from order #33
+  assert.equal((await s.request('/api/orders/buff_luot_xem/33/customer-snapshot', 'GET', ctv)).status, 403);
+  const snap33 = await s.request('/api/orders/buff_luot_xem/33/customer-snapshot', 'GET', admin);
+  assert.equal(snap33.status, 200);
+  assert.equal(snap33.body.profile.totalProfileVisitCount, 1234);
+
+  // 6. CTV can toggle own order, cannot delete; Admin delete removes order and auto-refunds 22,000đ to CTV wallet
+  assert.equal((await s.request('/api/orders/buff_luot_xem/88/toggle-active', 'PUT', ctv)).status, 200);
+  assert.equal(toggledId, 88);
+  assert.equal((await s.request('/api/orders/buff_luot_xem/88', 'DELETE', ctv)).status, 403);
+  const delRes = await s.request('/api/orders/buff_luot_xem/88', 'DELETE', admin);
+  assert.equal(delRes.status, 200);
+  assert.equal(deletedId, 88);
+  assert.equal(delRes.body.refundedAmount, 22000);
+  assert.equal(s.db.users.find(u => u.id === 'seller').balance, 100000);
+
+  // 7. Client UI renders sidebar entry, dashboard card, order category page and admin per-package editor button
+  const indexHtml = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
+  assert.match(indexHtml, /data-view="buff_luot_xem"/);
+  assert.match(indexHtml, /id="dot_buff_luot_xem"/);
+  const fullAdmCatalog = (await s.request('/api/catalog?refresh=1', 'GET', admin)).body;
+  const client = createClient();
+  client.state.user = { role: 'admin', name: 'Owner' };
+  client.state.catalogData = fullAdmCatalog;
+  client.state.adminOverview = (await s.request('/api/admin/overview', 'GET', admin)).body;
+  client.state.adminPricingTab = 'categories';
+  const pricingHtml = vm.runInContext('renderAdminPricingPageHtml()', client.context);
+  assert.match(pricingHtml, /data-cat-card="buff_luot_xem"/);
+  assert.match(pricingHtml, /data-open-cat-pkgs="buff_luot_xem"/);
+  const catPageHtml = vm.runInContext('renderOrderCategoryPageHtml("buff_luot_xem")', client.context);
+  assert.match(catPageHtml, /Đơn Buff Lượt Xem Hồ Sơ/);
+  assert.match(catPageHtml, /17\.7 lượt xem\/phút/);
 });

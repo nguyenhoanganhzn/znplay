@@ -435,6 +435,7 @@ const DEFAULT_DB = {
   sessions: {},
   localOrders: [],
   externalBackupOrders: [],
+  dismissedExternalBackupIds: [],
   transactions: [],
   orderIntents: [],
   auditLog: [],
@@ -613,6 +614,7 @@ function normalizeDb(raw) {
     throw new Error('Database has no administrator');
   }
   if (!Array.isArray(merged.externalBackupOrders)) merged.externalBackupOrders = [];
+  if (!Array.isArray(merged.dismissedExternalBackupIds)) merged.dismissedExternalBackupIds = [];
   // Preserve local accounts; never reset their passwords from deployment variables.
   let migrated = applyUpstreamEnvironment(merged);
   for (const u of merged.users || []) {
@@ -2744,6 +2746,28 @@ function findBackupOrderByToken(tok) {
     || null;
 }
 
+const BACKUP_FINISHED_STATUSES = new Set(['done', 'completed', 'failed', 'cancelled']);
+function isFinishedBackupOrder(order) {
+  if (!order) return false;
+  const st = String(order.backupStatus || order.status || '').toLowerCase();
+  return BACKUP_FINISHED_STATUSES.has(st) && !order.requiresReview && !order.refundPending;
+}
+
+function recordDismissedExternalBackupIds(ids) {
+  if (!Array.isArray(db.dismissedExternalBackupIds)) db.dismissedExternalBackupIds = [];
+  const seen = new Set(db.dismissedExternalBackupIds.map(Number).filter(n => Number.isSafeInteger(n) && n > 0));
+  for (const raw of ids) {
+    const n = Number(raw);
+    if (Number.isSafeInteger(n) && n > 0 && !seen.has(n)) {
+      db.dismissedExternalBackupIds.unshift(n);
+      seen.add(n);
+    }
+  }
+  if (db.dismissedExternalBackupIds.length > 500) {
+    db.dismissedExternalBackupIds = db.dismissedExternalBackupIds.slice(0, 500);
+  }
+}
+
 async function syncExternalBackupOrders({ force = false } = {}) {
   const now = Date.now();
   const minInterval = force ? 3000 : 15000;
@@ -2754,6 +2778,8 @@ async function syncExternalBackupOrders({ force = false } = {}) {
   externalBackupSyncInflight = (async () => {
     const items = await backupSource.listOrders(50);
     if (!Array.isArray(db.externalBackupOrders)) db.externalBackupOrders = [];
+    if (!Array.isArray(db.dismissedExternalBackupIds)) db.dismissedExternalBackupIds = [];
+    const dismissedSet = new Set(db.dismissedExternalBackupIds.map(Number));
     let changed = false;
     const localByRemoteId = new Map();
     for (const lo of db.localOrders) {
@@ -2800,6 +2826,9 @@ async function syncExternalBackupOrders({ force = false } = {}) {
           existing.backupProgress = job.backupProgress;
         }
       } else {
+        if (dismissedSet.has(remId) && BACKUP_FINISHED_STATUSES.has(String(job.backupStatus || job.status || '').toLowerCase())) {
+          continue;
+        }
         const created = {
           id: `BKS-${remId}`,
           remoteOrderId: remId,
@@ -3014,19 +3043,33 @@ app.get('/api/backup/orders', requireAuth, asyncRoute(async (req, res) => {
       if (synced?.changed) req.needsSave = true;
     } catch { }
   }
-  const localAllowed = db.localOrders.filter(o => isBackupCategory(o.category) && (isAdmin || o.placedBy?.id === req.user.id));
-  const localRemoteIds = new Set(localAllowed.map(o => Number(o.remoteOrderId)).filter(Boolean));
-  const externalAllowed = isAdmin
+  const allLocalBackup = db.localOrders.filter(o => isBackupCategory(o.category));
+  const localRemoteIds = new Set(allLocalBackup.map(o => Number(o.remoteOrderId)).filter(Boolean));
+  const localVisible = allLocalBackup.filter(o =>
+    isAdmin ? !o.backupHiddenByAdmin : (o.placedBy?.id === req.user.id && !o.backupHiddenByCtv)
+  );
+  const externalVisible = isAdmin
     ? (db.externalBackupOrders || []).filter(o => isBackupCategory(o.category) && !localRemoteIds.has(Number(o.remoteOrderId)))
     : [];
-  const orders = [...localAllowed, ...externalAllowed].sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
-  const limit = Math.min(500, listLimit(req.query.limit));
+  const allOrders = [...localVisible, ...externalVisible].sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
+  const totalAll = allOrders.length;
+  const finishedCount = allOrders.filter(isFinishedBackupOrder).length;
+  const activeCount = totalAll - finishedCount;
+  const statusFilter = ['active', 'finished'].includes(req.query.status) ? req.query.status : 'all';
+  const filteredOrders = statusFilter === 'active'
+    ? allOrders.filter(o => !isFinishedBackupOrder(o))
+    : statusFilter === 'finished'
+    ? allOrders.filter(isFinishedBackupOrder)
+    : allOrders;
+  const limit = Math.min(200, listLimit(req.query.limit));
+  const rawOffset = Number(req.query.offset);
+  const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
   const reviews = db.orderIntents.filter(i => isBackupCategory(i.category) && (isAdmin || i.userId === req.user.id) &&
     (['processing', 'uncertain'].includes(i.status) || i.requiresReview)).map(i => ({
       id: i.id, status: i.status, summary: i.summary, customer: i.customer?.nickname, createdAt: i.createdAt,
       heldAmount: i.heldAmount, requiresReview: i.requiresReview, remoteOrderId: i.remoteOrderId,
       userName: isAdmin ? i.userName : undefined }));
-  const visible = orders.slice(0, limit).map(o => {
+  const visible = filteredOrders.slice(offset, offset + limit).map(o => {
     const hadToken = Boolean(o.backupTrackToken);
     const token = ensureBackupTrackToken(o);
     if (!hadToken && token) req.needsSave = true;
@@ -3041,9 +3084,106 @@ app.get('/api/backup/orders', requireAuth, asyncRoute(async (req, res) => {
       statusText: backupSource.statusText(bStatus),
       canPause: ['queued', 'preparing', 'friending', 'running'].includes(bStatus),
       canResume: ['ready', 'paused'].includes(bStatus),
+      canDelete: isFinishedBackupOrder(o),
     };
   });
-  res.json({ success: true, reviews, total: orders.length, orders: visible });
+  res.json({
+    success: true,
+    reviews,
+    total: filteredOrders.length,
+    totalAll,
+    activeCount,
+    finishedCount,
+    offset,
+    limit,
+    hasMore: offset + visible.length < filteredOrders.length,
+    orders: visible,
+  });
+}));
+
+// Clear all finished backup orders from caller's backup list (soft-hides local orders to preserve accounting, removes external API orders)
+app.post('/api/backup/orders/clear-finished', requireAuth, financialGuard, limitInteractive, asyncRoute(async (req, res) => {
+  const isAdmin = req.user.role === 'admin';
+  let removedCount = 0;
+  for (const o of db.localOrders) {
+    if (!isBackupCategory(o.category) || !isFinishedBackupOrder(o)) continue;
+    if (isAdmin) {
+      if (!o.backupHiddenByAdmin) {
+        o.backupHiddenByAdmin = true;
+        removedCount++;
+      }
+    } else if (o.placedBy?.id === req.user.id && !o.backupHiddenByCtv) {
+      o.backupHiddenByCtv = true;
+      removedCount++;
+    }
+  }
+  if (isAdmin && Array.isArray(db.externalBackupOrders) && db.externalBackupOrders.length > 0) {
+    const dismissedIds = [];
+    const kept = [];
+    for (const eo of db.externalBackupOrders) {
+      if (isBackupCategory(eo?.category) && isFinishedBackupOrder(eo)) {
+        if (eo.remoteOrderId) dismissedIds.push(eo.remoteOrderId);
+        removedCount++;
+      } else {
+        kept.push(eo);
+      }
+    }
+    if (dismissedIds.length > 0) {
+      db.externalBackupOrders = kept;
+      recordDismissedExternalBackupIds(dismissedIds);
+    }
+  }
+  if (removedCount > 0) {
+    req.auditDetails = { removedCount, role: req.user.role };
+    req.needsSave = true;
+  }
+  res.json({
+    success: true,
+    removedCount,
+    message: removedCount > 0
+      ? `Đã xóa ${removedCount} đơn nguồn dự phòng đã xong khỏi danh sách.`
+      : 'Hiện không có đơn đã xong nào cần dọn.',
+  });
+}));
+
+// Delete a single finished backup order from caller's backup list (Admin or owning CTV; preserves financial ledger)
+app.delete('/api/backup/orders/:id', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
+  const isAdmin = req.user.role === 'admin';
+  const localOrder = db.localOrders.find(row => row.id === req.params.id && isBackupCategory(row.category) &&
+    (isAdmin || row.placedBy?.id === req.user.id)) || null;
+  const extIdx = !localOrder && isAdmin
+    ? (db.externalBackupOrders || []).findIndex(row => row.id === req.params.id && isBackupCategory(row.category))
+    : -1;
+  const extOrder = extIdx >= 0 ? db.externalBackupOrders[extIdx] : null;
+  const target = localOrder || extOrder;
+  if (!target) {
+    return res.status(404).json({ success: false, message: 'Không tìm thấy đơn dự phòng.' });
+  }
+  if (!isFinishedBackupOrder(target)) {
+    return res.status(409).json({
+      success: false,
+      message: 'Chỉ có thể xóa đơn đã hoàn thành, bị lỗi hoặc đã hủy. Nếu đơn đã chạy đủ 100%, hãy bấm "Tải lại dữ liệu" để cập nhật trạng thái trước.',
+    });
+  }
+  if (localOrder) {
+    if (isAdmin) localOrder.backupHiddenByAdmin = true;
+    else localOrder.backupHiddenByCtv = true;
+  } else if (extOrder) {
+    db.externalBackupOrders.splice(extIdx, 1);
+    if (extOrder.remoteOrderId) recordDismissedExternalBackupIds([extOrder.remoteOrderId]);
+  }
+  req.auditDetails = {
+    orderId: target.id,
+    remoteOrderId: target.remoteOrderId,
+    category: target.category,
+    status: target.backupStatus || target.status,
+  };
+  req.needsSave = true;
+  res.json({
+    success: true,
+    id: target.id,
+    message: `Đã xóa đơn #${target.remoteOrderId} khỏi danh sách nguồn dự phòng.`,
+  });
 }));
 app.post('/api/backup/orders/:id/:action', requireAuth, financialGuard, limitInteractive, orderMutation(async (req, res) => {
   const isAdmin = req.user.role === 'admin';
@@ -5387,6 +5527,7 @@ app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
     users: db.users,
     localOrders: db.localOrders,
     externalBackupOrders: db.externalBackupOrders || [],
+    dismissedExternalBackupIds: db.dismissedExternalBackupIds || [],
     transactions: db.transactions,
     orderIntents: db.orderIntents,
     auditLog: db.auditLog,
@@ -5432,6 +5573,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
     sessions: currentSessions,
     localOrders: structuredClone(raw.localOrders || []),
     externalBackupOrders: Array.isArray(raw.externalBackupOrders) ? structuredClone(raw.externalBackupOrders) : [],
+    dismissedExternalBackupIds: Array.isArray(raw.dismissedExternalBackupIds) ? raw.dismissedExternalBackupIds.map(Number).filter(n => Number.isSafeInteger(n) && n > 0).slice(0, 500) : [],
     transactions: structuredClone(raw.transactions || []),
     orderIntents: structuredClone(raw.orderIntents || []),
     auditLog: structuredClone(raw.auditLog || []).slice(0, 5000),

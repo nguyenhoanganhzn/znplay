@@ -26,7 +26,8 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (a === 'POST /auth/logout') return znIcon('logout', 14);
     if (a === 'POST /orders/place') return znIcon('plus', 14);
     if (a === 'POST /backup/quote') return znIcon('layers', 14);
-    if (/^POST \/backup\/orders\/[^/]+\/(refresh|resume)$/.test(a)) return znIcon('refresh', 14);
+    if (/^POST \/backup\/orders\/[^/]+\/(refresh|resume|pause)$/.test(a)) return znIcon('refresh', 14);
+    if (/^DELETE \/backup\/orders\/[^/]+$/.test(a) || a === 'POST /backup/orders/clear-finished') return znIcon('trash', 14);
     if (/^POST \/admin\/intents\/[^/]+\/(reconcile|acknowledge)$/.test(a)) return znIcon('shield', 14);
     if (/^PUT \/orders\/[^/]+\/\d+\/toggle-active$/.test(a)) return znIcon('activity', 14);
     if (/^DELETE \/orders\/[^/]+\/\d+$/.test(a)) return znIcon('trash', 14);
@@ -56,6 +57,9 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (a === 'POST /backup/quote') return 'Xem báo giá nguồn dự phòng';
     if (/^POST \/backup\/orders\/[^/]+\/refresh$/.test(a)) return 'Cập nhật trạng thái đơn dự phòng';
     if (/^POST \/backup\/orders\/[^/]+\/resume$/.test(a)) return 'Chạy / tiếp tục đơn dự phòng';
+    if (/^POST \/backup\/orders\/[^/]+\/pause$/.test(a)) return 'Tạm dừng đơn dự phòng';
+    if (/^DELETE \/backup\/orders\/[^/]+$/.test(a)) return 'Xóa đơn dự phòng đã xong';
+    if (a === 'POST /backup/orders/clear-finished') return 'Dọn các đơn dự phòng đã xong';
     if (/^POST \/admin\/intents\/[^/]+\/reconcile$/.test(a)) return 'Quản trị đối soát đơn chưa rõ kết quả';
     if (/^POST \/admin\/intents\/[^/]+\/acknowledge$/.test(a)) return 'Quản trị xác nhận chi phí đơn';
     if (/^PUT \/orders\/[^/]+\/\d+\/toggle-active$/.test(a)) return 'Bật / Tắt đơn hàng';

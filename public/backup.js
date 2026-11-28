@@ -17,16 +17,25 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     <div data-services aria-live="polite">Đang tải dịch vụ…</div>
     <div data-editor></div></section>
     <section class="glass-panel"><div class="panel-title-row"><h2 class="panel-title-text">Đơn nguồn dự phòng</h2>
-    <button type="button" class="btn-frost" data-orders-refresh>${admin ? 'Đồng bộ API & làm mới' : 'Làm mới danh sách'}</button></div>
+    <div class="backup-orders-head-actions">
+      <button type="button" class="btn-frost backup-btn-danger" data-clear-finished hidden>Xóa hết đơn đã xong</button>
+      <button type="button" class="btn-frost" data-orders-refresh>${admin ? 'Đồng bộ API & làm mới' : 'Làm mới danh sách'}</button>
+    </div></div>
+    <div class="backup-orders-toolbar" data-orders-toolbar hidden></div>
     <div data-orders>Đang tải đơn…</div></section>`;
   const root = container.querySelector('#backupView');
   const walletStrip = root.querySelector('[data-wallet-strip]');
   const catalog = root.querySelector('[data-services]');
   const editor = root.querySelector('[data-editor]');
   const orderList = container.querySelector('[data-orders]');
+  const ordersToolbar = container.querySelector('[data-orders-toolbar]');
   const ordersRefreshBtn = container.querySelector('[data-orders-refresh]');
+  const clearFinishedBtn = container.querySelector('[data-clear-finished]');
   const pendingStorage = 'znplay_backup_pending_' + state.user.id;
-  let services = [], selectedServiceKey = '', orderLimit = 20, ordersVersion = 0, catalogVersion = 0;
+  const PAGE_SIZE = 5;
+  let services = [], selectedServiceKey = '', statusFilter = 'all', loadedOrders = [], loadedReviews = [];
+  let totalFiltered = 0, totalAll = 0, activeCount = 0, finishedCount = 0, hasMoreOrders = false;
+  let ordersVersion = 0, catalogVersion = 0, loadingMore = false;
 
   function renderWalletStrip() {
     if (!walletStrip || admin) return;
@@ -117,6 +126,7 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     }
     if (p?.queuePos > 0) mapBits.push(`Hàng đợi #${fmtInt(p.queuePos)}`);
 
+    const isDoneCard = ['done', 'completed'].includes(String(o.backupStatus || o.status || '').toLowerCase());
     return `<div class="backup-progress-block">
       ${total > 0 ? `<div class="backup-progress-head">
         <span>Đã chạy: <strong>${fmtInt(done)} / ${fmtInt(total)} ${esc(unit)}</strong></span>
@@ -126,54 +136,179 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
       ${steps.length ? `<div class="backup-step-chips">${steps.map(s => `<span class="badge-tag ${s.done >= s.target && s.target > 0 ? 'green' : 'violet'}">${esc(s.name)}: ${fmtInt(s.done)}/${fmtInt(s.target)}</span>`).join('')}</div>` : ''}
       ${mapBits.length ? `<div class="backup-map-meta">${mapBits.map(b => `<span class="badge-tag">${esc(b)}</span>`).join('')}</div>` : ''}
       ${p?.pauseNote ? `<div class="tool-note" style="color:#fde68a;">${esc(p.pauseNote)}</div>` : ''}
-      <div class="tool-note">${p?.syncedAt ? `Cập nhật tiến độ lúc: ${esc(formatDateVi(p.syncedAt))}` : 'Bấm "Tải lại dữ liệu" để cập nhật số lượng đã chạy mới nhất.'}</div>
+      ${p?.syncedAt ? `<div class="tool-note">Cập nhật lúc: ${esc(formatDateVi(p.syncedAt))}</div>` : (!isDoneCard ? '<div class="tool-note">Bấm "Tải lại dữ liệu" để cập nhật tiến độ mới nhất.</div>' : '')}
     </div>`;
   }
 
-  async function loadOrders({ sync = admin, forceSync = false } = {}) {
-    const version = ++ordersVersion;
-    if (ordersRefreshBtn) {
+  function renderOrderCardHtml(o) {
+    const isDone = ['done', 'completed'].includes(String(o.backupStatus || o.status || '').toLowerCase());
+    return `<article class="stat-subcard backup-order-card" data-card-id="${esc(o.id)}"><div class="panel-title-row"><strong>#${esc(o.remoteOrderId)} · ${esc(o.summary)}</strong>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        ${admin && o.externalSync ? '<span class="badge-tag violet">Đơn từ API</span>' : ''}
+        <span class="badge-tag ${statusTone(o)}">${esc(o.statusText)}</span>
+      </div></div>
+      <div class="backup-order-meta"><span>${esc(o.customer?.nickname || '')}</span> · ${o.externalSync ? '<span class="backup-order-price">Đồng bộ từ API nguồn</span>' : `<span class="backup-order-price">Giá CTV ${money(o.sellPrice)}</span>`} · <span>${esc(formatDateVi(o.createdAt))}</span>${admin && o.placedBy?.name ? ` · <span>Đặt bởi: ${esc(o.placedBy.name)}</span>` : ''}</div>
+      ${renderOrderProgressHtml(o)}
+      <div class="tool-actions">${!isDone ? button('Tải lại dữ liệu', `data-order="${esc(o.id)}" data-action="refresh"`) : ''}
+      ${o.canPause || o.canResume ? `<button type="button" class="backup-toggle-pill ${o.canPause ? 'is-on' : ''}" role="switch" aria-checked="${o.canPause ? 'true' : 'false'}" data-order="${esc(o.id)}" data-action="${o.canPause ? 'pause' : 'resume'}"><span class="backup-toggle-dot"></span><span>${o.canPause ? 'Đang bật · Tạm dừng' : 'Đang tắt · Bật chạy'}</span></button>` : ''}
+      ${o.backupTrackUrl ? `<a href="${esc(o.backupTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost backup-track-link" data-open-track>Mở link theo dõi</a>${button('Sao chép link', `data-copy-track="${esc(o.backupTrackUrl)}"`)}` : ''}
+      ${o.canDelete ? button('Xóa đơn', `data-delete-order="${esc(o.id)}" data-remote-id="${esc(o.remoteOrderId)}"`, 'btn-frost backup-btn-danger') : ''}</div>
+      <div class="tool-note backup-order-msg" data-order-msg aria-live="polite"></div></article>`;
+  }
+
+  function renderToolbar() {
+    if (clearFinishedBtn) {
+      clearFinishedBtn.hidden = finishedCount <= 0;
+      clearFinishedBtn.textContent = `Xóa hết đơn đã xong (${finishedCount})`;
+    }
+    if (!ordersToolbar) return;
+    if (totalAll <= 0) {
+      ordersToolbar.hidden = true;
+      ordersToolbar.innerHTML = '';
+      return;
+    }
+    ordersToolbar.hidden = false;
+    const tabs = [
+      ['all', `Tất cả (${totalAll})`],
+      ['active', `Đang chạy / Chờ (${activeCount})`],
+      ['finished', `Đã xong (${finishedCount})`],
+    ];
+    ordersToolbar.innerHTML = `<div class="backup-filter-tabs">${tabs.map(([key, label]) =>
+      `<button type="button" class="btn-frost backup-filter-btn ${statusFilter === key ? 'is-active' : ''}" data-status-filter="${key}">${label}</button>`
+    ).join('')}</div>
+    <span class="tool-note backup-count-note">Đang hiện <strong>${loadedOrders.length}</strong> / <strong>${totalFiltered}</strong> đơn</span>`;
+  }
+
+  function renderLoadMoreHtml() {
+    if (!hasMoreOrders) return '';
+    const remaining = Math.max(0, totalFiltered - loadedOrders.length);
+    const nextBatch = Math.min(PAGE_SIZE, remaining);
+    return `<div class="backup-load-more-bar" data-load-more-bar>
+      ${button(`Xem thêm ${nextBatch} đơn (còn ${remaining})`, 'data-more')}
+    </div>`;
+  }
+
+  function renderReviewsHtml(reviews) {
+    if (!reviews.length) return '';
+    return reviews.map(i => `<details class="tool-warning" style="margin-bottom:12px;"><summary>
+      ${i.status === 'processing' ? 'Đang gửi' : 'Chờ đối soát'} · ${esc(i.summary)} · ${money(i.heldAmount)}</summary>
+      <p>${esc(i.userName || '')} · ${esc(i.customer || '')} · ${esc(formatDateVi(i.createdAt))}</p>
+      ${admin && i.status !== 'processing' ? `<form class="tool-form-column" data-review="${esc(i.id)}">
+        ${i.requiresReview ? '<strong>Kiểm tra chi phí của đơn #' + esc(i.remoteOrderId) + '</strong>' :
+        '<label>Kết quả kiểm tra tại nguồn<select class="input-box" required name="resolution"><option value="">Chọn kết quả</option><option value="created">Đã tạo đơn</option><option value="not_created">Chưa tạo đơn, hoàn khoản giữ</option></select></label><div hidden data-created><label>Mã đơn nguồn<input class="input-box" type="number" min="1" name="remoteOrderId"></label><label>Chi phí thực tế (đ)<input class="input-box" type="number" min="0" name="actualCost"></label></div>'}
+        <label>Ghi chú đối soát<input class="input-box" name="note" minlength="10" maxlength="500" required></label>
+        <label class="tool-check"><input type="checkbox" required> Tôi đã kiểm tra giao dịch tại nguồn dự phòng.</label>
+        <div class="tool-actions"><button class="btn-frost" type="submit">Lưu kết quả đối soát</button></div><output></output></form>` : ''}</details>`).join('');
+  }
+
+  function renderFullOrdersDom() {
+    renderToolbar();
+    const emptyText = statusFilter === 'active'
+      ? 'Không có đơn nào đang chạy hoặc chờ xử lý.'
+      : statusFilter === 'finished'
+      ? 'Không có đơn đã xong nào.'
+      : 'Chưa có đơn nguồn dự phòng.';
+    orderList.innerHTML = `${renderReviewsHtml(loadedReviews)}${loadedOrders.length
+      ? `<div class="backup-orders-list" data-orders-items>${loadedOrders.map(renderOrderCardHtml).join('')}</div>${renderLoadMoreHtml()}`
+      : `<p class="tool-note">${emptyText}</p>`}`;
+  }
+
+  async function loadOrders({ sync = admin, forceSync = false, append = false, preserveCount = false } = {}) {
+    if (append && (loadingMore || !hasMoreOrders)) return;
+    const version = append ? ordersVersion : ++ordersVersion;
+    if (append) loadingMore = true;
+    if (!append && ordersRefreshBtn) {
       ordersRefreshBtn.disabled = true;
       ordersRefreshBtn.textContent = forceSync ? 'Đang đồng bộ API…' : 'Đang tải…';
     }
+    const moreBtn = append ? orderList.querySelector('[data-more]') : null;
+    if (moreBtn) {
+      moreBtn.disabled = true;
+      moreBtn.textContent = 'Đang tải thêm…';
+    }
     try {
-      const qs = new URLSearchParams({ limit: String(orderLimit) });
-      if (admin && sync) qs.set('sync', '1');
-      if (admin && forceSync) qs.set('force', '1');
-      const { reviews, orders, total } = await apiFetch('/api/backup/orders?' + qs.toString());
+      const reqLimit = append ? PAGE_SIZE : (preserveCount ? Math.max(PAGE_SIZE, loadedOrders.length) : PAGE_SIZE);
+      const reqOffset = append ? loadedOrders.length : 0;
+      const qs = new URLSearchParams({ limit: String(reqLimit), offset: String(reqOffset), status: statusFilter });
+      if (!append && admin && sync) qs.set('sync', '1');
+      if (!append && admin && forceSync) qs.set('force', '1');
+      const res = await apiFetch('/api/backup/orders?' + qs.toString());
       if (version !== ordersVersion || !root.isConnected) return;
-      orderList.innerHTML = orders.length ? `<div class="tool-form-column">${orders.map(o => `
-        <article class="stat-subcard backup-order-card"><div class="panel-title-row"><strong>#${esc(o.remoteOrderId)} · ${esc(o.summary)}</strong>
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-          ${admin && o.externalSync ? '<span class="badge-tag violet">Đơn từ API</span>' : ''}
-          <span class="badge-tag ${statusTone(o)}">${esc(o.statusText)}</span>
-        </div></div>
-        <div class="backup-order-meta"><span>${esc(o.customer?.nickname || '')}</span> · ${o.externalSync ? '<span class="backup-order-price">Đồng bộ từ API nguồn</span>' : `<span class="backup-order-price">Giá CTV ${money(o.sellPrice)}</span>`} · <span>${esc(formatDateVi(o.createdAt))}</span></div>
-        ${admin && o.placedBy?.name ? `<small class="tool-note">Người đặt: ${esc(o.placedBy.name)}</small>` : ''}
-        ${renderOrderProgressHtml(o)}
-        <div class="tool-actions">${button('Tải lại dữ liệu', `data-order="${esc(o.id)}" data-action="refresh"`)}
-        ${o.canPause || o.canResume ? `<button type="button" class="backup-toggle-pill ${o.canPause ? 'is-on' : ''}" role="switch" aria-checked="${o.canPause ? 'true' : 'false'}" data-order="${esc(o.id)}" data-action="${o.canPause ? 'pause' : 'resume'}"><span class="backup-toggle-dot"></span><span>${o.canPause ? 'Đang bật · Tạm dừng' : 'Đang tắt · Bật chạy'}</span></button>` : ''}
-        ${o.backupTrackUrl ? `<a href="${esc(o.backupTrackUrl)}" target="_blank" rel="noopener noreferrer" class="btn-frost backup-track-link" data-open-track>Mở link theo dõi</a>${button('Sao chép link', `data-copy-track="${esc(o.backupTrackUrl)}"`)}` : ''}</div>
-        <div class="tool-note backup-order-msg" data-order-msg aria-live="polite"></div></article>`).join('')}</div>
-        ${orders.length < total && orderLimit < 500 ? `<div class="tool-actions" style="margin-top:12px;">${button('Xem thêm đơn', 'data-more')}</div>` : ''}` : '<p class="tool-note">Chưa có đơn nguồn dự phòng.</p>';
-      if (reviews.length) orderList.insertAdjacentHTML('afterbegin', reviews.map(i => `<details class="tool-warning" style="margin-bottom:12px;"><summary>
-        ${i.status === 'processing' ? 'Đang gửi' : 'Chờ đối soát'} · ${esc(i.summary)} · ${money(i.heldAmount)}</summary>
-        <p>${esc(i.userName || '')} · ${esc(i.customer || '')} · ${esc(formatDateVi(i.createdAt))}</p>
-        ${admin && i.status !== 'processing' ? `<form class="tool-form-column" data-review="${esc(i.id)}">
-          ${i.requiresReview ? '<strong>Kiểm tra chi phí của đơn #' + esc(i.remoteOrderId) + '</strong>' :
-          '<label>Kết quả kiểm tra tại nguồn<select class="input-box" required name="resolution"><option value="">Chọn kết quả</option><option value="created">Đã tạo đơn</option><option value="not_created">Chưa tạo đơn, hoàn khoản giữ</option></select></label><div hidden data-created><label>Mã đơn nguồn<input class="input-box" type="number" min="1" name="remoteOrderId"></label><label>Chi phí thực tế (đ)<input class="input-box" type="number" min="0" name="actualCost"></label></div>'}
-          <label>Ghi chú đối soát<input class="input-box" name="note" minlength="10" maxlength="500" required></label>
-          <label class="tool-check"><input type="checkbox" required> Tôi đã kiểm tra giao dịch tại nguồn dự phòng.</label>
-          <div class="tool-actions"><button class="btn-frost" type="submit">Lưu kết quả đối soát</button></div><output></output></form>` : ''}</details>`).join(''));
+      loadedReviews = res.reviews || [];
+      totalFiltered = Number(res.total ?? (res.orders || []).length);
+      totalAll = Number(res.totalAll ?? totalFiltered);
+      activeCount = Number(res.activeCount ?? 0);
+      finishedCount = Number(res.finishedCount ?? 0);
+      const incoming = res.orders || [];
+      if (append) {
+        const seen = new Set(loadedOrders.map(x => x.id));
+        const freshItems = incoming.filter(x => !seen.has(x.id));
+        loadedOrders = [...loadedOrders, ...freshItems];
+        hasMoreOrders = Boolean(res.hasMore ?? (loadedOrders.length < totalFiltered));
+        const listEl = orderList.querySelector('[data-orders-items]');
+        if (listEl && freshItems.length) {
+          listEl.insertAdjacentHTML('beforeend', freshItems.map(renderOrderCardHtml).join(''));
+        }
+        const bar = orderList.querySelector('[data-load-more-bar]');
+        if (bar) bar.remove();
+        if (hasMoreOrders) orderList.insertAdjacentHTML('beforeend', renderLoadMoreHtml());
+        renderToolbar();
+      } else {
+        loadedOrders = incoming;
+        hasMoreOrders = Boolean(res.hasMore ?? (loadedOrders.length < totalFiltered));
+        renderFullOrdersDom();
+      }
     } catch (error) {
-      if (version === ordersVersion && root.isConnected) orderList.textContent = error.message;
+      if (version === ordersVersion && root.isConnected) {
+        if (append) {
+          notify(error.message);
+          if (moreBtn) {
+            moreBtn.disabled = false;
+            const remaining = Math.max(0, totalFiltered - loadedOrders.length);
+            moreBtn.textContent = `Xem thêm ${Math.min(PAGE_SIZE, remaining)} đơn (còn ${remaining})`;
+          }
+        } else {
+          orderList.textContent = error.message;
+        }
+      }
     } finally {
-      if (version === ordersVersion && ordersRefreshBtn && root.isConnected) {
+      if (append) loadingMore = false;
+      if (!append && version === ordersVersion && ordersRefreshBtn && root.isConnected) {
         ordersRefreshBtn.disabled = false;
         ordersRefreshBtn.textContent = admin ? 'Đồng bộ API & làm mới' : 'Làm mới danh sách';
       }
     }
   }
+
+  ordersToolbar?.addEventListener('click', event => {
+    const tabBtn = event.target.closest('[data-status-filter]');
+    if (!tabBtn) return;
+    const next = tabBtn.dataset.statusFilter;
+    if (!next || next === statusFilter) return;
+    statusFilter = next;
+    loadOrders({ sync: false, append: false });
+  });
+
+  if (clearFinishedBtn) {
+    clearFinishedBtn.onclick = async () => {
+      if (clearFinishedBtn.disabled || finishedCount <= 0) return;
+      if (!confirm(`Xóa toàn bộ ${finishedCount} đơn nguồn dự phòng đã hoàn thành / lỗi / hủy khỏi danh sách? (Lịch sử đối soát ví vẫn được giữ nguyên)`)) return;
+      clearFinishedBtn.disabled = true;
+      const oldText = clearFinishedBtn.textContent;
+      clearFinishedBtn.textContent = 'Đang dọn…';
+      try {
+        const res = await apiFetch('/api/backup/orders/clear-finished', 'POST', {});
+        notify(res.message || 'Đã xóa các đơn đã xong.');
+        await loadOrders({ sync: false, append: false });
+      } catch (e) {
+        notify(e.message);
+        clearFinishedBtn.textContent = oldText;
+      } finally {
+        if (clearFinishedBtn.isConnected) clearFinishedBtn.disabled = false;
+      }
+    };
+  }
+
   orderList.addEventListener('click', async event => {
     const openTrack = event.target.closest('[data-open-track]');
     if (openTrack) {
@@ -193,7 +328,30 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     }
     const btn = event.target.closest('button');
     if (!btn || btn.disabled || btn.type === 'submit') return;
-    if (btn.hasAttribute('data-more')) { orderLimit += 20; return loadOrders({ sync: false }); }
+    if (btn.hasAttribute('data-more')) { return loadOrders({ sync: false, append: true }); }
+    if (btn.hasAttribute('data-delete-order')) {
+      const id = btn.dataset.deleteOrder;
+      const remId = btn.dataset.remoteId || id;
+      if (!confirm(`Xóa đơn #${remId} đã xong khỏi danh sách nguồn dự phòng?`)) return;
+      const card = btn.closest('.backup-order-card');
+      const msgEl = card?.querySelector('[data-order-msg]');
+      if (msgEl) msgEl.textContent = '';
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.textContent = 'Đang xóa…';
+      try {
+        const res = await apiFetch('/api/backup/orders/' + encodeURIComponent(id), 'DELETE');
+        notify(res.message || `Đã xóa đơn #${remId}.`);
+        loadedOrders = loadedOrders.filter(o => o.id !== id);
+        await loadOrders({ sync: false, preserveCount: true });
+      } catch (e) {
+        if (msgEl) msgEl.textContent = e.message;
+        notify(e.message);
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
+      return;
+    }
     const card = btn.closest('.backup-order-card');
     const msgEl = card?.querySelector('[data-order-msg]');
     if (msgEl) msgEl.textContent = '';
@@ -207,7 +365,7 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     try {
       const res = await apiFetch('/api/backup/orders/' + encodeURIComponent(btn.dataset.order) + '/' + btn.dataset.action, 'POST', {});
       notify(res.message || ('Trạng thái: ' + (res.statusText || 'Đã cập nhật')));
-      await loadOrders({ sync: false });
+      await loadOrders({ sync: false, preserveCount: true });
     } catch (e) {
       if (msgEl) msgEl.textContent = e.message;
       notify(e.message);
@@ -376,7 +534,8 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
             showMessage(createdMsg, 'ok');
           }
           notify(createdMsg);
-          await loadOrders();
+          statusFilter = 'all';
+          await loadOrders({ sync: false });
         }
       } catch (error) {
         if (placing && error.status && error.status < 500 && error.code !== 'ORDER_REVIEW_REQUIRED') {

@@ -576,7 +576,6 @@ test('empty CTV history skips source calls and concurrent admin reads share a pa
   const admin = (await server.login('owner', 'owner-test-password')).body.token;
   const reads = await Promise.all([1, 2].map(() => server.request('/api/orders', 'GET', admin)));
   assert.ok(reads.every(r => r.status === 200 && r.body.partial === true));
-  assert.equal(requests, 11);
   assert.equal(requests, 13);
 });
 
@@ -2057,7 +2056,6 @@ test('anti-DDoS and anti-abuse shields: account brute-force lock, image proxy ne
 });
 
 test('order category and history tables omit sending, completed, failed, and note columns with aligned cells', () => {
-  const categories = ['fruit_coin', 'weather_buff', 'buff_sao', 'buff_tim', 'farm_gift', 'mail_gift', 'guestbook'];
   const categories = ['fruit_coin', 'weather_buff', 'buff_sao', 'buff_luot_xem', 'buff_tim', 'farm_gift', 'mail_gift', 'guestbook'];
   const sampleOrders = categories.map((cat, idx) => ({
     id: `ord-${idx + 1}`,
@@ -3179,4 +3177,103 @@ test('buff_luot_xem supports scoped catalog sync, markup/override pricing, CTV o
   const catPageHtml = vm.runInContext('renderOrderCategoryPageHtml("buff_luot_xem")', client.context);
   assert.match(catPageHtml, /Đơn Buff Lượt Xem Hồ Sơ/);
   assert.match(catPageHtml, /17\.7 lượt xem\/phút/);
+});
+
+test('backup orders support limit/offset pagination, status filter, finished-only delete/clear for Admin and CTV without losing accounting or resurrecting API orders', async t => {
+  let now = Date.parse('2026-11-28T09:00:00Z');
+  class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
+  const s = await startTestServer(t, async (url) => {
+    const u = new URL(url);
+    if (u.origin === 'https://ptg.qzeen.dev' && u.pathname.endsWith('/orders')) {
+      return Response.json({
+        items: [
+          { id: 4010, service: 'guide', status: 'done', amount: 15000, createdAt: now - 1000, paidAt: now - 1000, params: { charName: 'ExtDone1', bots: 5, minutes: 30 } },
+          { id: 4011, service: 'guide', status: 'done', amount: 15000, createdAt: now - 2000, paidAt: now - 2000, params: { charName: 'ExtDone2', bots: 5, minutes: 30 } },
+          { id: 4012, service: 'guide', status: 'running', amount: 15000, createdAt: now - 3000, paidAt: now - 3000, params: { charName: 'ExtRun1', bots: 5, minutes: 30 } },
+        ],
+      });
+    }
+    return Response.json({ data: { current_page: 1, last_page: 1, data: [] } });
+  }, {
+    clock: Clock,
+    env: { QZEEN_API_KEY: 'mock-key-secret' },
+    seed(db) {
+      db.localOrders.push(
+        { id: 'bk-ctv-run', remoteOrderId: 4001, category: 'backup_guide', categoryName: 'Dự phòng · Thuê dắt thẻ', summary: 'Thuê dắt thẻ · 5 bot · 30 phút', customer: { nickname: 'CtvRun' }, costPrice: 10000, markupAmount: 5000, sellPrice: 15000, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, status: 'running', backupStatus: 'running', isActive: true, totalCnt: 30, completedCnt: 10, createdAt: new Date(now - 500).toISOString() },
+        { id: 'bk-ctv-done1', remoteOrderId: 4002, category: 'backup_guide', categoryName: 'Dự phòng · Thuê dắt thẻ', summary: 'Thuê dắt thẻ · 5 bot · 30 phút', customer: { nickname: 'CtvDone1' }, costPrice: 10000, markupAmount: 5000, sellPrice: 15000, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, status: 'completed', backupStatus: 'done', isActive: false, totalCnt: 30, completedCnt: 30, createdAt: new Date(now - 4000).toISOString() },
+        { id: 'bk-ctv-done2', remoteOrderId: 4003, category: 'backup_guide', categoryName: 'Dự phòng · Thuê dắt thẻ', summary: 'Thuê dắt thẻ · 5 bot · 30 phút', customer: { nickname: 'CtvDone2' }, costPrice: 10000, markupAmount: 5000, sellPrice: 15000, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, status: 'failed', backupStatus: 'failed', isActive: false, totalCnt: 30, completedCnt: 0, createdAt: new Date(now - 5000).toISOString() },
+        { id: 'bk-ctv-done3', remoteOrderId: 4004, category: 'backup_guide', categoryName: 'Dự phòng · Thuê dắt thẻ', summary: 'Thuê dắt thẻ · 5 bot · 30 phút', customer: { nickname: 'CtvDone3' }, costPrice: 10000, markupAmount: 5000, sellPrice: 15000, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, status: 'completed', backupStatus: 'done', isActive: false, totalCnt: 30, completedCnt: 30, createdAt: new Date(now - 6000).toISOString() },
+        { id: 'bk-adm-done', remoteOrderId: 4005, category: 'backup_emptymap', categoryName: 'Dự phòng · Thuê map trống', summary: 'Thuê map trống', customer: { nickname: 'AdmDone' }, costPrice: 5000, markupAmount: 2000, sellPrice: 7000, placedBy: { id: 'owner', name: 'Owner', role: 'admin' }, status: 'completed', backupStatus: 'done', isActive: false, totalCnt: 1, completedCnt: 1, createdAt: new Date(now - 7000).toISOString() },
+        { id: 'bk-ctv-done4', remoteOrderId: 4006, category: 'backup_guide', categoryName: 'Dự phòng · Thuê dắt thẻ', summary: 'Thuê dắt thẻ · 5 bot · 30 phút', customer: { nickname: 'CtvDone4' }, costPrice: 10000, markupAmount: 5000, sellPrice: 15000, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, status: 'completed', backupStatus: 'done', isActive: false, totalCnt: 30, completedCnt: 30, createdAt: new Date(now - 8000).toISOString() },
+        { id: 'bk-ctv-done5', remoteOrderId: 4007, category: 'backup_guide', categoryName: 'Dự phòng · Thuê dắt thẻ', summary: 'Thuê dắt thẻ · 5 bot · 30 phút', customer: { nickname: 'CtvDone5' }, costPrice: 10000, markupAmount: 5000, sellPrice: 15000, placedBy: { id: 'seller', name: 'Seller', role: 'ctv' }, status: 'completed', backupStatus: 'done', isActive: false, totalCnt: 30, completedCnt: 30, createdAt: new Date(now - 9000).toISOString() },
+      );
+    },
+  });
+
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+
+  // 1. CTV pagination: limit=5 offset=0 returns 5 newest of 6 own orders with hasMore=true; offset=5 returns remaining 1
+  const ctvP1 = await s.request('/api/backup/orders?limit=5&offset=0', 'GET', ctv);
+  assert.equal(ctvP1.status, 200);
+  assert.equal(ctvP1.body.orders.length, 5);
+  assert.equal(ctvP1.body.total, 6);
+  assert.equal(ctvP1.body.totalAll, 6);
+  assert.equal(ctvP1.body.activeCount, 1);
+  assert.equal(ctvP1.body.finishedCount, 5);
+  assert.equal(ctvP1.body.hasMore, true);
+  assert.equal(ctvP1.body.orders[0].canDelete, false); // running
+  assert.equal(ctvP1.body.orders[1].canDelete, true);  // done
+
+  const ctvP2 = await s.request('/api/backup/orders?limit=5&offset=5', 'GET', ctv);
+  assert.equal(ctvP2.body.orders.length, 1);
+  assert.equal(ctvP2.body.hasMore, false);
+  assert.equal(ctvP2.body.orders[0].remoteOrderId, 4007);
+
+  // Status filters work cleanly
+  const ctvActive = await s.request('/api/backup/orders?limit=5&status=active', 'GET', ctv);
+  assert.deepEqual(ctvActive.body.orders.map(o => o.remoteOrderId), [4001]);
+
+  // 2. Running order CANNOT be deleted (409) by CTV or Admin; CTV cannot delete Admin's order (404)
+  assert.equal((await s.request('/api/backup/orders/bk-ctv-run', 'DELETE', ctv)).status, 409);
+  assert.equal((await s.request('/api/backup/orders/bk-ctv-run', 'DELETE', admin)).status, 409);
+  assert.equal((await s.request('/api/backup/orders/bk-adm-done', 'DELETE', ctv)).status, 404);
+
+  // 3. CTV deletes single finished order & bulk-clears remaining finished orders -> leaves ONLY running order for CTV
+  const ctvDel1 = await s.request('/api/backup/orders/bk-ctv-done1', 'DELETE', ctv);
+  assert.equal(ctvDel1.status, 200);
+  const ctvClear = await s.request('/api/backup/orders/clear-finished', 'POST', ctv, {});
+  assert.equal(ctvClear.status, 200);
+  assert.equal(ctvClear.body.removedCount, 4);
+  const ctvAfter = await s.request('/api/backup/orders?limit=5', 'GET', ctv);
+  assert.deepEqual(ctvAfter.body.orders.map(o => o.remoteOrderId), [4001]);
+  assert.equal(ctvAfter.body.finishedCount, 0);
+
+  // 4. Admin STILL sees ALL 7 local orders + 3 external API orders (10 total) AND full financial accounting is 100% preserved!
+  const admSync = await s.request('/api/backup/orders?limit=5&offset=0&sync=1', 'GET', admin);
+  assert.equal(admSync.status, 200);
+  assert.equal(admSync.body.totalAll, 10);
+  assert.equal(admSync.body.activeCount, 2);   // 4001 + 4012
+  assert.equal(admSync.body.finishedCount, 8);
+  assert.equal(admSync.body.orders.length, 5);
+  assert.equal(admSync.body.hasMore, true);
+
+  // 5. Admin deletes finished external API order BKS-4010 and clears remaining 7 finished orders -> only 2 active orders remain!
+  assert.equal((await s.request('/api/backup/orders/BKS-4012', 'DELETE', admin)).status, 409); // running external order blocked
+  assert.equal((await s.request('/api/backup/orders/BKS-4010', 'DELETE', admin)).status, 200);
+  const admClear = await s.request('/api/backup/orders/clear-finished', 'POST', admin, {});
+  assert.equal(admClear.status, 200);
+  assert.equal(admClear.body.removedCount, 7);
+
+  // 6. Re-syncing with ?sync=1&force=1 does NOT resurrect deleted finished external orders (4010, 4011) or hidden local orders!
+  now += 20000;
+  const admAfterSync = await s.request('/api/backup/orders?limit=5&sync=1&force=1', 'GET', admin);
+  assert.equal(admAfterSync.body.totalAll, 2);
+  assert.deepEqual(admAfterSync.body.orders.map(o => o.remoteOrderId), [4001, 4012]);
+
+  // 7. Admin Monitor & Overview STILL retain all 7 local orders for exact revenue/profit reconciliation!
+  const overview = await s.request('/api/admin/overview', 'GET', admin);
+  assert.equal(overview.body.stats.totalLocalOrders, 7);
+  assert.equal(overview.body.stats.totalRevenue, 97000);
+  assert.equal(overview.body.stats.totalProfit, 32000);
 });

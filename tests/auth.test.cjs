@@ -32,12 +32,13 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
   };
   if (options.seed) options.seed(data);
   let writeFailure = false;
+  let writeCount = 0;
   const publicDir = path.join(root, 'public');
   const fakeFs = {
     existsSync: filePath => filePath.startsWith(publicDir) ? fs.existsSync(filePath) : !(options.fresh && filePath.endsWith('db.json')),
     mkdirSync() { },
     readFileSync: (filePath, enc) => filePath.startsWith(publicDir) ? fs.readFileSync(filePath, enc) : (options.corrupt ? '{broken json' : JSON.stringify(data)),
-    writeFileSync() { if (writeFailure) throw new Error('Disk full'); }, renameSync() { }, unlinkSync() { },
+    writeFileSync() { if (writeFailure) throw new Error('Disk full'); writeCount += 1; }, renameSync() { }, unlinkSync() { },
   };
   const context = vm.createContext({
     ...await import('../backup-source.js'),
@@ -72,6 +73,7 @@ async function startTestServer(t, upstreamFetch = async () => ({ ok: true, statu
   return {
     base, request, login, db: context.testDb, setUpstreamFetch: value => { context.fetch = value; },
     setWriteFailure: value => { writeFailure = value; },
+    getWriteCount: () => writeCount,
     mockSearch: handler => { context.searchInGameByWebSocket = handler; },
   };
 }
@@ -3276,4 +3278,131 @@ test('backup orders support limit/offset pagination, status filter, finished-onl
   assert.equal(overview.body.stats.totalLocalOrders, 7);
   assert.equal(overview.body.stats.totalRevenue, 97000);
   assert.equal(overview.body.stats.totalProfit, 32000);
+});
+
+test('read-only POST lookups skip persistent DB writes while recording RAM monitor events, and long-term ledger compaction preserves exact balances', async t => {
+  const now = Date.parse('2026-11-28T09:00:00Z');
+  class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
+  const oldIso = new Date(now - 120 * 24 * 60 * 60 * 1000).toISOString(); // 120 days ago
+  const recentIso = new Date(now - 5 * 24 * 60 * 60 * 1000).toISOString(); // 5 days ago
+
+  const base = financeSource();
+  class MockGameSocket {
+    constructor() { setTimeout(() => this.onopen?.(), 0); }
+    send(raw) {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'profile_search') {
+        this.onmessage?.({ data: JSON.stringify({ type: 'profile_search_result', profiles: [{ suid: '123456', Nickname: 'SpeedPlayer', Region: 'vn1', AchievementLevel: 10 }] }) });
+      }
+    }
+    close() {}
+  }
+  const s = await startTestServer(t, async (url, options = {}) => {
+    const u = new URL(url);
+    if (u.origin === 'https://ptg.qzeen.dev') {
+      if (u.pathname.endsWith('/services')) return Response.json({ services: { emptymap: { enabled: true, free: 2 } } });
+      if (u.pathname.endsWith('/quote')) return Response.json({ quote: { amount: 2000 } });
+    }
+    return base(url, options);
+  }, {
+    clock: Clock,
+    WebSocket: MockGameSocket,
+    env: { QZEEN_API_KEY: 'mock-key' },
+    seed(db) {
+      db.settings.hoanNguyen.user = { id: 7 };
+      const seller = db.users.find(u => u.id === 'seller');
+      // Build 5,020 transactions:
+      // - 2,000 recent (<90d): 2,000 x (-10đ) main order_debit = -20,000đ
+      // - 1 old open order_hold (-5,000đ) -> MUST NOT be compacted
+      // - 1 old tx linked to an open localOrder (-10,000đ) -> MUST NOT be compacted
+      // - 3,018 old settled transactions (>90d):
+      //     - 1 old main topup: +500,000đ
+      //     - 1 old backup topup: +200,000đ
+      //     - 1 old backup debit: -40,000đ
+      //     - 1 old main deduct: -15,000đ
+      //     - 3,014 old main order_debits: 3,014 x (-100đ) = -301,400đ
+      // Net expected main balance: 500,000 - 15,000 - 301,400 - 20,000 - 5,000 - 10,000 = 148,600đ
+      // Net expected backup balance: 200,000 - 40,000 = 160,000đ
+      seller.balance = 148600;
+      seller.backupBalance = 160000;
+      db.localOrders.push({
+        id: 'open-linked-order', intentId: 'tx-open-linked', remoteOrderId: 999, category: 'buff_tim',
+        sellPrice: 10000, costPrice: 5000, status: 'pending', placedBy: { id: 'seller', name: 'Seller', role: 'ctv' },
+        createdAt: oldIso,
+      });
+      const txs = [];
+      for (let i = 0; i < 2000; i++) {
+        txs.push({ id: `tx-rec-${i}`, userId: 'seller', userName: 'Seller', wallet: 'main', type: 'order_debit', amount: -10, balanceAfter: 148600, note: 'Recent', createdAt: recentIso });
+      }
+      txs.push({ id: 'tx-old-hold', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'order_hold', amount: -5000, balanceAfter: 168600, note: 'Pending hold', createdAt: oldIso });
+      txs.push({ id: 'tx-open-linked', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'order_debit', amount: -10000, balanceAfter: 173600, note: 'Linked open order', createdAt: oldIso });
+      txs.push({ id: 'tx-old-topup', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'admin_topup', amount: 500000, balanceAfter: 500000, note: 'Old topup', createdAt: oldIso });
+      txs.push({ id: 'tx-old-bk-topup', userId: 'seller', userName: 'Seller', wallet: 'backup', source: 'backup', type: 'admin_topup', amount: 200000, balanceAfter: 200000, note: 'Old DP topup', createdAt: oldIso });
+      txs.push({ id: 'tx-old-bk-debit', userId: 'seller', userName: 'Seller', wallet: 'backup', source: 'backup', type: 'order_debit', amount: -40000, balanceAfter: 160000, note: 'Old DP debit', createdAt: oldIso });
+      txs.push({ id: 'tx-old-deduct', userId: 'seller', userName: 'Seller', wallet: 'main', type: 'admin_deduct', amount: -15000, balanceAfter: 485000, note: 'Old deduct', createdAt: oldIso });
+      for (let i = 0; i < 3014; i++) {
+        txs.push({ id: `tx-old-${i}`, userId: 'seller', userName: 'Seller', wallet: 'main', type: 'order_debit', amount: -100, balanceAfter: 183600, note: 'Old order', createdAt: oldIso });
+      }
+      db.transactions = txs;
+    },
+  });
+
+  // 1. Startup compaction folded the 3,018 old settled entries into ledgerRollups while keeping 2,000 recent + 2 protected entries!
+  assert.equal(s.db.transactions.length, 2002);
+  assert.ok(s.db.transactions.some(tx => tx.id === 'tx-old-hold'));
+  assert.ok(s.db.transactions.some(tx => tx.id === 'tx-open-linked'));
+  assert.equal(s.db.ledgerRollups.seller.archivedCount, 3018);
+
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctv = (await s.login('seller', 'seller-test-password')).body.token;
+
+  // 2. Reconciliation in Admin Monitor, per-CTV detail & CTV settlements matches to the exact single đồng (unaccountedBalance === 0)!
+  const mon = (await s.request('/api/admin/monitor', 'GET', admin)).body;
+  assert.deepEqual(mon.walletTotals, { totalTopup: 500000, totalSpent: 331400, balance: 148600 });
+  assert.equal(mon.backupTopup, 200000);
+  assert.equal(mon.backupSpent, 40000);
+  assert.equal(mon.backupHeld, 0);
+  assert.equal(mon.backupBalance, 160000);
+
+  const det = (await s.request('/api/admin/monitor/ctv/seller', 'GET', admin)).body;
+  assert.equal(det.summary.unaccountedBalance, 0);
+  assert.equal(det.summary.totalTopup, 500000);
+  assert.equal(det.summary.totalSpent, 331400);
+  assert.equal(det.summary.held, 5000);
+  assert.equal(det.summary.deducted, 15000);
+  assert.equal(det.summary.backupTopup, 200000);
+  assert.equal(det.summary.backupSpent, 40000);
+
+  const settle = (await s.request('/api/settlements', 'GET', ctv)).body;
+  assert.equal(settle.summary.mainSpent, 331400);
+  assert.equal(settle.summary.backupSpent, 40000);
+  assert.equal(settle.summary.totalSpent, 371400);
+
+  // 3. Export + import backup preserves ledgerRollups with 0đ drift
+  const exported = (await s.request('/api/admin/backup/export', 'GET', admin)).body.backup;
+  assert.equal(exported.ledgerRollups.seller.archivedCount, 3018);
+  const imported = await s.request('/api/admin/backup/import', 'POST', admin, { backup: exported });
+  assert.equal(imported.status, 200);
+  const detAfterImport = (await s.request('/api/admin/monitor/ctv/seller', 'GET', admin)).body;
+  assert.equal(detAfterImport.summary.unaccountedBalance, 0);
+
+  // 4. Read-only POST lookups perform ZERO persistent DB writes while still appearing in live Admin Monitor events!
+  const writesBeforeLookups = s.getWriteCount();
+  assert.equal((await s.request('/api/tools/identity', 'POST', ctv, { mode: 'name', query: 'SpeedPlayer' })).status, 200);
+  assert.equal((await s.request('/api/customer/search-ingame', 'POST', ctv, { nickname: 'SpeedPlayer' })).status, 200);
+  assert.equal((await s.request('/api/customer/resolve-role-id', 'POST', ctv, { role_id: 'TEST-1234' })).status, 200);
+  assert.equal((await s.request('/api/catalog/preview-fruit', 'POST', ctv, { fruit_item_id: 1, total_cnt: 10, mutation_list: [] })).status, 200);
+  assert.equal((await s.request('/api/backup/quote', 'POST', ctv, { category: 'backup_emptymap' })).status, 200);
+  assert.equal(s.getWriteCount(), writesBeforeLookups); // ZERO DB writes across all 5 read-only POSTs!
+
+  const liveEvents = (await s.request('/api/admin/monitor', 'GET', admin)).body.events;
+  assert.ok(liveEvents.some(e => e.action === 'POST /tools/identity'));
+  assert.ok(liveEvents.some(e => e.action === 'POST /backup/quote'));
+
+  // 5. Real financial mutations STILL write immediately to persistent storage
+  const adj = await s.request('/api/admin/ctv/seller/balance', 'POST', admin, {
+    wallet: 'main', amount: 1000, note: 'Test persist', idempotency_key: crypto.randomUUID(),
+  });
+  assert.equal(adj.status, 200);
+  assert.ok(s.getWriteCount() > writesBeforeLookups);
 });

@@ -4,6 +4,42 @@ import pg from 'pg';
 // Keep one row per business record. The index preserves the order of legacy
 // arrays and any additional fields from older installations.
 const collections = ['users', 'localOrders', 'transactions', 'orderIntents', 'auditLog'];
+const serializedRecordCache = new WeakMap();
+
+function serializeRecord(collectionName, record) {
+  if (collectionName === 'auditLog') {
+    let cached = serializedRecordCache.get(record);
+    if (!cached) {
+      cached = JSON.stringify(record);
+      serializedRecordCache.set(record, cached);
+    }
+    return cached;
+  }
+  if (collectionName === 'transactions' && record.type && record.type !== 'order_hold') {
+    const entry = serializedRecordCache.get(record);
+    if (
+      entry &&
+      entry.type === record.type &&
+      entry.note === record.note &&
+      entry.amount === record.amount &&
+      entry.balanceAfter === record.balanceAfter &&
+      entry.wallet === record.wallet
+    ) {
+      return entry.json;
+    }
+    const json = JSON.stringify(record);
+    serializedRecordCache.set(record, {
+      type: record.type,
+      note: record.note,
+      amount: record.amount,
+      balanceAfter: record.balanceAfter,
+      wallet: record.wallet,
+      json,
+    });
+    return json;
+  }
+  return JSON.stringify(record);
+}
 
 function encode(state) {
   const index = { ...state };
@@ -13,7 +49,7 @@ function encode(state) {
       if (!record?.id) throw new Error('Bản ghi thiếu mã định danh.');
       const key = name + '/' + record.id;
       if (rows.has(key)) throw new Error('Có mã bản ghi bị trùng.');
-      rows.set(key, JSON.stringify(record));
+      rows.set(key, serializeRecord(name, record));
       return record.id;
     });
   }

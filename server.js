@@ -94,6 +94,18 @@ function sendJsonPayload(req, res, sendOriginal, body) {
   return res.send(compressed);
 }
 
+// Read-only POST endpoints (lookup/preview/quote) never mutate persistent DB state.
+// They still record RAM activity for Admin Monitor but skip Postgres ready/saveDb round-trips.
+const READ_ONLY_POST_PATHS = new Set([
+  '/tools/identity',
+  '/tools/identity/detail',
+  '/customer/search-ingame',
+  '/customer/select-ingame',
+  '/customer/resolve-role-id',
+  '/catalog/preview-fruit',
+  '/backup/quote',
+]);
+
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   const sendOriginal = res.json.bind(res);
@@ -102,14 +114,20 @@ app.use('/api', (req, res, next) => {
     res.status(503);
     return send({ success: false, message: 'Kho dữ liệu tạm thời chưa sẵn sàng.' });
   };
+  const apiPath = req.path;
+  const isMutationMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+  const isReadOnlyPost = req.method === 'POST' && READ_ONLY_POST_PATHS.has(apiPath);
+  const isWriteMutation = isMutationMethod && !isReadOnlyPost;
+
   res.json = body => {
     const actor = req.user || req.auditUser;
-    const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
-    const recordActivity = Boolean(actor && isMutation);
+    const recordActivity = Boolean(actor && isMutationMethod);
     let committed = null;
     if (recordActivity) {
-      pushAuditRecord(actor, `${req.method} ${req.path}`, { status: res.statusCode, ...req.auditDetails });
-      committed = saveDb(db);
+      pushAuditRecord(actor, `${req.method} ${apiPath}`, { status: res.statusCode, ...req.auditDetails });
+      if (isWriteMutation || req.needsSave) {
+        committed = saveDb(db);
+      }
     } else if (req.needsSave) {
       committed = saveDb(db);
     } else if (postgres?.hasPending?.()) {
@@ -121,8 +139,7 @@ app.use('/api', (req, res, next) => {
   };
   if (postgres) {
     if (!storageHealthy) return unavailable();
-    const isMutation = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
-    if (isMutation) {
+    if (isWriteMutation) {
       postgres.ready().then(ready => ready && storageHealthy ? next() : unavailable(), unavailable);
       return;
     }
@@ -436,6 +453,7 @@ const DEFAULT_DB = {
   localOrders: [],
   externalBackupOrders: [],
   dismissedExternalBackupIds: [],
+  ledgerRollups: {},
   transactions: [],
   orderIntents: [],
   auditLog: [],
@@ -615,6 +633,22 @@ function normalizeDb(raw) {
   }
   if (!Array.isArray(merged.externalBackupOrders)) merged.externalBackupOrders = [];
   if (!Array.isArray(merged.dismissedExternalBackupIds)) merged.dismissedExternalBackupIds = [];
+  if (!merged.ledgerRollups || typeof merged.ledgerRollups !== 'object' || Array.isArray(merged.ledgerRollups)) {
+    merged.ledgerRollups = {};
+  } else {
+    const cleanRollups = {};
+    const numFields = ['totalTopup', 'totalSpent', 'held', 'deducted', 'backupTopup', 'backupSpent', 'backupHeld', 'backupDeducted', 'archivedCount'];
+    for (const [uid, roll] of Object.entries(merged.ledgerRollups)) {
+      if (typeof uid !== 'string' || !uid || uid === '__proto__' || uid === 'constructor' || uid === 'prototype' || !roll || typeof roll !== 'object' || Array.isArray(roll)) continue;
+      const entry = { lastArchivedAt: typeof roll.lastArchivedAt === 'string' ? roll.lastArchivedAt : null };
+      for (const f of numFields) {
+        const v = Number(roll[f] || 0);
+        entry[f] = Number.isSafeInteger(v) ? v : 0;
+      }
+      cleanRollups[uid] = entry;
+    }
+    merged.ledgerRollups = cleanRollups;
+  }
   // Preserve local accounts; never reset their passwords from deployment variables.
   let migrated = applyUpstreamEnvironment(merged);
   for (const u of merged.users || []) {
@@ -683,15 +717,88 @@ function pruneWeekHistory(cutoff) {
   return true;
 }
 
+const LEDGER_COMPACT_TRIGGER = 1500;
+const LEDGER_RETAIN_MIN = 500;
+const LEDGER_RETAIN_MS = 30 * 24 * 60 * 60 * 1000;
+const ROLLUP_ELIGIBLE_TYPES = new Set(['admin_topup', 'admin_deduct', 'order_debit', 'order_refund']);
+
+function compactOldTransactions({
+  now = Date.now(),
+  triggerLength = LEDGER_COMPACT_TRIGGER,
+  retainMin = LEDGER_RETAIN_MIN,
+  retainMs = LEDGER_RETAIN_MS,
+} = {}) {
+  if (!Array.isArray(db.transactions) || db.transactions.length <= triggerLength) return false;
+  const cutoff = now - retainMs;
+  const protectedIds = new Set();
+  for (const order of db.localOrders || []) {
+    if (order?.intentId) protectedIds.add(order.intentId);
+    if (order?.id) protectedIds.add(order.id);
+  }
+  for (const intent of db.orderIntents || []) {
+    if (intent?.id) protectedIds.add(intent.id);
+  }
+  const backupIntentIds = buildBackupTransactionMatchers();
+  if (!db.ledgerRollups || typeof db.ledgerRollups !== 'object' || Array.isArray(db.ledgerRollups)) {
+    db.ledgerRollups = {};
+  }
+  const kept = [];
+  let compacted = 0;
+  for (let i = 0; i < db.transactions.length; i++) {
+    const tx = db.transactions[i];
+    const txMs = Date.parse(tx?.createdAt || '');
+    const eligible =
+      i >= retainMin &&
+      tx &&
+      tx.userId &&
+      ROLLUP_ELIGIBLE_TYPES.has(tx.type) &&
+      Number.isSafeInteger(Number(tx.amount)) &&
+      Number.isFinite(txMs) &&
+      txMs < cutoff &&
+      !protectedIds.has(tx.id) &&
+      (!tx.intentId || !protectedIds.has(tx.intentId));
+    if (!eligible) {
+      kept.push(tx);
+      continue;
+    }
+    const row = db.ledgerRollups[tx.userId] || {
+      totalTopup: 0, totalSpent: 0, held: 0, deducted: 0,
+      backupTopup: 0, backupSpent: 0, backupHeld: 0, backupDeducted: 0,
+      archivedCount: 0, lastArchivedAt: null,
+    };
+    const amount = Number(tx.amount);
+    const isBackup = isBackupTransaction(tx, backupIntentIds);
+    if (tx.type === 'admin_topup') {
+      if (isBackup) row.backupTopup += amount;
+      else row.totalTopup += amount;
+    } else if (tx.type === 'order_debit' || tx.type === 'order_refund') {
+      if (isBackup) row.backupSpent -= amount;
+      else row.totalSpent -= amount;
+    } else if (tx.type === 'admin_deduct') {
+      if (isBackup) row.backupDeducted -= amount;
+      else row.deducted -= amount;
+    }
+    row.archivedCount = Number(row.archivedCount || 0) + 1;
+    row.lastArchivedAt = new Date(now).toISOString();
+    db.ledgerRollups[tx.userId] = row;
+    compacted += 1;
+  }
+  if (compacted === 0) return false;
+  db.transactions = kept;
+  return true;
+}
+
 let cleanedWeek = vietnamWeekStart();
-if (pruneWeekHistory(cleanedWeek)) await saveDb(db);
+if (pruneWeekHistory(cleanedWeek) || compactOldTransactions()) await saveDb(db);
 
 async function rollWeekIfNeeded() {
   const cutoff = vietnamWeekStart();
   if (cleanedWeek === cutoff) return;
   cleanedWeek = cutoff;
   orderCache = {};
-  if (pruneWeekHistory(cutoff)) await saveDb(db);
+  const pruned = pruneWeekHistory(cutoff);
+  const compacted = compactOldTransactions();
+  if (pruned || compacted) await saveDb(db);
 }
 
 app.use('/api', (req, res, next) => rollWeekIfNeeded().then(() => next(), next));
@@ -702,7 +809,7 @@ function pushAuditRecord(actor, action, details = {}) {
     actorRole: actor.role, action: String(action).slice(0, 160), details,
     createdAt: new Date().toISOString(),
   });
-  if (db.auditLog.length > 5000) db.auditLog = db.auditLog.slice(0, 5000);
+  if (db.auditLog.length > 1000) db.auditLog = db.auditLog.slice(0, 1000);
 }
 
 function validMoney(value, allowZero = true) {
@@ -1285,7 +1392,7 @@ async function hnApiCall(apiPath, method = 'GET', body = null, retry = true, tim
 // ============================================================================
 const PROFILE_SOCKET_URL = 'wss://hoannguyenplaytogether.com/api/ws/connect?platform=web&view=seller-fruit-coin-orders';
 let activeWsSearches = 0;
-const MAX_CONCURRENT_WS_SEARCHES = 6;
+const MAX_CONCURRENT_WS_SEARCHES = 12;
 
 async function queryGameClient(request, timeoutMs) {
   if (activeWsSearches >= MAX_CONCURRENT_WS_SEARCHES) {
@@ -1411,6 +1518,14 @@ function isMaintenanceActive() {
   return Boolean(db?.settings?.maintenanceMode);
 }
 
+function touchUserLastSeen(user) {
+  const now = Date.now();
+  const prev = user.lastSeenAt ? Date.parse(user.lastSeenAt) : 0;
+  if (!Number.isFinite(prev) || now - prev >= 60000) {
+    user.lastSeenAt = new Date(now).toISOString();
+  }
+}
+
 function requireAuth(req, res, next) {
   const user = getAuthUser(req);
   if (!user) {
@@ -1428,7 +1543,7 @@ function requireAuth(req, res, next) {
     });
   }
   req.user = user;
-  user.lastSeenAt = new Date().toISOString();
+  touchUserLastSeen(user);
   next();
 }
 
@@ -1645,7 +1760,7 @@ app.get('/api/auth/me', (req, res) => {
       user: sanitizeUser(user),
     });
   }
-  user.lastSeenAt = new Date().toISOString();
+  touchUserLastSeen(user);
   const versions = getPublicAppVersions();
   res.json({
     success: true,
@@ -4961,6 +5076,19 @@ function isBackupTransaction(tx, backupIntentIds) {
 
 function walletTotalsByUser() {
   const totals = new Map();
+  for (const [userId, roll] of Object.entries(db.ledgerRollups || {})) {
+    if (!roll || typeof roll !== 'object') continue;
+    totals.set(userId, {
+      totalTopup: Number(roll.totalTopup || 0),
+      totalSpent: Number(roll.totalSpent || 0),
+      held: Number(roll.held || 0),
+      deducted: Number(roll.deducted || 0),
+      backupTopup: Number(roll.backupTopup || 0),
+      backupSpent: Number(roll.backupSpent || 0),
+      backupHeld: Number(roll.backupHeld || 0),
+      backupDeducted: Number(roll.backupDeducted || 0),
+    });
+  }
   const backupIntentIds = buildBackupTransactionMatchers();
   for (const tx of db.transactions) {
     const row = totals.get(tx.userId) || {
@@ -5528,6 +5656,7 @@ app.get('/api/admin/backup/export', requireAdmin, (req, res) => {
     localOrders: db.localOrders,
     externalBackupOrders: db.externalBackupOrders || [],
     dismissedExternalBackupIds: db.dismissedExternalBackupIds || [],
+    ledgerRollups: db.ledgerRollups || {},
     transactions: db.transactions,
     orderIntents: db.orderIntents,
     auditLog: db.auditLog,
@@ -5574,9 +5703,10 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
     localOrders: structuredClone(raw.localOrders || []),
     externalBackupOrders: Array.isArray(raw.externalBackupOrders) ? structuredClone(raw.externalBackupOrders) : [],
     dismissedExternalBackupIds: Array.isArray(raw.dismissedExternalBackupIds) ? raw.dismissedExternalBackupIds.map(Number).filter(n => Number.isSafeInteger(n) && n > 0).slice(0, 500) : [],
+    ledgerRollups: raw.ledgerRollups && typeof raw.ledgerRollups === 'object' && !Array.isArray(raw.ledgerRollups) ? structuredClone(raw.ledgerRollups) : {},
     transactions: structuredClone(raw.transactions || []),
     orderIntents: structuredClone(raw.orderIntents || []),
-    auditLog: structuredClone(raw.auditLog || []).slice(0, 5000),
+    auditLog: structuredClone(raw.auditLog || []).slice(0, 1000),
   };
 
   let normalized;

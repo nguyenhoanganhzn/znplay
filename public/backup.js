@@ -106,30 +106,75 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
   function fmtInt(n) {
     return Math.round(Number(n || 0)).toLocaleString('vi-VN');
   }
+  function fmtDurationVi(totalSec) {
+    const s = Math.max(0, Math.floor(Number(totalSec || 0)));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h} giờ ${m} phút ${sec} giây`;
+    return `${m} phút ${sec} giây`;
+  }
+  function fmtClock(totalSec) {
+    const s = Math.max(0, Math.ceil(Number(totalSec || 0)));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  }
   function renderOrderProgressHtml(o) {
     const p = o.backupProgress || null;
     const total = Math.max(0, Number(o.totalCnt || 0));
     const done = Math.max(0, Number(o.completedCnt || 0));
-    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    const bStatus = String(o.backupStatus || o.status || '').toLowerCase();
     const unit = p?.unit || (o.category === 'backup_weather' ? 'lần' : o.category === 'backup_seeds' ? 'hạt' : ['backup_guide', 'backup_treasure'].includes(o.category) ? 'phút' : 'map');
+    const isTimed = unit === 'phút' && total > 0;
+    let pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    let elapsedText = `${fmtInt(done)} / ${fmtInt(total)} ${unit}`;
+    let leftClockText = '';
+    if (isTimed) {
+      const totalSec = Number(p?.totalSec || total * 60);
+      let leftSec = p?.leftSec !== null && p?.leftSec !== undefined ? Math.max(0, Number(p.leftSec)) : null;
+      let elapsedSec = p?.elapsedSec !== null && p?.elapsedSec !== undefined ? Math.max(0, Number(p.elapsedSec)) : Math.min(totalSec, done * 60);
+      if (bStatus === 'done' || bStatus === 'completed') {
+        leftSec = 0; elapsedSec = totalSec;
+      } else if (bStatus === 'running' && p?.endsAtMs) {
+        const remMs = Math.max(0, Math.min(totalSec * 1000, Number(p.endsAtMs) - Date.now()));
+        leftSec = Math.ceil(remMs / 1000);
+        elapsedSec = Math.max(0, Math.floor((totalSec * 1000 - remMs) / 1000));
+      }
+      pct = totalSec > 0 ? Math.min(100, Math.round((elapsedSec / totalSec) * 100)) : 0;
+      elapsedText = `${fmtDurationVi(elapsedSec)} / ${fmtInt(total)} phút`;
+      if (leftSec !== null && ['running', 'paused', 'ready'].includes(bStatus)) {
+        leftClockText = fmtClock(leftSec);
+      }
+    }
     const steps = Array.isArray(p?.steps) ? p.steps : [];
+    const gStats = p?.guideStats && typeof p.guideStats === 'object' ? p.guideStats : null;
     const mapBits = [];
     if (p?.activeWeather?.name) {
       mapBits.push(`Đang thả: ${p.activeWeather.name}${p.activeWeather.remainingSec ? ` (~${fmtInt(p.activeWeather.remainingSec)}s)` : ''}`);
     }
-    if (p?.khu !== null && p?.khu !== undefined) mapBits.push(`Khu #${fmtInt(p.khu)}`);
-    if (p?.population !== null && p?.population !== undefined) mapBits.push(`${fmtInt(p.population)} người`);
-    if (p?.customersHere > 0) mapBits.push('Có mặt khách');
-    else if (p?.inZone === false) mapBits.push('Chưa thấy khách trong khu');
-    if (p?.leftMin !== null && p?.leftMin !== undefined && Number(p.leftMin) > 0 && ['running', 'paused', 'ready'].includes(o.backupStatus)) {
+    if (leftClockText) mapBits.push(`Còn lại: ${leftClockText}`);
+    else if (!isTimed && p?.leftMin !== null && p?.leftMin !== undefined && Number(p.leftMin) > 0 && ['running', 'paused', 'ready'].includes(bStatus)) {
       mapBits.push(`Còn ~${fmtInt(p.leftMin)} phút`);
     }
+    if (p?.endsAt && ['running', 'done', 'completed'].includes(bStatus)) mapBits.push(`Kết thúc: ${formatDateVi(p.endsAt)}`);
+    if (gStats) {
+      mapBits.push(`Gọi bạn: ${fmtInt(gStats.calls)}`);
+      mapBits.push(`Đã tới: ${fmtInt(gStats.arrived)}`);
+      mapBits.push(`Thẻ nhặt: ${fmtInt(gStats.picked)}`);
+    }
+    if (p?.khu !== null && p?.khu !== undefined) mapBits.push(`Khu #${fmtInt(p.khu)}`);
+    if (p?.population !== null && p?.population !== undefined) mapBits.push(`${fmtInt(p.population)} người`);
+    if (p?.customersHere > 0 || p?.hereCount > 0) mapBits.push('Có mặt khách');
+    else if (p?.inZone === false) mapBits.push('Chưa thấy khách trong khu');
+    if (p?.friending) mapBits.push(`Kết bạn: ${fmtInt(p.friending.accepted)}/${fmtInt(p.friending.total)}`);
     if (p?.queuePos > 0) mapBits.push(`Hàng đợi #${fmtInt(p.queuePos)}`);
 
-    const isDoneCard = ['done', 'completed'].includes(String(o.backupStatus || o.status || '').toLowerCase());
+    const isDoneCard = ['done', 'completed'].includes(bStatus);
     return `<div class="backup-progress-block">
       ${total > 0 ? `<div class="backup-progress-head">
-        <span>Đã chạy: <strong>${fmtInt(done)} / ${fmtInt(total)} ${esc(unit)}</strong></span>
+        <span>Đã chạy: <strong>${esc(elapsedText)}</strong></span>
         <span class="progress-pct ${pct >= 100 ? 'is-done' : ''}">${pct}%</span>
       </div>
       <div class="progress-track"><div class="progress-fill ${pct >= 100 ? 'is-done' : ''}" style="width:${pct}%"></div></div>` : ''}

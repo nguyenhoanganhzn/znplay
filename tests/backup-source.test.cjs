@@ -120,3 +120,72 @@ test('backup source extracts live progress across services and strips supplier n
     { url: 'https://ptg.qzeen.dev/api/v1/order/resume', method: 'POST', body: { id: 3519 } },
   ]);
 });
+
+test('backup guide order with null leftMs and null khu computes exact elapsed/remaining time, stats and bot positions', async () => {
+  const { createBackupSource } = await import('../backup-source.js');
+  const now = Date.now();
+  const remMs = (34 * 60 + 38) * 1000; // 0:34:38 remaining out of 60m -> 25m22s elapsed (42%)
+  const jobs = {
+    3857: {
+      id: 3857, service: 'guide', status: 'running', amount: 11000,
+      params: { minutes: 60, bots: 6, leftMs: null, maps: ['square', 'camp', 'resort', 'downtown'] },
+      endsAt: now + remMs,
+      progress: {
+        phase: 'running', runAt: now - (25 * 60 + 22) * 1000, idleMs: 0,
+        map: null, khu: null, inRoom: true,
+        stats: { calls: 399, arrived: 127, picked: 89 },
+        accs: [
+          { n: 3, room: 'Square50028', mapId: 1201, khu: 47, phase: 'ok', here: ['2thg6'] },
+          { n: 6, room: 'Square50009', mapId: 1001, khu: 1, phase: 'scan', here: [] },
+        ],
+        here: ['2thg6'],
+      },
+    },
+    3870: {
+      id: 3870, service: 'guide', status: 'paused', amount: 9000,
+      params: { minutes: 60, bots: 5, leftMs: 3600000, maps: ['square'] },
+      endsAt: null,
+      progress: { phase: 'paused', khu: null, pauseWhy: 'name', missing: ['BadName'], stats: null, accs: null },
+    },
+    3872: {
+      id: 3872, service: 'guide', status: 'friending', amount: 9000,
+      params: { minutes: 60, bots: 5, leftMs: null, maps: ['square'] },
+      endsAt: null,
+      progress: { phase: 'friending', accepted: 2, total: 5, khu: null },
+    },
+  };
+  const source = createBackupSource({
+    apiKey: 'mock-key',
+    validMoney: n => Number.isSafeInteger(n) && n >= 0,
+    sellingPrice: (_, cost) => cost + 1000,
+    request: async (url) => Response.json({ job: jobs[new URL(url).searchParams.get('id')] }),
+  });
+
+  const running = await source.refresh({ remoteOrderId: 3857, category: 'backup_guide' });
+  assert.equal(running.totalCnt, 60);
+  assert.equal(running.completedCnt, 25); // NOT 60!
+  assert.equal(running.backupProgress.khu, null); // NOT 0!
+  assert.equal(running.backupProgress.totalSec, 3600);
+  assert.ok(running.backupProgress.elapsedSec >= 25 * 60 && running.backupProgress.elapsedSec <= 26 * 60);
+  assert.ok(running.backupProgress.leftSec >= 34 * 60 && running.backupProgress.leftSec <= 35 * 60);
+  assert.equal(running.backupProgress.leftMin, 35);
+  assert.deepEqual(running.backupProgress.guideStats, { calls: 399, arrived: 127, picked: 89 });
+  assert.deepEqual(running.backupProgress.maps, ['square', 'camp', 'resort', 'downtown']);
+  assert.equal(running.backupProgress.accs.length, 2);
+  assert.equal(running.backupProgress.accs[0].hereCount, 1);
+  assert.equal(running.backupProgress.hereCount, 1);
+  assert.ok(running.backupProgress.endsAt);
+  assert.equal(running.backupProgress.endsAtMs, now + remMs);
+
+  const paused = await source.refresh({ remoteOrderId: 3870, category: 'backup_guide' });
+  assert.equal(paused.totalCnt, 60);
+  assert.equal(paused.completedCnt, 0);
+  assert.equal(paused.backupProgress.leftSec, 3600);
+  assert.equal(paused.backupProgress.khu, null);
+  assert.match(paused.backupProgress.pauseNote, /Không tìm thấy tên nhân vật: BadName/);
+
+  const friending = await source.refresh({ remoteOrderId: 3872, category: 'backup_guide' });
+  assert.equal(friending.completedCnt, 0);
+  assert.equal(friending.backupProgress.leftSec, 3600);
+  assert.deepEqual(friending.backupProgress.friending, { accepted: 2, total: 5 });
+});

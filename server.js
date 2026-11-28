@@ -2893,8 +2893,23 @@ function ensureBackupTrackToken(order) {
 
 function buildPublicBackupTrackView(order) {
   const bStatus = order.backupStatus || order.status || 'pending';
+  let totalCnt = Number(order.totalCnt || 0);
+  let completedCnt = Number(order.completedCnt || 0);
+  let progress = order.backupProgress ? { ...order.backupProgress } : null;
+  // Recompute live elapsed/remaining seconds on cached running timed orders (guide/treasure)
+  if (bStatus === 'running' && progress?.endsAtMs && totalCnt > 0 && progress.unit === 'phút') {
+    const totalMs = totalCnt * 60000;
+    const leftMs = Math.max(0, Math.min(totalMs, Number(progress.endsAtMs) - Date.now()));
+    const elapsedMs = Math.max(0, totalMs - leftMs);
+    completedCnt = Math.min(totalCnt, Math.floor(elapsedMs / 60000));
+    progress.totalSec = totalCnt * 60;
+    progress.elapsedSec = Math.floor(elapsedMs / 1000);
+    progress.leftSec = leftMs > 0 ? Math.ceil(leftMs / 1000) : 0;
+    progress.leftMin = leftMs > 0 ? Math.ceil(leftMs / 60000) : null;
+  }
   return {
     remoteOrderId: order.remoteOrderId,
+    category: order.category || null,
     categoryName: order.categoryName || ('Dự phòng · ' + (backupServices[order.category?.slice(7)] || '')),
     summary: order.summary || '',
     customerNickname: order.customer?.nickname || '',
@@ -2903,9 +2918,9 @@ function buildPublicBackupTrackView(order) {
     statusText: backupSource.statusText(bStatus),
     canPause: ['queued', 'preparing', 'friending', 'running'].includes(bStatus),
     canResume: ['ready', 'paused'].includes(bStatus),
-    totalCnt: Number(order.totalCnt || 0),
-    completedCnt: Number(order.completedCnt || 0),
-    progress: order.backupProgress || null,
+    totalCnt,
+    completedCnt,
+    progress,
     createdAt: order.createdAt || null,
   };
 }
@@ -2982,6 +2997,8 @@ async function syncExternalBackupOrders({ force = false } = {}) {
           localMatch.completedCnt = job.completedCnt;
           localMatch.backupProgress = job.backupProgress;
           changed = true;
+        } else {
+          localMatch.backupProgress = job.backupProgress;
         }
         continue;
       }

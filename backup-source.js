@@ -139,19 +139,40 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
       .slice(0, maxLen);
   }
   const nonNegInt = value => {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+  };
+  const pauseReasons = {
+    name: 'Không tìm thấy tên nhân vật',
+    offline: 'Nhân vật đang ngoại tuyến',
+    absent: 'Khách chưa có mặt trong khu',
+    user: 'Đã tạm dừng theo yêu cầu',
+    friend: 'Chờ khách đồng ý kết bạn',
+    full: 'Khu hiện đã đầy',
   };
   function extractProgress(job) {
     const service = String(job?.service || '');
     const params = job?.params && typeof job.params === 'object' ? job.params : {};
     const prog = job?.progress && typeof job.progress === 'object' ? job.progress : {};
-    const map = prog.map && typeof prog.map === 'object' ? prog.map : {};
+    const hasMapObj = Boolean(prog.map && typeof prog.map === 'object');
+    const map = hasMapObj ? prog.map : {};
     const isDone = job?.status === 'done';
+    const isRunning = job?.status === 'running';
     let totalCnt = 0;
     let completedCnt = 0;
     let unit = 'lần';
     const steps = [];
+
+    const nowMs = Date.now();
+    const rawLeftMs = nonNegInt(params.leftMs);
+    const endsAtMs = nonNegInt(job?.endsAt);
+    const runAtMs = nonNegInt(prog.runAt);
+    const idleMs = nonNegInt(prog.idleMs) ?? 0;
+    let leftMs = null;
+    let elapsedMs = null;
+    let totalSec = null;
+    let elapsedSec = null;
 
     if (service === 'weather') {
       const rawSteps = Array.isArray(prog.steps) && prog.steps.length
@@ -170,11 +191,12 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
         steps.push({ name, target, done: isDone && target > 0 ? target : done });
       }
       totalCnt = steps.reduce((sum, s) => sum + s.target, 0) || (nonNegInt(params.total) ?? 0);
+      const weatherLeft = nonNegInt(job?.weatherLeft);
       completedCnt = isDone && totalCnt > 0
         ? totalCnt
         : steps.length
         ? steps.reduce((sum, s) => sum + s.done, 0)
-        : (nonNegInt(job?.weatherLeft) !== null && totalCnt > 0 ? Math.max(0, totalCnt - nonNegInt(job.weatherLeft)) : 0);
+        : (weatherLeft !== null && totalCnt > 0 ? Math.max(0, totalCnt - weatherLeft) : 0);
       if (totalCnt > 0) completedCnt = Math.min(totalCnt, completedCnt);
       unit = 'lần';
     } else if (service === 'seeds') {
@@ -184,13 +206,34 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
       unit = 'hạt';
     } else if (service === 'guide' || service === 'treasure') {
       totalCnt = nonNegInt(params.minutes) ?? 0;
-      const rawLeftMs = nonNegInt(params.leftMs);
-      const endsAt = Number(job?.endsAt);
-      const leftMs = rawLeftMs !== null
-        ? rawLeftMs
-        : (Number.isFinite(endsAt) && endsAt > 0 ? Math.max(0, endsAt - Date.now()) : null);
-      if (isDone && totalCnt > 0) completedCnt = totalCnt;
-      else if (leftMs !== null && totalCnt > 0) completedCnt = Math.max(0, Math.min(totalCnt, totalCnt - Math.ceil(leftMs / 60000)));
+      const totalMs = totalCnt * 60000;
+      totalSec = totalCnt > 0 ? totalCnt * 60 : null;
+      if (isDone) {
+        leftMs = 0;
+        elapsedMs = totalMs;
+        completedCnt = totalCnt;
+      } else if (rawLeftMs !== null) {
+        leftMs = totalMs > 0 ? Math.min(totalMs, rawLeftMs) : rawLeftMs;
+        elapsedMs = totalMs > 0 ? Math.max(0, totalMs - leftMs) : 0;
+        completedCnt = totalCnt > 0 ? Math.min(totalCnt, Math.floor(elapsedMs / 60000)) : 0;
+      } else if (isRunning && endsAtMs !== null && endsAtMs > 0) {
+        leftMs = Math.max(0, endsAtMs - nowMs);
+        if (totalMs > 0 && leftMs > totalMs) leftMs = totalMs;
+        elapsedMs = totalMs > 0
+          ? Math.max(0, totalMs - leftMs)
+          : (runAtMs !== null ? Math.max(0, nowMs - runAtMs - idleMs) : 0);
+        completedCnt = totalCnt > 0 ? Math.min(totalCnt, Math.floor(elapsedMs / 60000)) : 0;
+      } else if (isRunning && runAtMs !== null && runAtMs > 0) {
+        elapsedMs = Math.max(0, nowMs - runAtMs - idleMs);
+        if (totalMs > 0) elapsedMs = Math.min(totalMs, elapsedMs);
+        leftMs = totalMs > 0 ? Math.max(0, totalMs - elapsedMs) : null;
+        completedCnt = totalCnt > 0 ? Math.min(totalCnt, Math.floor(elapsedMs / 60000)) : 0;
+      } else {
+        elapsedMs = 0;
+        leftMs = totalMs > 0 ? totalMs : null;
+        completedCnt = 0;
+      }
+      elapsedSec = elapsedMs !== null ? Math.floor(elapsedMs / 1000) : null;
       unit = 'phút';
     } else if (service === 'emptymap') {
       totalCnt = 1;
@@ -198,22 +241,56 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
       unit = 'map';
     }
 
-    const rawLeftMs = nonNegInt(params.leftMs);
-    const endsAt = Number(job?.endsAt);
-    const leftMs = rawLeftMs !== null
-      ? rawLeftMs
-      : (Number.isFinite(endsAt) && endsAt > 0 ? Math.max(0, endsAt - Date.now()) : null);
+    if (leftMs === null) {
+      if (rawLeftMs !== null) leftMs = rawLeftMs;
+      else if (isRunning && endsAtMs !== null && endsAtMs > 0) leftMs = Math.max(0, endsAtMs - nowMs);
+    }
+    const leftSec = leftMs !== null && leftMs > 0 ? Math.ceil(leftMs / 1000) : (isDone ? 0 : null);
     const leftMin = leftMs !== null && leftMs > 0 ? Math.ceil(leftMs / 60000) : null;
+    const endsAt = endsAtMs !== null && endsAtMs > 0 ? new Date(endsAtMs).toISOString() : null;
     const khu = nonNegInt(map.khu) ?? nonNegInt(prog.khu);
     const population = nonNegInt(map.population);
     const customersHere = nonNegInt(map.customersHere);
-    const inZone = typeof map.inZone === 'boolean' ? map.inZone : (typeof prog.inRoom === 'boolean' ? prog.inRoom : null);
+    const inZone = typeof map.inZone === 'boolean' ? map.inZone : null;
     const activeWeatherName = cleanBackupText(map.weather?.name || '', 60);
     const activeWeather = activeWeatherName
       ? { name: activeWeatherName, remainingSec: nonNegInt(map.weather?.remainingSec) }
       : null;
     const queuePos = nonNegInt(job?.queuePos);
-    const pauseNote = cleanBackupText(prog.pauseNote || prog.note || '', 160) || null;
+    const rawPauseWhy = typeof prog.pauseWhy === 'string' ? prog.pauseWhy.trim().toLowerCase() : '';
+    const missingNames = Array.isArray(prog.missing)
+      ? prog.missing.map(n => cleanBackupText(String(n || ''), 60)).filter(Boolean).slice(0, 10)
+      : [];
+    const basePauseNote = cleanBackupText(prog.pauseNote || prog.note || '', 160);
+    const pauseReasonText = rawPauseWhy && Object.hasOwn(pauseReasons, rawPauseWhy)
+      ? `${pauseReasons[rawPauseWhy]}${missingNames.length ? ': ' + missingNames.join(', ') : ''}`
+      : (missingNames.length ? `Không tìm thấy nhân vật: ${missingNames.join(', ')}` : '');
+    const pauseNote = basePauseNote || pauseReasonText || null;
+
+    const guideStats = prog.stats && typeof prog.stats === 'object'
+      ? {
+          calls: nonNegInt(prog.stats.calls) ?? 0,
+          arrived: nonNegInt(prog.stats.arrived) ?? 0,
+          picked: nonNegInt(prog.stats.picked) ?? 0,
+        }
+      : null;
+    const bots = nonNegInt(params.bots) ?? nonNegInt(job?.accounts);
+    const selectedMaps = Array.isArray(params.maps)
+      ? params.maps.filter(m => maps.includes(m))
+      : [];
+    const accs = Array.isArray(prog.accs)
+      ? prog.accs.slice(0, 20).map(a => ({
+          n: nonNegInt(a?.n),
+          mapId: nonNegInt(a?.mapId),
+          khu: nonNegInt(a?.khu),
+          phase: cleanBackupText(String(a?.phase || ''), 24) || null,
+          hereCount: Array.isArray(a?.here) ? a.here.length : 0,
+        })).filter(a => a.n !== null)
+      : [];
+    const hereCount = Array.isArray(prog.here) ? prog.here.length : null;
+    const friending = (job?.status === 'friending' || prog.phase === 'friending') && nonNegInt(prog.total) > 0
+      ? { accepted: nonNegInt(prog.accepted) ?? 0, total: nonNegInt(prog.total) ?? 0 }
+      : null;
     const syncedAt = new Date().toISOString();
 
     return {
@@ -222,12 +299,23 @@ export function createBackupSource({ apiKey, request, sellingPrice, validMoney }
       backupProgress: {
         unit,
         steps,
+        totalSec,
+        elapsedSec,
+        leftSec,
         leftMin,
+        endsAt,
+        endsAtMs: isRunning && endsAtMs !== null && endsAtMs > 0 ? endsAtMs : null,
         khu,
         population,
         customersHere,
         inZone,
         activeWeather,
+        guideStats,
+        bots,
+        maps: selectedMaps.length ? selectedMaps : null,
+        accs: accs.length ? accs : null,
+        hereCount,
+        friending,
         queuePos,
         pauseNote,
         syncedAt,

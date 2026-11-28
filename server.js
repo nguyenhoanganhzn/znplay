@@ -412,6 +412,8 @@ const DEFAULT_DB = {
     fruitMutationPrices: {},
     // Mức cộng mặc định cho mỗi trái cây nếu chưa chỉnh riêng từng trái (VNĐ/trái)
     defaultFruitUnitMarkup: 40,
+    // Danh sách danh mục bị Admin Zn ẩn đối với CTV: { [catKey]: true }
+    hiddenCategories: {},
     appVersions: [
       {
         version: 'v2.4.auros',
@@ -586,6 +588,30 @@ function getSafeServerZnStatus() {
   };
 }
 
+const VALID_CATEGORY_SETTING_KEY = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_luot_xem|buff_sao|guestbook|farm_gift|mail_gift|weather_buff|backup_(weather|guide|emptymap|treasure|seeds))$/;
+const HIDDEN_CATEGORY_MESSAGE = 'Zn đang ẩn danh mục này';
+let categoryVisibilityVersion = 1;
+
+function sanitizeHiddenCategories(raw) {
+  const clean = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return clean;
+  for (const [k, v] of Object.entries(raw)) {
+    if (VALID_CATEGORY_SETTING_KEY.test(k) && v === true) {
+      clean[k] = true;
+    }
+  }
+  return clean;
+}
+
+function getHiddenCategories() {
+  return sanitizeHiddenCategories(db?.settings?.hiddenCategories);
+}
+
+function isCategoryHiddenForUser(catKey, user) {
+  if (!user || user.role === 'admin') return false;
+  return Boolean(typeof catKey === 'string' && VALID_CATEGORY_SETTING_KEY.test(catKey) && db?.settings?.hiddenCategories?.[catKey] === true);
+}
+
 function normalizeDb(raw) {
   const merged = {
     ...DEFAULT_DB,
@@ -594,6 +620,7 @@ function normalizeDb(raw) {
       ...DEFAULT_DB.settings,
       ...(raw.settings || {}),
       appVersions: normalizeAppVersions(raw.settings?.appVersions),
+      hiddenCategories: sanitizeHiddenCategories(raw.settings?.hiddenCategories),
       categoryMarkups: {
         ...DEFAULT_DB.settings.categoryMarkups,
         ...(raw.settings?.categoryMarkups || {}),
@@ -1651,6 +1678,7 @@ app.get('/api/ping', (req, res) => {
     ok: true,
     maintenance: isMaintenanceActive(),
     updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    visibilityVersion: categoryVisibilityVersion,
     currentVersion: versions[0]?.version || 'v2.4.auros',
     appVersions: versions,
     ts: Date.now(),
@@ -1740,6 +1768,8 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     message: 'Đăng nhập thành công',
     token,
     updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    visibilityVersion: categoryVisibilityVersion,
+    hiddenCategories: getHiddenCategories(),
     currentVersion: versions[0]?.version || 'v2.4.auros',
     appVersions: versions,
     user: sanitizeUser(user),
@@ -1766,6 +1796,8 @@ app.get('/api/auth/me', (req, res) => {
     success: true,
     maintenance: isMaintenanceActive(),
     updateVersion: Number(db?.settings?.clientUpdateVersion || 0),
+    visibilityVersion: categoryVisibilityVersion,
+    hiddenCategories: getHiddenCategories(),
     currentVersion: versions[0]?.version || 'v2.4.auros',
     appVersions: versions,
     user: sanitizeUser(user),
@@ -2186,101 +2218,111 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       fruit_by_fruit: isSendTask && enabled(raw.hnSettings?.is_send_fruitorder),
     };
 
+    const hiddenCategories = getHiddenCategories();
+    const isHiddenCat = (k) => !isAdmin && hiddenCategories[k] === true;
     const want = (k) => !scope || scope === k || (scope === 'fruit_all' && (k === 'fruit_coin' || k === 'fruit_by_fruit'));
     const catalog = {};
 
     // 1. Fruit Coin Packages
     if (want('fruit_coin')) {
-      catalog.fruit_coin = raw.fruitCoinPackages.map((pkg) => {
-        const basePkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, 0);
-        const pricesByTier = {};
-        for (const tier of coinTiers) {
-          const tPkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, Number(tier.markup_percent || 0));
-          pricesByTier[tier.min_coin] = {
-            min_coin: tier.min_coin,
-            markup_percent: tier.markup_percent,
-            total_price: tPkg.total_price,
-            original_price: tPkg.original_price,
-            _admin: isAdmin ? tPkg._admin : undefined,
-          };
-        }
-        return {
-          ...basePkg,
-          prices_by_tier: pricesByTier,
-        };
-      });
+      catalog.fruit_coin = isHiddenCat('fruit_coin')
+        ? []
+        : raw.fruitCoinPackages.map((pkg) => {
+            const basePkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, 0);
+            const pricesByTier = {};
+            for (const tier of coinTiers) {
+              const tPkg = buildPublicPackage(pkg, 'fruit_coin', isAdmin, Number(tier.markup_percent || 0));
+              pricesByTier[tier.min_coin] = {
+                min_coin: tier.min_coin,
+                markup_percent: tier.markup_percent,
+                total_price: tPkg.total_price,
+                original_price: tPkg.original_price,
+                _admin: isAdmin ? tPkg._admin : undefined,
+              };
+            }
+            return {
+              ...basePkg,
+              prices_by_tier: pricesByTier,
+            };
+          });
     }
 
     // 2. Fruit Items (154 fruits + 19 mutations — compact mp tuples for CTV cut payload ~10x!)
     if (want('fruit_by_fruit')) {
-      const stockMap = new Map();
-      for (const s of raw.fruitStock) {
-        stockMap.set(Number(s.fruit_item_id), s);
-      }
-
-      catalog.fruit_by_fruit = raw.fruitItems.map((fi) => {
-        const st = stockMap.get(Number(fi.id));
-        const iconPath = fi.item?.icon_path_and_name
-          ? `/assets/playtogether/images/${fi.item.icon_path_and_name.replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
-          : null;
-        const fPricing = getFruitUnitPricing(fi);
-
-        const itemObj = {
-          id: fi.id,
-          item_id: fi.item_id,
-          name: fi.item?.name || `Trái #${fi.id}`,
-          grade: fi.item?.grade || 1,
-          icon: iconPath,
-          unit_price: fPricing.sellBase,
-          stock_quantity: st ? Number(st.total_quantity || 0) : 0,
-          priority: fi.priority ?? st?.priority ?? 0,
-        };
-
-        if (compact) {
-          itemObj.mp = fPricing.mutations.map((m) => [m.mutation_key, m.sell_unit_price]);
-        } else {
-          itemObj.mutation_prices = fPricing.mutations.map((m) => ({
-            mutation_key: m.mutation_key,
-            mutation_name: m.mutation_name,
-            mutation_abbr: m.mutation_abbr,
-            mutation_color: m.mutation_color,
-            unit_price: m.sell_unit_price,
-            _admin: isAdmin
-              ? {
-                  cost_unit_price: m.cost_unit_price,
-                  profit: m.sell_unit_price - m.cost_unit_price,
-                  has_custom_override: m.has_custom_override,
-                }
-              : undefined,
-          }));
+      if (isHiddenCat('fruit_by_fruit')) {
+        catalog.fruit_by_fruit = [];
+      } else {
+        const stockMap = new Map();
+        for (const s of raw.fruitStock) {
+          stockMap.set(Number(s.fruit_item_id), s);
         }
 
-        if (isAdmin) {
-          itemObj._admin = {
-            cost_unit_price: fPricing.costBase,
-            profit_per_fruit: fPricing.profitPerFruit,
-            has_custom_override: fPricing.hasCustomOverride,
+        catalog.fruit_by_fruit = raw.fruitItems.map((fi) => {
+          const st = stockMap.get(Number(fi.id));
+          const iconPath = fi.item?.icon_path_and_name
+            ? `/assets/playtogether/images/${fi.item.icon_path_and_name.replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
+            : null;
+          const fPricing = getFruitUnitPricing(fi);
+
+          const itemObj = {
+            id: fi.id,
+            item_id: fi.item_id,
+            name: fi.item?.name || `Trái #${fi.id}`,
+            grade: fi.item?.grade || 1,
+            icon: iconPath,
+            unit_price: fPricing.sellBase,
+            stock_quantity: st ? Number(st.total_quantity || 0) : 0,
+            priority: fi.priority ?? st?.priority ?? 0,
           };
-        }
-        return itemObj;
-      });
+
+          if (compact) {
+            itemObj.mp = fPricing.mutations.map((m) => [m.mutation_key, m.sell_unit_price]);
+          } else {
+            itemObj.mutation_prices = fPricing.mutations.map((m) => ({
+              mutation_key: m.mutation_key,
+              mutation_name: m.mutation_name,
+              mutation_abbr: m.mutation_abbr,
+              mutation_color: m.mutation_color,
+              unit_price: m.sell_unit_price,
+              _admin: isAdmin
+                ? {
+                    cost_unit_price: m.cost_unit_price,
+                    profit: m.sell_unit_price - m.cost_unit_price,
+                    has_custom_override: m.has_custom_override,
+                  }
+                : undefined,
+            }));
+          }
+
+          if (isAdmin) {
+            itemObj._admin = {
+              cost_unit_price: fPricing.costBase,
+              profit_per_fruit: fPricing.profitPerFruit,
+              has_custom_override: fPricing.hasCustomOverride,
+            };
+          }
+          return itemObj;
+        });
+      }
     }
 
     // 3-5. Buff Tim, Buff Lượt Xem Hồ Sơ, Buff Sao, Guestbook
     if (want('buff_tim')) {
-      catalog.buff_tim = raw.buffTimPackages.map((pkg) => buildPublicPackage(pkg, 'buff_tim', isAdmin, 0));
+      catalog.buff_tim = isHiddenCat('buff_tim') ? [] : raw.buffTimPackages.map((pkg) => buildPublicPackage(pkg, 'buff_tim', isAdmin, 0));
     }
     if (want('buff_luot_xem')) {
-      catalog.buff_luot_xem = (raw.buffLuotXemPackages || [])
-        .filter((pkg) => enabled(pkg.is_active))
-        .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
-        .map((pkg) => buildPublicPackage(pkg, 'buff_luot_xem', isAdmin, 0));
+      catalog.buff_luot_xem = isHiddenCat('buff_luot_xem')
+        ? []
+        : (raw.buffLuotXemPackages || [])
+            .filter((pkg) => enabled(pkg.is_active))
+            .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
+            .map((pkg) => buildPublicPackage(pkg, 'buff_luot_xem', isAdmin, 0));
     }
     if (want('buff_sao')) {
-      catalog.buff_sao = raw.buffSaoPackages.map((pkg) => buildPublicPackage(pkg, 'buff_sao', isAdmin, 0));
+      catalog.buff_sao = isHiddenCat('buff_sao') ? [] : raw.buffSaoPackages.map((pkg) => buildPublicPackage(pkg, 'buff_sao', isAdmin, 0));
     }
     if (want('guestbook')) {
-      catalog.guestbook = raw.guestbookPackages.map((pkg) => buildPublicPackage(pkg, 'guestbook', isAdmin, 0));
+      catalog.guestbook = isHiddenCat('guestbook') ? [] : raw.guestbookPackages.map((pkg) => buildPublicPackage(pkg, 'guestbook', isAdmin, 0));
     }
 
     // 6. Active Farm Gifts & Mail Gifts (Exact match with HoanNguyen active=1)
@@ -2305,28 +2347,32 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
         })
         .filter((g) => g.packages.length > 0);
 
-    if (want('farm_gift')) catalog.farm_gift = formatGiftList(raw.farmGifts, 'farm_gift');
-    if (want('mail_gift')) catalog.mail_gift = formatGiftList(raw.mailGifts, 'mail_gift');
+    if (want('farm_gift')) catalog.farm_gift = isHiddenCat('farm_gift') ? [] : formatGiftList(raw.farmGifts, 'farm_gift');
+    if (want('mail_gift')) catalog.mail_gift = isHiddenCat('mail_gift') ? [] : formatGiftList(raw.mailGifts, 'mail_gift');
 
     // 7. Weather Buff Packages & Active Weather Types
     if (want('weather_buff')) {
-      catalog.weather_buff = raw.weatherPackages
-        .filter((pkg) => enabled(pkg.is_active))
-        .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
-        .map((pkg) => buildPublicPackage(pkg, 'weather_buff', isAdmin, 0));
+      catalog.weather_buff = isHiddenCat('weather_buff')
+        ? []
+        : raw.weatherPackages
+            .filter((pkg) => enabled(pkg.is_active))
+            .sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0))
+            .map((pkg) => buildPublicPackage(pkg, 'weather_buff', isAdmin, 0));
 
-      catalog.weather_buff_types = (raw.weatherTypes || [])
-        .filter((wt) => enabled(wt.is_active))
-        .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
-        .map((wt) => ({
-          id: Number(wt.id),
-          name: String(wt.name || `Thời tiết #${wt.id}`),
-          enum_key: String(wt.enum_key || ''),
-          diamond: Number(wt.diamond || 0),
-          icon: wt.icon_path_and_name
-            ? `/assets/playtogether/images/${String(wt.icon_path_and_name).replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
-            : null,
-        }));
+      catalog.weather_buff_types = isHiddenCat('weather_buff')
+        ? []
+        : (raw.weatherTypes || [])
+            .filter((wt) => enabled(wt.is_active))
+            .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+            .map((wt) => ({
+              id: Number(wt.id),
+              name: String(wt.name || `Thời tiết #${wt.id}`),
+              enum_key: String(wt.enum_key || ''),
+              diamond: Number(wt.diamond || 0),
+              icon: wt.icon_path_and_name
+                ? `/assets/playtogether/images/${String(wt.icon_path_and_name).replace(/^\/+/, '').replace(/\.png$/i, '')}.png`
+                : null,
+            }));
     }
 
     const payload = {
@@ -2334,6 +2380,8 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       partialScope: scope || undefined,
       syncedAt: raw.syncedAt,
       pricingVersion: settingsVersion,
+      visibilityVersion: categoryVisibilityVersion,
+      hiddenCategories,
       systemStatus,
       processingRates: scope ? undefined : raw.processingRates,
       serverSettings: {
@@ -2343,12 +2391,12 @@ app.get('/api/catalog', requireAuth, async (req, res) => {
       },
       weeklyLimit: isAdmin && !scope ? raw.weeklyLimit : undefined,
       coinStock: (!scope || scope === 'fruit_coin' || scope === 'fruit_by_fruit' || scope === 'fruit_all')
-        ? (raw.fruitStockMeta?.coin ? { quantity: Number(raw.fruitStockMeta.coin.quantity) || 0, estimated_per_hour: Number(raw.fruitStockMeta.coin.estimated_per_hour) || 0 } : null)
+        ? (isHiddenCat('fruit_coin') ? null : (raw.fruitStockMeta?.coin ? { quantity: Number(raw.fruitStockMeta.coin.quantity) || 0, estimated_per_hour: Number(raw.fruitStockMeta.coin.estimated_per_hour) || 0 } : null))
         : undefined,
       coinTiers: (!scope || scope === 'fruit_coin' || scope === 'fruit_by_fruit' || scope === 'fruit_all')
-        ? coinTiers.map(t => ({ min_coin: Number(t.min_coin), markup_percent: Number(t.markup_percent) || 0, quantity: Number(t.quantity) || 0, is_default: enabled(t.is_default) }))
+        ? (isHiddenCat('fruit_coin') ? [] : coinTiers.map(t => ({ min_coin: Number(t.min_coin), markup_percent: Number(t.markup_percent) || 0, quantity: Number(t.quantity) || 0, is_default: enabled(t.is_default) })))
         : undefined,
-      mutations: (!scope || scope === 'fruit_by_fruit' || scope === 'fruit_all') ? FRUIT_MUTATIONS : undefined,
+      mutations: (!scope || scope === 'fruit_by_fruit' || scope === 'fruit_all') ? (isHiddenCat('fruit_by_fruit') ? {} : FRUIT_MUTATIONS) : undefined,
       catalog,
     };
     const packed = packCatalogCacheEntry(payload);
@@ -2369,6 +2417,9 @@ app.post('/api/catalog/preview-fruit', requireAuth, limitInteractive, async (req
   try {
     const user = req.user;
     const isAdmin = user.role === 'admin';
+    if (isCategoryHiddenForUser('fruit_by_fruit', user)) {
+      return res.status(403).json({ success: false, code: 'CATEGORY_HIDDEN', message: HIDDEN_CATEGORY_MESSAGE });
+    }
     const { fruit_item_id, total_cnt, mutation_list } = req.body || {};
     const qty = Number(total_cnt);
     const muts = mutation_list === undefined ? [] : mutation_list;
@@ -2812,9 +2863,21 @@ app.get('/api/backup/services', requireAuth, limitInteractive, asyncRoute(async 
   const isAdmin = req.user.role === 'admin';
   const fresh = req.query.refresh === '1' && (isAdmin || now - lastBackupCatalogForceAt >= 2000);
   if (fresh) lastBackupCatalogForceAt = now;
-  res.json({ success: true, services: await backupSource.catalog(fresh) });
+  const hiddenCategories = getHiddenCategories();
+  const rawServices = await backupSource.catalog(fresh);
+  const services = rawServices.map((s) => {
+    const hidden = Boolean(hiddenCategories['backup_' + s.key]);
+    if (!isAdmin && hidden) {
+      return { key: s.key, title: s.title, enabled: false, hiddenByZn: true };
+    }
+    return { ...s, hiddenByZn: hidden };
+  });
+  res.json({ success: true, visibilityVersion: categoryVisibilityVersion, hiddenCategories, services });
 }));
 app.post('/api/backup/quote', requireAuth, limitInteractive, asyncRoute(async (req, res) => {
+  if (isCategoryHiddenForUser(req.body?.category, req.user)) {
+    return res.status(403).json({ success: false, code: 'CATEGORY_HIDDEN', message: HIDDEN_CATEGORY_MESSAGE });
+  }
   const quote = await backupSource.prepare(req.body);
   res.json({ success: true, sellPrice: quote.sellPrice, summary: quote.summary });
 }));
@@ -3389,6 +3452,9 @@ app.post('/api/orders/place', requireAuth, financialGuard, limitInteractive, asy
 
     if (!isBackup && !Object.hasOwn(CATEGORY_METADATA, category)) {
       return res.status(400).json({ success: false, message: 'Danh mục đặt đơn không hợp lệ.' });
+    }
+    if (isCategoryHiddenForUser(category, user)) {
+      return res.status(403).json({ success: false, code: 'CATEGORY_HIDDEN', message: HIDDEN_CATEGORY_MESSAGE });
     }
     const isWeatherBuff = category === 'weather_buff';
     if (!isBackup && !isWeatherBuff && (!Number.isSafeInteger(Number(customer_id)) || Number(customer_id) <= 0)) {
@@ -5529,6 +5595,7 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       categoryMarkups: db.settings.categoryMarkups,
       categoryMarkupModes: db.settings.categoryMarkupModes,
       categoryMarkupPercents: db.settings.categoryMarkupPercents,
+      hiddenCategories: getHiddenCategories(),
       packagePriceOverrides: db.settings.packagePriceOverrides,
       packageMarkupOverrides: db.settings.packageMarkupOverrides || {},
       fruitUnitPrices: db.settings.fruitUnitPrices,
@@ -5725,6 +5792,7 @@ app.post('/api/admin/backup/import', requireAdmin, express.json({ limit: '2mb' }
   Object.assign(db, normalized);
   for (const i of db.orderIntents) if (i.status === 'processing') i.status = 'uncertain';
   settingsVersion += 1;
+  categoryVisibilityVersion += 1;
   catalogResponseCache.clear();
   orderCache = {};
   pruneWeekHistory(vietnamWeekStart());
@@ -5749,6 +5817,7 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
       fruitUnitPrices,
       fruitMutationPrices,
       resetCategoryOverrides,
+      hiddenCategories,
       hoanNguyenEmail,
       hoanNguyenPassword,
       sourceEmail,
@@ -5757,7 +5826,17 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
     const upstreamEmail = sourceEmail !== undefined ? sourceEmail : hoanNguyenEmail;
     const upstreamPassword = sourcePassword !== undefined ? sourcePassword : hoanNguyenPassword;
 
-    const catKeyPattern = /^(fruit_coin|fruit_by_fruit|buff_tim|buff_luot_xem|buff_sao|guestbook|farm_gift|mail_gift|weather_buff|backup_(weather|guide|emptymap|treasure|seeds))$/;
+    const catKeyPattern = VALID_CATEGORY_SETTING_KEY;
+    if (hiddenCategories !== undefined) {
+      if (!hiddenCategories || typeof hiddenCategories !== 'object' || Array.isArray(hiddenCategories) || Object.keys(hiddenCategories).length > 50) {
+        throw new Error('Danh sách bật/tắt ẩn danh mục không hợp lệ.');
+      }
+      for (const [key, hidden] of Object.entries(hiddenCategories)) {
+        if (!catKeyPattern.test(key) || typeof hidden !== 'boolean') {
+          throw new Error('Khóa hoặc trạng thái bật/tắt danh mục không hợp lệ.');
+        }
+      }
+    }
     for (const value of [defaultMarkup, defaultFruitUnitMarkup]) {
       if (value !== undefined && !validMoney(value)) throw new Error('Mức cộng giá phải là số nguyên không âm và hữu hạn.');
     }
@@ -5903,6 +5982,24 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
         }
       }
     }
+    if (hiddenCategories && typeof hiddenCategories === 'object') {
+      db.settings.hiddenCategories = sanitizeHiddenCategories(db.settings.hiddenCategories);
+      const visibilityChanges = {};
+      let visibilityChanged = false;
+      for (const [k, hidden] of Object.entries(hiddenCategories)) {
+        const wasHidden = db.settings.hiddenCategories[k] === true;
+        if (hidden) db.settings.hiddenCategories[k] = true;
+        else delete db.settings.hiddenCategories[k];
+        if (wasHidden !== hidden) {
+          visibilityChanged = true;
+          visibilityChanges[k] = hidden;
+        }
+      }
+      if (visibilityChanged) {
+        categoryVisibilityVersion += 1;
+        req.auditDetails = { ...(req.auditDetails || {}), hiddenCategories: visibilityChanges };
+      }
+    }
 
     let needRelogin = false;
     if (upstreamEmail && upstreamEmail.trim() !== db.settings.hoanNguyen.email) {
@@ -5930,6 +6027,8 @@ app.put('/api/admin/settings', requireAdmin, asyncRoute(async (req, res) => {
     res.json({
       success: true,
       message: 'Đã lưu toàn bộ bảng giá CTV và cấu hình hệ thống thành công!',
+      hiddenCategories: getHiddenCategories(),
+      visibilityVersion: categoryVisibilityVersion,
     });
   } catch (err) {
     res.status(400).json({

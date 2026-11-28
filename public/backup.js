@@ -574,12 +574,36 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
     try {
       const result = await apiFetch('/api/backup/services' + (fresh ? '?refresh=1' : ''));
       if (version !== catalogVersion || !root.isConnected) return;
+      if (result.hiddenCategories && typeof result.hiddenCategories === 'object') {
+        state.hiddenCategories = result.hiddenCategories;
+      }
+      if (result.visibilityVersion !== undefined) {
+        state.visibilityVersion = result.visibilityVersion;
+      }
       services = result.services || [];
-      catalog.innerHTML = `<div class="pricing-cat-grid">${services.map(s => `
-        <article class="pricing-cat-card" data-service-card="${esc(s.key)}"><div class="panel-title-row"><strong>${esc(s.title)}</strong>
-        <span class="badge-tag ${s.enabled === true ? 'green' : 'amber'}">${s.enabled === true ? 'Hoạt động' : s.enabled === false ? 'Tạm ngưng' : 'Chưa có trạng thái'}</span></div>
-        ${s.key === 'emptymap' && Number.isInteger(s.free) ? `<small class="tool-note">Còn ${s.free} map trống</small>` : ''}
-        ${s.enabled === true ? `<div class="tool-actions">${button('Chọn dịch vụ', `data-service="${esc(s.key)}"`)}</div>` : ''}</article>`).join('')}</div>`;
+      if (!admin && services.length > 0 && services.every(s => s.hiddenByZn)) {
+        catalog.innerHTML = `<div class="hidden-cat-empty-panel">
+          <div class="hidden-cat-empty-badge">Thông báo từ Zn</div>
+          <h3 class="hidden-cat-empty-title">Zn đang ẩn danh mục này</h3>
+          <p class="hidden-cat-empty-desc">Tất cả dịch vụ trong Nguồn dự phòng hiện đang được quản trị viên Zn tạm ẩn đối với CTV.</p>
+        </div>`;
+      } else {
+        catalog.innerHTML = `<div class="pricing-cat-grid">${services.map(s => {
+          const isHidden = Boolean(s.hiddenByZn);
+          if (!admin && isHidden) {
+            return `<article class="pricing-cat-card is-cat-hidden" data-service-card="${esc(s.key)}">
+              <div class="panel-title-row"><strong>${esc(s.title)}</strong>
+              <span class="badge-tag amber">Đang ẩn</span></div>
+              <div class="hidden-cat-inline-note">Zn đang ẩn danh mục này</div>
+            </article>`;
+          }
+          return `<article class="pricing-cat-card ${isHidden ? 'is-cat-hidden' : ''}" data-service-card="${esc(s.key)}"><div class="panel-title-row"><strong>${esc(s.title)}</strong>
+          <span class="badge-tag ${s.enabled === true ? 'green' : 'amber'}">${s.enabled === true ? 'Hoạt động' : s.enabled === false ? 'Tạm ngưng' : 'Chưa có trạng thái'}</span></div>
+          ${admin && isHidden ? '<small class="tool-note" style="color:#fde68a;">Đang ẩn với CTV (CTV thấy: Zn đang ẩn danh mục này)</small>' : ''}
+          ${s.key === 'emptymap' && Number.isInteger(s.free) ? `<small class="tool-note">Còn ${s.free} map trống</small>` : ''}
+          ${s.enabled === true ? `<div class="tool-actions">${button('Chọn dịch vụ', `data-service="${esc(s.key)}"`)}</div>` : ''}</article>`;
+        }).join('')}</div>`;
+      }
     } catch (e) {
       if (version === catalogVersion && root.isConnected) catalog.textContent = e.message;
     } finally {
@@ -591,8 +615,9 @@ export function mountBackup(container, { apiFetch, state, escapeHtml: esc, forma
   }
   catalog.onclick = event => {
     const service = services.find(s => s.key === event.target.closest('[data-service]')?.dataset.service);
-    if (service?.enabled) openForm(service);
+    if (service?.enabled && (admin || !service.hiddenByZn)) openForm(service);
   };
+  root.addEventListener('zn:visibility-sync', () => loadCatalog(false));
   root.querySelector('[data-refresh]').onclick = () => loadCatalog(true);
   loadCatalog(false); loadOrders();
 }

@@ -105,6 +105,17 @@ export function createToolViews({ state, apiFetch, pageLimit, moreButton, render
     if (details.totalQty !== undefined) parts.push(`Tổng thời tiết: ${details.totalQty} lần`);
     if (details.passwordReset) parts.push('Đặt lại mật khẩu');
     if (details.isLocked === true) parts.push('Đã khóa tài khoản');
+    if (details.hiddenCategories && typeof details.hiddenCategories === 'object') {
+      const hiddenList = [];
+      const shownList = [];
+      for (const [k, v] of Object.entries(details.hiddenCategories)) {
+        const name = CAT_LABELS[k] || k;
+        if (v) hiddenList.push(name);
+        else shownList.push(name);
+      }
+      if (hiddenList.length) parts.push(`Ẩn với CTV: ${hiddenList.join(', ')}`);
+      if (shownList.length) parts.push(`Hiện lại với CTV: ${shownList.join(', ')}`);
+    }
     if (details.note) parts.push(`Ghi chú: ${details.note}`);
     if (details.status && Number(details.status) >= 400) parts.push(`Mã lỗi ${details.status}`);
     if (parts.length > 0) return parts.join(' · ');

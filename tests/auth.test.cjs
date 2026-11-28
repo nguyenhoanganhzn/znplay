@@ -3295,7 +3295,7 @@ test('read-only POST lookups skip persistent DB writes while recording RAM monit
         this.onmessage?.({ data: JSON.stringify({ type: 'profile_search_result', profiles: [{ suid: '123456', Nickname: 'SpeedPlayer', Region: 'vn1', AchievementLevel: 10 }] }) });
       }
     }
-    close() {}
+    close() { }
   }
   const s = await startTestServer(t, async (url, options = {}) => {
     const u = new URL(url);
@@ -3405,4 +3405,159 @@ test('read-only POST lookups skip persistent DB writes while recording RAM monit
   });
   assert.equal(adj.status, 200);
   assert.ok(s.getWriteCount() > writesBeforeLookups);
+});
+
+test('per-category CTV visibility toggles hide categories securely for CTV while keeping Admin access intact', async t => {
+  const base = financeSource();
+  let upstreamOrderCalls = 0;
+  let backupQuoteCalls = 0;
+  let backupCreateCalls = 0;
+  const s = await startTestServer(t, async (url, options = {}) => {
+    const u = new URL(url);
+    if (u.origin === 'https://ptg.qzeen.dev') {
+      if (u.pathname.endsWith('/services')) {
+        return Response.json({ services: { emptymap: { enabled: true, free: 4 }, guide: { enabled: true, minMinutes: 10, maxHours: 2, maxBots: 10 } } });
+      }
+      if (u.pathname.endsWith('/quote')) {
+        backupQuoteCalls += 1;
+        return Response.json({ quote: { amount: 2500 } });
+      }
+      if (u.pathname.endsWith('/orders') && options.method === 'POST') {
+        backupCreateCalls += 1;
+        return Response.json({ orderId: 901, amount: 2500, status: 'queued' });
+      }
+    }
+    if (u.pathname === '/api/buff-tim-orders' && options.method === 'POST') {
+      upstreamOrderCalls += 1;
+    }
+    return base(url, options);
+  }, {
+    env: { QZEEN_API_KEY: 'mock-key' },
+    seed(db) {
+      const seller = db.users.find(u => u.id === 'seller');
+      seller.balance = 500000;
+      seller.backupBalance = 500000;
+    },
+  });
+
+  const admin = (await s.login('owner', 'owner-test-password')).body.token;
+  const ctvLogin = await s.login('seller', 'seller-test-password');
+  const ctv = ctvLogin.body.token;
+  assert.deepEqual(ctvLogin.body.hiddenCategories, {});
+
+  // 1. Security: CTV cannot toggle hiddenCategories; invalid keys or non-boolean values are rejected
+  assert.equal((await s.request('/api/admin/settings', 'PUT', ctv, { hiddenCategories: { buff_tim: true } })).status, 403);
+  assert.equal((await s.request('/api/admin/settings', 'PUT', admin, { hiddenCategories: { __proto__: true, bad_key: true } })).status, 400);
+  assert.equal((await s.request('/api/admin/settings', 'PUT', admin, { hiddenCategories: { buff_tim: 'yes' } })).status, 400);
+
+  // 2. Admin hides buff_tim, fruit_by_fruit, and backup_emptymap
+  const pingBefore = (await s.request('/api/ping')).body;
+  assert.equal(pingBefore.hiddenCategories, undefined); // public /api/ping never leaks category names
+
+  const hideRes = await s.request('/api/admin/settings', 'PUT', admin, {
+    hiddenCategories: { buff_tim: true, fruit_by_fruit: true, backup_emptymap: true },
+  });
+  assert.equal(hideRes.status, 200);
+  assert.deepEqual(hideRes.body.hiddenCategories, { buff_tim: true, fruit_by_fruit: true, backup_emptymap: true });
+
+  const pingAfter = (await s.request('/api/ping')).body;
+  assert.ok(pingAfter.visibilityVersion > pingBefore.visibilityVersion);
+  assert.equal(pingAfter.hiddenCategories, undefined);
+
+  // 3. CTV receives stripped catalog for hidden categories, while non-hidden fruit_coin remains visible
+  const meCtv = (await s.request('/api/auth/me', 'GET', ctv)).body;
+  assert.deepEqual(meCtv.hiddenCategories, { buff_tim: true, fruit_by_fruit: true, backup_emptymap: true });
+
+  const ctvCat = (await s.request('/api/catalog', 'GET', ctv)).body;
+  assert.deepEqual(ctvCat.catalog.buff_tim, []);
+  assert.deepEqual(ctvCat.catalog.fruit_by_fruit, []);
+  assert.deepEqual(ctvCat.mutations, {});
+  assert.ok(ctvCat.catalog.fruit_coin.length > 0);
+
+  // Admin STILL sees full packages for hidden categories
+  const admCat = (await s.request('/api/catalog', 'GET', admin)).body;
+  assert.ok(admCat.catalog.buff_tim.length > 0);
+  assert.ok(admCat.catalog.fruit_by_fruit.length > 0);
+
+  // 4. CTV is blocked on preview-fruit and order placement for hidden categories with ZERO debit & ZERO upstream calls
+  const ctvFruitPreview = await s.request('/api/catalog/preview-fruit', 'POST', ctv, { fruit_item_id: 1, total_cnt: 10, mutation_list: [] });
+  assert.equal(ctvFruitPreview.status, 403);
+  assert.equal(ctvFruitPreview.body.code, 'CATEGORY_HIDDEN');
+  assert.equal(ctvFruitPreview.body.message, 'Zn đang ẩn danh mục này');
+
+  const ctvPlaceHidden = await s.request('/api/orders/place', 'POST', ctv, {
+    category: 'buff_tim',
+    customer_id: 101,
+    game_profile_id: 201,
+    price_package_id: 7,
+    idempotency_key: 'hide-test-ctv-buff-tim-1',
+  });
+  assert.equal(ctvPlaceHidden.status, 403);
+  assert.equal(ctvPlaceHidden.body.code, 'CATEGORY_HIDDEN');
+  assert.equal(ctvPlaceHidden.body.message, 'Zn đang ẩn danh mục này');
+  assert.equal(upstreamOrderCalls, 0);
+  assert.equal(s.db.users.find(u => u.id === 'seller').balance, 500000);
+
+  // Admin can STILL place buff_tim order even while hidden from CTV
+  const admPlaceHidden = await s.request('/api/orders/place', 'POST', admin, {
+    category: 'buff_tim',
+    customer_id: 101,
+    game_profile_id: 201,
+    price_package_id: 7,
+    expected_price: admCat.catalog.buff_tim[0].total_price,
+    idempotency_key: 'hide-test-adm-buff-tim-1',
+  });
+  assert.equal(admPlaceHidden.status, 200);
+  assert.equal(upstreamOrderCalls, 1);
+
+  // 5. Backup services hide emptymap for CTV (strips free count + blocks quote/order) while Admin retains full access
+  const ctvBkSvc = (await s.request('/api/backup/services', 'GET', ctv)).body;
+  const ctvEmpty = ctvBkSvc.services.find(x => x.key === 'emptymap');
+  const ctvGuide = ctvBkSvc.services.find(x => x.key === 'guide');
+  assert.equal(ctvEmpty.hiddenByZn, true);
+  assert.equal(ctvEmpty.enabled, false);
+  assert.equal(ctvEmpty.free, undefined);
+  assert.equal(ctvGuide.hiddenByZn, false);
+  assert.equal(ctvGuide.enabled, true);
+
+  const admBkSvc = (await s.request('/api/backup/services', 'GET', admin)).body;
+  const admEmpty = admBkSvc.services.find(x => x.key === 'emptymap');
+  assert.equal(admEmpty.hiddenByZn, true);
+  assert.equal(admEmpty.enabled, true);
+  assert.equal(admEmpty.free, 4);
+
+  const ctvBkQuote = await s.request('/api/backup/quote', 'POST', ctv, { category: 'backup_emptymap' });
+  assert.equal(ctvBkQuote.status, 403);
+  assert.equal(ctvBkQuote.body.message, 'Zn đang ẩn danh mục này');
+  assert.equal(backupQuoteCalls, 0);
+
+  const ctvBkPlace = await s.request('/api/orders/place', 'POST', ctv, {
+    category: 'backup_emptymap',
+    charName: 'PlayerTest',
+    idempotency_key: 'hide-test-ctv-bk-empty-1',
+  });
+  assert.equal(ctvBkPlace.status, 403);
+  assert.equal(ctvBkPlace.body.message, 'Zn đang ẩn danh mục này');
+  assert.equal(backupCreateCalls, 0);
+  assert.equal(s.db.users.find(u => u.id === 'seller').backupBalance, 500000);
+
+  const admBkQuote = await s.request('/api/backup/quote', 'POST', admin, { category: 'backup_emptymap' });
+  assert.equal(admBkQuote.status, 200);
+  assert.equal(backupQuoteCalls, 1);
+
+  // 6. Export/import preserves hiddenCategories, and Admin monitor records the visibility change
+  const exported = (await s.request('/api/admin/backup/export', 'GET', admin)).body.backup;
+  assert.deepEqual(exported.settings.hiddenCategories, { buff_tim: true, fruit_by_fruit: true, backup_emptymap: true });
+  const imported = await s.request('/api/admin/backup/import', 'POST', admin, { backup: exported });
+  assert.equal(imported.status, 200);
+
+  const mon = (await s.request('/api/admin/monitor', 'GET', admin)).body;
+  assert.ok(mon.events.some(e => e.action === 'PUT /admin/settings' && e.details?.hiddenCategories?.buff_tim === true));
+
+  // 7. Admin unhides buff_tim -> CTV immediately regains catalog packages
+  const unhideRes = await s.request('/api/admin/settings', 'PUT', admin, { hiddenCategories: { buff_tim: false } });
+  assert.equal(unhideRes.status, 200);
+  assert.deepEqual(unhideRes.body.hiddenCategories, { fruit_by_fruit: true, backup_emptymap: true });
+  const ctvCatAfter = (await s.request('/api/catalog', 'GET', ctv)).body;
+  assert.ok(ctvCatAfter.catalog.buff_tim.length > 0);
 });

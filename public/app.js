@@ -79,6 +79,7 @@ const ZN_ICON_PATHS = {
   git: '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
   eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>',
   globe: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   barChart: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
@@ -93,6 +94,8 @@ const state = {
   token: sessionStorage.getItem('znplay_token') || '',
   user: null,
   appVersions: DEFAULT_APP_VERSIONS.slice(),
+  hiddenCategories: {},
+  visibilityVersion: null,
   catalogData: null,
   catalogWarning: '',
   ordersWarning: '',
@@ -598,12 +601,66 @@ function setCtvUpdateBanner(visible) {
   }
 }
 
+const HIDDEN_CATEGORY_TEXT = 'Zn đang ẩn danh mục này';
+
+function getHiddenCategoriesMap() {
+  return (state.hiddenCategories && typeof state.hiddenCategories === 'object')
+    ? state.hiddenCategories
+    : (state.catalogData?.hiddenCategories || {});
+}
+
+function isCatHiddenForCtv(catKey) {
+  if (!state.user || state.user.role === 'admin') return false;
+  return getHiddenCategoriesMap()[catKey] === true;
+}
+
+function isOrderViewFullyHiddenForCtv(viewKey) {
+  if (!state.user || state.user.role === 'admin') return false;
+  if (viewKey === 'fruit_coin') {
+    return isCatHiddenForCtv('fruit_coin') && isCatHiddenForCtv('fruit_by_fruit');
+  }
+  return isCatHiddenForCtv(viewKey);
+}
+
+function syncHiddenCategoriesState(hiddenMap, visVer) {
+  let changed = false;
+  if (hiddenMap && typeof hiddenMap === 'object' && !Array.isArray(hiddenMap)) {
+    const prevJson = JSON.stringify(state.hiddenCategories || {});
+    const nextJson = JSON.stringify(hiddenMap);
+    if (prevJson !== nextJson) changed = true;
+    state.hiddenCategories = { ...hiddenMap };
+  }
+  if (visVer !== undefined && visVer !== null && Number.isFinite(Number(visVer))) {
+    state.visibilityVersion = Number(visVer);
+  }
+  return changed;
+}
+
+function renderHiddenCategoryPanelHtml(catTitle, { showHistoryBtn = true, showRefreshBtn = true } = {}) {
+  return `
+    <div class="glass-panel">
+      <div class="hidden-cat-empty-panel" role="status">
+        <div class="hidden-cat-empty-icon">${znIcon('eyeOff', 26)}</div>
+        <span class="hidden-cat-empty-badge">${escapeHtml(catTitle || 'Danh mục')}</span>
+        <h2 class="hidden-cat-empty-title">${HIDDEN_CATEGORY_TEXT}</h2>
+        <p class="hidden-cat-empty-desc">Danh mục này hiện đang được quản trị viên Zn tạm ẩn đối với tài khoản CTV. Các đơn hàng bạn đã đặt trước đó vẫn xem được trong Lịch sử đơn hàng.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px;">
+          ${showRefreshBtn ? `<button type="button" class="btn-frost" id="btnHiddenCatRefresh">${znIcon('refresh', 13)} <span>Kiểm tra lại</span></button>` : ''}
+          ${showHistoryBtn ? `<button type="button" class="btn-violet" id="btnHiddenCatHistory">${znIcon('file', 13)} <span>Xem lịch sử đơn hàng</span></button>` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 // ============================================================================
 // AUTHENTICATION & SESSION GATE
 // ============================================================================
 function clearAuthState() {
   state.token = '';
   state.user = null;
+  state.hiddenCategories = {};
+  state.visibilityVersion = null;
   state.catalogData = null;
   state.catalogWarning = '';
   state.ordersWarning = '';
@@ -688,6 +745,9 @@ async function initAuth() {
     try {
       const r = await apiFetch('/api/auth/me');
       if (r.appVersions) syncAppVersionsState(r.appVersions);
+      if (r.hiddenCategories || r.visibilityVersion !== undefined) {
+        syncHiddenCategoriesState(r.hiddenCategories, r.visibilityVersion);
+      }
       if (r.success && r.user) {
         state.user = r.user;
         if (r.user.role === 'admin') {
@@ -696,6 +756,7 @@ async function initAuth() {
           if (handleCtvUpdateVersion(r.updateVersion, { isCtvConfirmed: true })) return;
         }
         updateShellAuthUI();
+        applyCatalogSideEffects(state.catalogData);
         return;
       }
     } catch (err) {
@@ -724,6 +785,7 @@ async function loginWithCredentials(identifier, password) {
     clearAuthState();
     state.token = r.token;
     state.user = r.user;
+    syncHiddenCategoriesState(r.hiddenCategories, r.visibilityVersion);
     if (r.user?.role === 'admin') {
       clearStoredCtvUpdateState();
     } else if (r.updateVersion !== undefined) {
@@ -806,21 +868,23 @@ function updateShellAuthUI() {
 // ============================================================================
 function applyCatalogSideEffects(r) {
   const st = r?.systemStatus || {};
-  const updateDot = (id, working) => {
+  const updateDot = (id, catKey, working) => {
     const el = document.getElementById(id);
     if (!el) return;
+    const hidden = isOrderViewFullyHiddenForCtv(catKey);
     el.classList.remove('is-loading');
-    el.classList.toggle('is-off', !working);
-    el.title = working ? 'Đang hoạt động' : 'Không hoạt động';
+    el.classList.toggle('is-hidden-cat', hidden);
+    el.classList.toggle('is-off', !working && !hidden);
+    el.title = hidden ? HIDDEN_CATEGORY_TEXT : (working ? 'Đang hoạt động' : 'Không hoạt động');
   };
-  updateDot('dot_farm_gift', st.farm_gift);
-  updateDot('dot_mail_gift', st.mail_gift);
-  updateDot('dot_guestbook', st.guestbook);
-  updateDot('dot_buff_tim', st.buff_tim);
-  updateDot('dot_buff_luot_xem', st.buff_luot_xem);
-  updateDot('dot_buff_sao', st.buff_sao);
-  updateDot('dot_weather_buff', st.weather_buff);
-  updateDot('dot_fruit_coin', st.fruit_coin);
+  updateDot('dot_farm_gift', 'farm_gift', st.farm_gift);
+  updateDot('dot_mail_gift', 'mail_gift', st.mail_gift);
+  updateDot('dot_guestbook', 'guestbook', st.guestbook);
+  updateDot('dot_buff_tim', 'buff_tim', st.buff_tim);
+  updateDot('dot_buff_luot_xem', 'buff_luot_xem', st.buff_luot_xem);
+  updateDot('dot_buff_sao', 'buff_sao', st.buff_sao);
+  updateDot('dot_weather_buff', 'weather_buff', st.weather_buff);
+  updateDot('dot_fruit_coin', 'fruit_coin', st.fruit_coin);
 
   updateShellAuthUI();
 }
@@ -865,6 +929,8 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
         ...prev,
         syncedAt: r.syncedAt || prev.syncedAt,
         pricingVersion: r.pricingVersion ?? prev.pricingVersion,
+        visibilityVersion: r.visibilityVersion ?? prev.visibilityVersion,
+        hiddenCategories: r.hiddenCategories || prev.hiddenCategories,
         systemStatus: r.systemStatus || prev.systemStatus,
         serverSettings: r.serverSettings || prev.serverSettings,
         coinStock: r.coinStock !== undefined ? r.coinStock : prev.coinStock,
@@ -877,10 +943,12 @@ async function loadCatalog(forceRefresh = false, scope = '', timeoutMs = 0) {
       }
       : r;
 
+    syncHiddenCategoriesState(merged.hiddenCategories, merged.visibilityVersion);
     expandCompactFruitMutations(merged, prev?.mutations);
 
     const sig = JSON.stringify({
       pv: merged.pricingVersion,
+      hc: merged.hiddenCategories,
       s: merged.systemStatus,
       wl: merged.weeklyLimit,
       fc: (merged.catalog?.fruit_coin || []).map(p => [p.id, p.total_price, p.is_on_sale, p.sale?.slots_remaining]),
@@ -1046,7 +1114,9 @@ function switchView(viewKey) {
     });
   }
   if (ORDER_VIEWS.includes(viewKey) || ['order_history', 'dashboard'].includes(viewKey)) {
-    loadOrders().then(changed => { if (changed && state.currentView === viewKey) renderCurrentView(); });
+    if (!ORDER_VIEWS.includes(viewKey) || !isOrderViewFullyHiddenForCtv(viewKey)) {
+      loadOrders().then(changed => { if (changed && state.currentView === viewKey) renderCurrentView(); });
+    }
   }
 }
 
@@ -1113,6 +1183,9 @@ function renderCurrentView() {
 // 1. RENDER ORDER CATEGORY PAGE (MATCHES SCREENSHOT 1 EXACTLY)
 // ============================================================================
 function renderOrderCategoryPageHtml(catKey) {
+  if (isOrderViewFullyHiddenForCtv(catKey)) {
+    return renderHiddenCategoryPanelHtml(VIEW_TITLES[catKey]);
+  }
   const r = state.catalogData;
   const isWorking = !!(r?.systemStatus?.[catKey]);
   const rates = r?.processingRates || {};
@@ -1176,11 +1249,13 @@ function renderOrderCategoryPageHtml(catKey) {
   // Extra footer buttons inside Stats Panel (Kho trái cây / Kho xu / Bảng giá)
   let footerButtonsHtml = '';
   if (catKey === 'fruit_coin') {
+    const coinHidden = isCatHiddenForCtv('fruit_coin');
+    const fruitHidden = isCatHiddenForCtv('fruit_by_fruit');
     footerButtonsHtml = `
       <div class="cat-footer-actions">
-        <button type="button" class="btn-frost" id="btnViewFruitWarehouse">${znIcon('package', 14)} <span>Xem kho trái cây</span></button>
-        <button type="button" class="btn-frost" id="btnViewCoinWarehouse">${znIcon('coins', 14)} <span>Xem kho xu</span></button>
-        <button type="button" class="btn-frost" id="btnViewCategoryPrices">${znIcon('tag', 14)} <span>Xem bảng giá gói xu</span></button>
+        ${!fruitHidden ? `<button type="button" class="btn-frost" id="btnViewFruitWarehouse">${znIcon('package', 14)} <span>Xem kho trái cây</span></button>` : `<span class="badge-tag amber">Trái cây lẻ: ${HIDDEN_CATEGORY_TEXT}</span>`}
+        ${!coinHidden ? `<button type="button" class="btn-frost" id="btnViewCoinWarehouse">${znIcon('coins', 14)} <span>Xem kho xu</span></button>` : `<span class="badge-tag amber">Gói Xu Nông Trại: ${HIDDEN_CATEGORY_TEXT}</span>`}
+        ${!coinHidden ? `<button type="button" class="btn-frost" id="btnViewCategoryPrices">${znIcon('tag', 14)} <span>Xem bảng giá gói xu</span></button>` : ''}
       </div>
     `;
   } else if (['buff_tim', 'buff_luot_xem', 'buff_sao', 'guestbook', 'mail_gift', 'farm_gift', 'weather_buff'].includes(catKey)) {
@@ -1595,6 +1670,21 @@ function renderOrderTableRowHtml(o, { inHistory = false } = {}) {
 
 let catFilterTimer = null;
 function bindOrderCategoryPageEvents(catKey) {
+  document.getElementById('btnHiddenCatHistory')?.addEventListener('click', () => switchView('order_history'));
+  document.getElementById('btnHiddenCatRefresh')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    if (btn) { btn.disabled = true; btn.textContent = 'Đang kiểm tra...'; }
+    try {
+      const me = await apiFetch('/api/auth/me');
+      if (me?.user) state.user = me.user;
+      syncHiddenCategoriesState(me?.hiddenCategories, me?.visibilityVersion);
+      const scope = catKey === 'fruit_coin' ? 'fruit_all' : catKey;
+      await loadCatalog(false, scope, 6500);
+      applyCatalogSideEffects(state.catalogData);
+    } catch { }
+    if (state.currentView === catKey) renderCurrentView();
+  });
+
   document.getElementById('btnRefreshCatPage')?.addEventListener('click', async () => {
     const btn = document.getElementById('btnRefreshCatPage');
     if (btn) { btn.disabled = true; btn.textContent = '↻ Đang tải...'; }
@@ -1999,6 +2089,10 @@ async function openOrderCustomerSnapshotModal(cat, remoteOrderId, { force = fals
 let createOrderModalSeq = 0;
 async function openCreateOrderModal(catKey, presetOptions = null) {
   state.listLimits.modalPackages = 20;
+  if (isOrderViewFullyHiddenForCtv(catKey) || (presetOptions?.category && isCatHiddenForCtv(presetOptions.category))) {
+    showToast(HIDDEN_CATEGORY_TEXT);
+    return;
+  }
   // Check CTV wallet balance first!
   if (state.user.role !== 'admin' && Number(state.user.balance || 0) <= 0) {
     showToast('Số dư ví CTV của bạn là 0đ. Vui lòng nạp tiền vào ví trước khi tạo đơn!');
@@ -2017,13 +2111,19 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Zn...');
   overlay.style.display = 'flex';
 
+  const forceFruitSub = catKey === 'fruit_coin' && !presetOptions?.category && isCatHiddenForCtv('fruit_coin') && !isCatHiddenForCtv('fruit_by_fruit');
   // ALWAYS sync ONLY the exact category being opened (2-3 tiny API calls, < 2s typical, hard 6.5s ceiling < 7s!)
   const targetScope =
-    presetOptions?.category === 'fruit_by_fruit' || presetOptions?.fruitOrderType === 'by_fruit'
+    forceFruitSub || presetOptions?.category === 'fruit_by_fruit' || presetOptions?.fruitOrderType === 'by_fruit'
       ? 'fruit_by_fruit'
       : catKey;
   await loadCatalog(true, targetScope, 6500);
   if (mySeq !== createOrderModalSeq || overlay.style.display === 'none' || !state.user) return;
+
+  if (isOrderViewFullyHiddenForCtv(catKey)) {
+    body.innerHTML = `<div class="hidden-cat-empty-panel" style="padding:32px 18px;"><div class="hidden-cat-empty-icon">${znIcon('eyeOff', 24)}</div><h3 class="hidden-cat-empty-title" style="font-size:18px;">${HIDDEN_CATEGORY_TEXT}</h3></div>`;
+    return;
+  }
 
   const r = state.catalogData;
   if (!r || state.catalogWarning) {
@@ -2039,11 +2139,12 @@ async function openCreateOrderModal(catKey, presetOptions = null) {
     return;
   }
 
-  state.modalOrder.category = presetOptions?.category || (catKey === 'fruit_coin' ? 'fruit_coin' : catKey);
+  const autoSwitchToFruit = catKey === 'fruit_coin' && !presetOptions?.category && isCatHiddenForCtv('fruit_coin') && !isCatHiddenForCtv('fruit_by_fruit');
+  state.modalOrder.category = presetOptions?.category || (autoSwitchToFruit ? 'fruit_by_fruit' : (catKey === 'fruit_coin' ? 'fruit_coin' : catKey));
   state.modalOrder.requestKey = null;
   state.modalOrder.requestSignature = null;
   state.modalOrder.quotedPrice = 0;
-  state.modalOrder.fruitOrderType = presetOptions?.fruitOrderType || 'by_coin';
+  state.modalOrder.fruitOrderType = presetOptions?.fruitOrderType || (autoSwitchToFruit ? 'by_fruit' : 'by_coin');
   if (presetOptions?.fruit_item_id) state.modalOrder.fruit_item_id = Number(presetOptions.fruit_item_id);
 
   const cat = r.catalog || {};
@@ -2078,6 +2179,7 @@ function renderCreateOrderModalBody() {
   if (!body || !r) return;
 
   const catKey = state.modalOrder.category;
+  const isCatHidden = isCatHiddenForCtv(catKey);
   const isWorking = !!(r.systemStatus?.[catKey]);
   const cust = state.modalOrder.customer;
 
@@ -2106,7 +2208,9 @@ function renderCreateOrderModalBody() {
         </div>
       </div>
 
-      ${isByCoin
+      ${isCatHidden
+        ? `<div class="hidden-cat-inline-note" style="text-align:center;padding:18px 14px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`
+        : isByCoin
         ? `
         <div>
           <label style="font-size:12px;color:var(--color-moon-mist);display:block;margin-bottom:6px;">Chọn gói số lượng Xu:</label>
@@ -2291,8 +2395,18 @@ function renderCreateOrderModalBody() {
     `;
   }
 
+  if (isCatHidden && catKey !== 'fruit_coin' && catKey !== 'fruit_by_fruit') {
+    categoryFormHtml = `<div class="hidden-cat-inline-note" style="text-align:center;padding:18px 14px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`;
+  }
+
   body.innerHTML = `
-    ${!isWorking
+    ${isCatHidden
+      ? `
+      <div class="hidden-cat-inline-note" style="display:flex;align-items:center;gap:8px;">
+        ${znIcon('eyeOff', 16)} <span><strong>${HIDDEN_CATEGORY_TEXT}</strong></span>
+      </div>
+    `
+      : !isWorking
       ? `
       <div style="padding:12px 14px;background:rgba(136,19,55,0.25);border-radius:8px;color:#fda4af;font-size:13px;display:flex;align-items:center;gap:8px;">
         ${znIcon('alert', 16)} <span>Hệ thống chạy đơn <strong>${escapeHtml(VIEW_TITLES[catKey])}</strong> hiện đang ở trạng thái <strong>Không hoạt động</strong> trên Server Zn.</span>
@@ -2370,7 +2484,7 @@ function renderCreateOrderModalBody() {
       </div>
       <div class="action-row order-submit-actions">
         <button type="button" class="btn-frost" id="btnModalCancel" style="white-space:nowrap;">Hủy</button>
-        <button type="button" class="btn-violet" id="btnModalSaveOrder" ${!isWorking ? 'disabled' : ''}>
+        <button type="button" class="btn-violet" id="btnModalSaveOrder" ${!isWorking || isCatHidden ? 'disabled' : ''}>
           ${catKey === 'weather_buff' ? 'Xác Nhận Tạo Gói →' : 'Lưu & Chạy Đơn Hàng →'}
         </button>
       </div>
@@ -2423,12 +2537,16 @@ function bindCreateOrderModalEvents() {
     if (state.modalOrder.fruitOrderType === 'by_fruit') return;
     state.modalOrder.fruitOrderType = 'by_fruit';
     state.modalOrder.category = 'fruit_by_fruit';
+    if (isCatHiddenForCtv('fruit_by_fruit')) {
+      renderCreateOrderModalBody();
+      return;
+    }
     body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá Trái cây từ Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất.');
     await loadCatalog(true, 'fruit_by_fruit', 6500);
     const overlay = document.getElementById('appModalOverlay');
     if (!overlay || overlay.style.display === 'none' || state.modalOrder.fruitOrderType !== 'by_fruit') return;
     renderCreateOrderModalBody();
-    triggerModalFruitPreview();
+    if (!isCatHiddenForCtv('fruit_by_fruit')) triggerModalFruitPreview();
   });
 
   // Coin Package & Tier selection
@@ -2507,6 +2625,10 @@ function bindCreateOrderModalEvents() {
     document.getElementById('appModalOverlay').style.display = 'none';
   });
   body.querySelector('#btnModalSaveOrder')?.addEventListener('click', () => {
+    if (isCatHiddenForCtv(state.modalOrder.category)) {
+      showToast(HIDDEN_CATEGORY_TEXT);
+      return;
+    }
     submitModalOrder(false);
   });
 }
@@ -3214,11 +3336,20 @@ async function openFruitWarehouseModal() {
 
   box.className = 'modal-box wide';
   title.textContent = 'Kho Trái Cây Trực Tuyến';
+  if (isCatHiddenForCtv('fruit_by_fruit')) {
+    body.innerHTML = `<div class="hidden-cat-inline-note" style="text-align:center;padding:24px 16px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`;
+    overlay.style.display = 'flex';
+    return;
+  }
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Server Zn...', 'Đang lấy tồn kho & đơn giá trái cây mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_by_fruit', 6500);
   if (overlay.style.display === 'none' || !state.catalogData) return;
+  if (isCatHiddenForCtv('fruit_by_fruit')) {
+    body.innerHTML = `<div class="hidden-cat-inline-note" style="text-align:center;padding:24px 16px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`;
+    return;
+  }
 
   const fruits = (state.catalogData.catalog?.fruit_by_fruit || [])
     .slice()
@@ -3281,11 +3412,20 @@ async function openCoinWarehouseModal() {
 
   box.className = 'modal-box';
   title.textContent = 'Kho Xu Nông Trại Trực Tuyến';
+  if (isCatHiddenForCtv('fruit_coin')) {
+    body.innerHTML = `<div class="hidden-cat-inline-note" style="text-align:center;padding:24px 16px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`;
+    overlay.style.display = 'flex';
+    return;
+  }
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Server Zn...', 'Đang đồng bộ trữ lượng Kho Xu mới nhất từ hệ thống.');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, 'fruit_coin', 6500);
   if (overlay.style.display === 'none' || !state.catalogData) return;
+  if (isCatHiddenForCtv('fruit_coin')) {
+    body.innerHTML = `<div class="hidden-cat-inline-note" style="text-align:center;padding:24px 16px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`;
+    return;
+  }
 
   const coin = state.catalogData.coinStock || {};
   const tiers = state.catalogData.coinTiers || [];
@@ -3334,11 +3474,20 @@ async function openCategoryPriceListModal(catKey) {
 
   box.className = 'modal-box';
   title.textContent = `Bảng giá: ${VIEW_TITLES[catKey] || catKey}`;
+  if (isCatHiddenForCtv(catKey)) {
+    body.innerHTML = `<div class="hidden-cat-inline-note" style="text-align:center;padding:24px 16px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`;
+    overlay.style.display = 'flex';
+    return;
+  }
   body.innerHTML = renderSyncLoadingHtml('Đang cập nhật bảng giá từ Server Zn...');
   overlay.style.display = 'flex';
 
   await loadCatalog(true, catKey, 6500);
   if (overlay.style.display === 'none' || !state.catalogData) return;
+  if (isCatHiddenForCtv(catKey)) {
+    body.innerHTML = `<div class="hidden-cat-inline-note" style="text-align:center;padding:24px 16px;"><strong>${HIDDEN_CATEGORY_TEXT}</strong></div>`;
+    return;
+  }
 
   const items = state.catalogData.catalog?.[catKey] || [];
   const isGiftCat = catKey === 'farm_gift' || catKey === 'mail_gift';
@@ -3380,12 +3529,14 @@ function renderDashboardOverviewHtml() {
     { key: 'fruit_coin', icon: 'coins', name: 'Trái cây & Xu', working: st.fruit_coin },
   ];
 
+  const coinHidden = isCatHiddenForCtv('fruit_coin');
+  const fruitHidden = isCatHiddenForCtv('fruit_by_fruit');
   return `
     <div class="stats-three-grid">
       <div class="glass-panel">
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--color-moon-mist);">Trữ lượng Kho Xu Nông Trại</div>
-        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;line-height:1.1;color:var(--color-lavender-phosphor);margin-top:8px;font-variant-numeric:tabular-nums;">${formatNum(coinQty)} Xu</div>
-        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:6px;">Kho trái cây: ${formatNum(totalFruits)} trái sẵn sàng</div>
+        <div style="font-size:28px;font-weight:500;letter-spacing:-0.03em;line-height:1.1;color:var(--color-lavender-phosphor);margin-top:8px;font-variant-numeric:tabular-nums;">${coinHidden ? 'Đang ẩn' : `${formatNum(coinQty)} Xu`}</div>
+        <div style="font-size:12px;color:var(--color-fog-veil);margin-top:6px;">${fruitHidden ? `Kho trái cây: ${HIDDEN_CATEGORY_TEXT}` : `Kho trái cây: ${formatNum(totalFruits)} trái sẵn sàng`}</div>
       </div>
 
       <div class="glass-panel">
@@ -3414,22 +3565,29 @@ function renderDashboardOverviewHtml() {
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:12px;">
         ${catCards
       .map(
-        (c) => `
-          <button type="button" class="stat-subcard dashboard-category" data-dash-goto="${c.key}">
+        (c) => {
+          const isHidden = isOrderViewFullyHiddenForCtv(c.key);
+          return `
+          <button type="button" class="stat-subcard dashboard-category ${isHidden ? 'is-cat-hidden' : ''}" data-dash-goto="${c.key}">
             <span style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
               <span class="dashboard-cat-title">
-                <span class="dashboard-cat-icon">${znIcon(c.icon, 16)}</span>
+                <span class="dashboard-cat-icon">${znIcon(isHidden ? 'eyeOff' : c.icon, 16)}</span>
                 <span>${escapeHtml(c.name)}</span>
               </span>
-              <span class="system-status-chip ${c.working ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
+              ${isHidden
+                ? `<span class="badge-tag amber" style="font-size:10.5px;">● Đang ẩn</span>`
+                : `<span class="system-status-chip ${c.working ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                 ● ${c.working ? 'Hoạt động' : 'Tạm ngưng'}
-              </span>
+              </span>`}
             </span>
             <span style="display:flex;justify-content:flex-end;margin-top:6px;">
-              <span class="btn-frost" style="padding:5px 12px;font-size:11px;">Mở danh mục →</span>
+              ${isHidden
+                ? `<span style="font-size:11.5px;color:#fde68a;">${HIDDEN_CATEGORY_TEXT}</span>`
+                : `<span class="btn-frost" style="padding:5px 12px;font-size:11px;">Mở danh mục →</span>`}
             </span>
           </button>
-        `
+        `;
+        }
       )
       .join('')}
       </div>
@@ -3858,6 +4016,8 @@ function renderAdminPricingPageHtml() {
   const cm = adm?.settings?.categoryMarkups || {};
   const modes = adm?.settings?.categoryMarkupModes || {};
   const percents = adm?.settings?.categoryMarkupPercents || {};
+  const hiddenCats = adm?.settings?.hiddenCategories || {};
+  const hiddenCount = PRICING_CATEGORIES.filter((c) => hiddenCats[c.key] === true).length;
   const pkgOverrides = adm?.settings?.packagePriceOverrides || {};
   const fruitOverrides = adm?.settings?.fruitUnitPrices || {};
   const sysStatus = r?.systemStatus || {};
@@ -3903,7 +4063,7 @@ function renderAdminPricingPageHtml() {
       <!-- Sub-navigation tabs -->
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">
         <button type="button" class="btn-frost ${state.adminPricingTab === 'categories' ? 'is-active' : ''}" data-adm-ptab="categories">
-          ${znIcon('sliders', 14)} <span>Chỉnh giá từng danh mục · ${PRICING_CATEGORIES.length} danh mục</span>
+          ${znIcon('sliders', 14)} <span>Chỉnh giá từng danh mục · ${PRICING_CATEGORIES.length} danh mục${hiddenCount > 0 ? ` · Đang ẩn ${hiddenCount}` : ''}</span>
         </button>
         <button type="button" class="btn-frost ${state.adminPricingTab === 'packages' ? 'is-active' : ''}" data-adm-ptab="packages">
           ${znIcon('package', 14)} <span>2. Chỉnh từng Gói cố định (${fixedPackages.length} gói)</span>
@@ -3922,6 +4082,7 @@ function renderAdminPricingPageHtml() {
         const pctVal = Number(percents[cat.key] ?? 0);
         const orderFeeVal = Number(cm.fruit_by_fruit ?? 0);
         const isWorking = !!sysStatus[cat.key];
+        const isHiddenForCtv = hiddenCats[cat.key] === true;
         const overrideCount = countCategoryOverrides(cat.key, adm);
         const catPkgCount = cat.isFruitUnit ? fruits.length : (pkgCatCounts[cat.key] || 0);
         const showPerPkgBtn = !cat.isFruitUnit && (FEATURED_PER_PKG_CATS.has(cat.key) || catPkgCount > 0);
@@ -3930,12 +4091,23 @@ function renderAdminPricingPageHtml() {
         const sampleProfit = sample ? sampleSell - sample.cost : 0;
 
         return `
-              <div class="pricing-cat-card" data-cat-card="${cat.key}">
+              <div class="pricing-cat-card ${isHiddenForCtv ? 'is-cat-hidden' : ''}" data-cat-card="${cat.key}">
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
                   <strong style="color:#fff;font-size:14px;display:inline-flex;align-items:center;gap:8px;"><span class="dashboard-cat-icon" style="width:28px;height:28px;">${znIcon(cat.icon, 14)}</span><span>${escapeHtml(cat.label)}</span></strong>
                   ${cat.key.startsWith('backup_') ? '' : `<span class="system-status-chip ${isWorking ? 'is-working' : 'is-not-working'}" style="font-size:11px;padding:2px 8px;">
                     ● ${isWorking ? 'Hoạt động' : 'Tạm ngưng'}
                   </span>`}
+                </div>
+
+                <div class="pricing-cat-vis-row">
+                  <span class="pricing-cat-vis-label ${isHiddenForCtv ? 'is-hidden' : 'is-visible'}">
+                    ${znIcon(isHiddenForCtv ? 'eyeOff' : 'eye', 13)}
+                    <span>${isHiddenForCtv ? 'Đã tắt với CTV (Zn đang ẩn danh mục này)' : 'Đang bật hiển thị với CTV'}</span>
+                  </span>
+                  <label class="zn-toggle-switch" title="${isHiddenForCtv ? 'Bật để hiện lại danh mục này cho CTV' : 'Tắt để ẩn danh mục này với CTV'}">
+                    <input type="checkbox" class="adm-cat-vis-toggle" data-toggle-cat-vis="${cat.key}" data-cat-label="${escapeHtml(cat.label)}" ${!isHiddenForCtv ? 'checked' : ''} aria-label="Bật hoặc tắt hiển thị ${escapeHtml(cat.label)} với CTV" />
+                    <span class="zn-toggle-slider"></span>
+                  </label>
                 </div>
 
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
@@ -4550,6 +4722,31 @@ function bindAdminPricingEvents() {
   });
 
   // --- TAB 1: CATEGORY PRICING (FIXED VNĐ + PERCENT %) ---
+  document.querySelectorAll('[data-toggle-cat-vis]').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const catKey = input.dataset.toggleCatVis;
+      const catLabel = input.dataset.catLabel || catKey;
+      const nextHidden = !input.checked;
+      input.disabled = true;
+      try {
+        const res = await apiFetch('/api/admin/settings', 'PUT', { hiddenCategories: { [catKey]: nextHidden } });
+        if (res?.hiddenCategories) {
+          syncHiddenCategoriesState(res.hiddenCategories, res.visibilityVersion);
+          if (state.adminOverview?.settings) state.adminOverview.settings.hiddenCategories = { ...res.hiddenCategories };
+        }
+        showToast(nextHidden
+          ? `Đã ẩn "${catLabel}" khỏi CTV (CTV sẽ thấy: ${HIDDEN_CATEGORY_TEXT})`
+          : `Đã bật hiển thị lại "${catLabel}" cho CTV!`);
+        await Promise.all([loadCatalog(false, '', 6500), loadAdminOverview()]);
+        if (state.currentView === 'admin_pricing') renderCurrentView();
+      } catch (err) {
+        input.checked = nextHidden;
+        input.disabled = false;
+        showToast(`Lỗi: ${err.message}`);
+      }
+    });
+  });
+
   document.querySelectorAll('[data-cat-mode-btn]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const catKey = btn.dataset.catModeBtn;
@@ -5796,6 +5993,21 @@ function bindGlobalEvents() {
     try {
       const result = await apiFetch('/api/auth/me');
       if (result.user) { state.user = result.user; updateShellAuthUI(); }
+      const visChanged = syncHiddenCategoriesState(result.hiddenCategories, result.visibilityVersion);
+      if (visChanged) {
+        applyCatalogSideEffects(state.catalogData);
+        if (state.user?.role !== 'admin') {
+          if (state.currentView === 'backup') {
+            document.getElementById('backupView')?.dispatchEvent(new CustomEvent('zn:visibility-sync'));
+          } else if (!isUserTypingOrModalOpen() || isOrderViewFullyHiddenForCtv(state.currentView)) {
+            if (isOrderViewFullyHiddenForCtv(state.currentView)) {
+              const overlay = document.getElementById('appModalOverlay');
+              if (overlay) overlay.style.display = 'none';
+            }
+            renderCurrentView();
+          }
+        }
+      }
       if (result.user?.role !== 'admin' && result.updateVersion !== undefined) {
         if (handleCtvUpdateVersion(result.updateVersion, { isCtvConfirmed: true })) return;
       }
@@ -5831,6 +6043,31 @@ function bindGlobalEvents() {
       }
       if (!p.maintenance && !state.maintenanceLocked) {
         handleCtvUpdateVersion(p.updateVersion, { isCtvConfirmed: Boolean(state.token && state.user?.role === 'ctv') });
+        if (state.token && state.user?.role === 'ctv' && p.visibilityVersion !== undefined && state.visibilityVersion != null && Number(p.visibilityVersion) !== Number(state.visibilityVersion)) {
+          const me = await apiFetch('/api/auth/me').catch(() => null);
+          if (me?.success) {
+            const visChanged = syncHiddenCategoriesState(me.hiddenCategories, me.visibilityVersion);
+            if (visChanged) {
+              try { sessionStorage.removeItem('znplay_catalog_cache'); } catch { }
+              applyCatalogSideEffects(state.catalogData);
+              if (state.currentView === 'backup') {
+                document.getElementById('backupView')?.dispatchEvent(new CustomEvent('zn:visibility-sync'));
+              } else {
+                if (isOrderViewFullyHiddenForCtv(state.currentView) || isCatHiddenForCtv(state.modalOrder?.category)) {
+                  const overlay = document.getElementById('appModalOverlay');
+                  if (overlay) overlay.style.display = 'none';
+                }
+                if (ORDER_VIEWS.includes(state.currentView) || state.currentView === 'dashboard') {
+                  if (!isOrderViewFullyHiddenForCtv(state.currentView)) {
+                    const scope = state.currentView === 'fruit_coin' ? 'fruit_all' : (ORDER_VIEWS.includes(state.currentView) ? state.currentView : '');
+                    await loadCatalog(false, scope, 6500);
+                  }
+                  renderCurrentView();
+                }
+              }
+            }
+          }
+        }
       }
     } catch { }
   };
